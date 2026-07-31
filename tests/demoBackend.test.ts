@@ -31,6 +31,22 @@ test('user-created ticket is visible to MASTER and protected by role', async () 
   assert.equal(tickets.items[0].subject, 'Teste integrado')
 })
 
+test('investment requires immediate payment through an accepted method', async () => {
+  localStorage.clear()
+  const session = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
+  await assert.rejects(() => demoRequest('/investments', 'POST', { pack: 'Mobilidade Start', amount: 2500 }, session.token), /forma de pagamento/)
+  const payload = { pack: 'Mobilidade Start', amount: 2500, paymentMethod: 'PIX', idempotencyKey: 'checkout-test-1' }
+  const investment = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
+  const retry = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
+  assert.equal(investment.paymentMethod, 'PIX')
+  assert.equal(investment.paymentStatus, 'PENDING')
+  assert.equal(investment.status, 'Aguardando pagamento')
+  assert.match(investment.paymentReference, /^PIX-/)
+  assert.equal(retry.id, investment.id)
+  const state = await demoRequest<{ investments: Record<string, any>[] }>('/state', 'GET', undefined, session.token)
+  assert.equal(state.investments.filter(item => item.idempotencyKey === payload.idempotencyKey).length, 1)
+})
+
 test('invited account remains pending until MASTER activation', async () => {
   localStorage.clear()
   await demoRequest('/public/register', 'POST', { name: 'Nova Pessoa', email: 'nova@gomove.com.br', username: 'nova', password: 'segura123', inviteCode: 'matheus01' })

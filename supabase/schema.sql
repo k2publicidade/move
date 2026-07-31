@@ -46,6 +46,8 @@ create table public.investments (
   user_id uuid not null references public.profiles(id) on delete restrict,
   pack text not null, amount numeric(14,2) not null check (amount >= 0),
   profit numeric(14,2) not null default 0, contract_days integer not null default 0 check (contract_days >= 0),
+  payment_method text check (payment_method in ('BTC', 'USDT', 'USTD', 'PIX')),
+  payment_status text not null default 'PENDING', payment_reference text unique, idempotency_key text unique,
   status text not null default 'Pendente', contracted_at date not null default current_date,
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(), deleted_at timestamptz
 );

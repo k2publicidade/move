@@ -370,6 +370,16 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
 
   const userCollection = route.match(/^\/(investments|orders|withdrawals|tickets)$/)?.[1] as 'investments' | 'orders' | 'withdrawals' | 'tickets' | undefined
   if (method === 'POST' && userCollection) {
+    if (userCollection === 'investments') {
+      const planAmounts: Record<string, number> = { 'Mobilidade Start': 2500, 'Frota Essencial': 5000, 'Scooter Performance': 8500 }
+      const acceptedMethods = ['BTC', 'USDT', 'USTD', 'PIX']
+      if (!acceptedMethods.includes(String(body?.paymentMethod))) throw new Error('Selecione uma forma de pagamento válida')
+      if (!body?.pack || planAmounts[body.pack] !== Number(body?.amount)) throw new Error('Plano ou valor do investimento inválido')
+      if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
+      const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
+      if (existing) return existing as T
+      body = { ...body, amountCents: planAmounts[body.pack] * 100, profit: 0, days: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentReference: id(body.paymentMethod) }
+    }
     const prefix = { investments: 'ATV', orders: 'PED', withdrawals: 'SAQ', tickets: 'TK' }[userCollection]
     const item = { ...body, id: id(prefix), userId: user.id, date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }
     db[userCollection].unshift(item)
