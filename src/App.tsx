@@ -1,8 +1,8 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, AlertCircle, BarChart3, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
+  Activity, AlertCircle, BarChart3, Bitcoin, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
   Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Pencil, Plus, RotateCcw, Search,
-  Settings, ShieldCheck, ShoppingBag, TicketCheck, UserRound, UsersRound, Wallet,
+  QrCode, Settings, ShieldCheck, ShoppingBag, TicketCheck, UserRound, UsersRound, Wallet,
   Trash2, WalletCards, Wrench, X,
 } from 'lucide-react'
 import { ApiClient, clearSession, loadSession, saveSession, type Session } from './api'
@@ -182,17 +182,37 @@ const plans = [
   { name: 'Frota Essencial', amount: 5000, returnRate: '1,45% a.m.', icon: Package },
   { name: 'Scooter Performance', amount: 8500, returnRate: '1,7% a.m.', icon: Activity },
 ]
+const investmentPaymentMethods = [
+  { id: 'PIX', label: 'PIX', description: 'Pagamento instantâneo em reais', icon: QrCode },
+  { id: 'BTC', label: 'BTC', description: 'Bitcoin', icon: Bitcoin },
+  { id: 'USDT', label: 'USDT', description: 'Tether USD', icon: WalletCards },
+  { id: 'USTD', label: 'USTD', description: 'Pagamento em USTD', icon: WalletCards },
+] as const
+type InvestmentPaymentMethod = typeof investmentPaymentMethods[number]['id']
 function UserInvestments({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [busy, setBusy] = useState('')
   const [actionError, setActionError] = useState('')
   const [notice, setNotice] = useState('')
-  const invest = async (plan: typeof plans[number]) => {
+  const [checkoutPlan, setCheckoutPlan] = useState<typeof plans[number] | null>(null)
+  const [paymentMethod, setPaymentMethod] = useState<InvestmentPaymentMethod>('PIX')
+  const [checkoutKey, setCheckoutKey] = useState('')
+  const openCheckout = (plan: typeof plans[number]) => {
+    setCheckoutPlan(plan); setPaymentMethod('PIX'); setCheckoutKey(crypto.randomUUID()); setActionError(''); setNotice('')
+  }
+  const invest = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!checkoutPlan) return
+    const plan = checkoutPlan
     setBusy(plan.name); setActionError(''); setNotice('')
-    try { await api.post('/investments', { pack: plan.name, amount: plan.amount, amountCents: plan.amount * 100, profit: 0, days: 0, status: 'Pendente' }); await load(); setNotice(`Solicitação do plano ${plan.name} enviada.`) }
+    try {
+      const investment = await api.post<Row>('/investments', { pack: plan.name, amount: plan.amount, paymentMethod, idempotencyKey: checkoutKey })
+      await load(); setCheckoutPlan(null)
+      setNotice(`Pagamento via ${paymentMethod} iniciado. Referência: ${investment.paymentReference}. O investimento será ativado após a confirmação.`)
+    }
     catch (reason: any) { setActionError(reason.message) } finally { setBusy('') }
   }
-  return <Page title="Investimentos" subtitle="Ativos de mobilidade com acompanhamento transparente."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<div className="plan-grid">{plans.map(plan => <article className="plan-card" key={plan.name}><plan.icon aria-hidden="true" /><span>PLANO GOMOVE</span><h2>{plan.name}</h2><strong>{brl(plan.amount)}</strong><p>Retorno projetado: {plan.returnRate}</p><button className="primary-btn" disabled={!!busy} aria-busy={busy === plan.name} onClick={() => void invest(plan)}>{busy === plan.name ? 'Solicitando…' : 'Solicitar investimento'}</button></article>)}</div><h2 className="section-title">Meus contratos</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PLANO"], ["amount", "VALOR", row => brl(row.amount)], ["profit", "RENDIMENTO", row => brl(row.profit)], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
+  return <Page title="Investimentos" subtitle="Escolha um plano e faça o pagamento no ato do investimento."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<div className="payment-method-strip"><span>Formas de pagamento aceitas</span>{investmentPaymentMethods.map(method => <b key={method.id}>{method.label}</b>)}</div><div className="plan-grid">{plans.map(plan => <article className="plan-card" key={plan.name}><plan.icon aria-hidden="true" /><span>PLANO GOMOVE</span><h2>{plan.name}</h2><strong>{brl(plan.amount)}</strong><p>Retorno projetado: {plan.returnRate}</p><button className="primary-btn" disabled={!!busy} onClick={() => openCheckout(plan)}>Investir e pagar</button></article>)}</div><h2 className="section-title">Meus contratos</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PLANO"], ["amount", "VALOR", row => brl(row.amount)], ["paymentMethod", "PAGAMENTO", row => row.paymentMethod || '—'], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}{checkoutPlan && <Modal title="Pagamento do investimento" close={() => !busy && setCheckoutPlan(null)}><form className="modal-form investment-checkout" onSubmit={invest}><div className="checkout-summary"><span><small>Plano</small><b>{checkoutPlan.name}</b></span><strong>{brl(checkoutPlan.amount)}</strong></div><fieldset><legend>Como você deseja pagar?</legend><div className="payment-method-grid">{investmentPaymentMethods.map(method => <label className={paymentMethod === method.id ? 'selected' : ''} key={method.id}><input type="radio" name="paymentMethod" value={method.id} checked={paymentMethod === method.id} onChange={() => setPaymentMethod(method.id)} /><method.icon aria-hidden="true" /><span><b>{method.label}</b><small>{method.description}</small></span><Check className="method-check" aria-hidden="true" /></label>)}</div></fieldset><div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>Pagamento obrigatório no ato</b><small>Ao continuar, o pagamento será iniciado. A ativação acontece somente após a confirmação da transação.</small></span></div><ErrorBox error={actionError} /><div className="modal-actions"><button type="button" className="outline-btn" disabled={!!busy} onClick={() => setCheckoutPlan(null)}>Cancelar</button><button className="primary-btn" disabled={!!busy} aria-busy={!!busy}>{busy ? 'Iniciando pagamento…' : `Pagar com ${paymentMethod}`}</button></div></form></Modal>}</Page>
 }
 
 const products = [
@@ -210,7 +230,45 @@ function Store({ session }: { session: Session }) {
     try { await api.post('/orders', { description: product.name, quantity: 1, total: product.price, status: 'Processando' }); setNotice(`${product.name} adicionado aos seus pedidos.`); await load() }
     catch (reason: any) { setActionError(reason.message) } finally { setBusy('') }
   }
-  return <Page title="Loja e pedidos" subtitle="Produtos selecionados para sua experiência GoMove."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<div className="product-grid">{products.map(product => <article className="product-card" key={product.id}><div className="product-art"><ShoppingBag aria-hidden="true" /></div><span>{product.category}</span><h2>{product.name}</h2><strong>{brl(product.price)}</strong><button className="primary-btn" disabled={!!busy} aria-busy={busy === product.id} onClick={() => void buy(product)}>{busy === product.id ? 'Processando…' : 'Comprar agora'}</button></article>)}</div><h2 className="section-title">Meus pedidos</h2>{data ? <DataTable rows={data.orders} columns={[["id", "PEDIDO"], ["date", "DATA"], ["description", "ITEM"], ["total", "TOTAL", row => brl(row.total)], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
+  return <Page title="Loja e pedidos" subtitle="Produtos selecionados para sua experiência GoMove.">
+    <ErrorBox error={error || actionError} />
+    {notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}
+
+    <section className="store-catalog" aria-labelledby="store-catalog-title">
+      <div className="store-section-heading">
+        <h2 id="store-catalog-title">Produtos disponíveis</h2>
+        <span>{products.length} opções</span>
+      </div>
+      <div className="product-grid">
+        {products.map(product => <article className="store-product-card" key={product.id}>
+          <div className="store-product-art"><ShoppingBag aria-hidden="true" /></div>
+          <div className="store-product-content">
+            <span className="store-product-category">{product.category}</span>
+            <h3>{product.name}</h3>
+            <strong>{brl(product.price)}</strong>
+          </div>
+          <button
+            className="primary-btn store-product-cta"
+            disabled={!!busy}
+            aria-busy={busy === product.id}
+            aria-label={`Comprar ${product.name} por ${brl(product.price)}`}
+            onClick={() => void buy(product)}
+          >
+            <ShoppingBag aria-hidden="true" />
+            {busy === product.id ? 'Processando…' : 'Comprar agora'}
+          </button>
+        </article>)}
+      </div>
+    </section>
+
+    <section className="store-orders" aria-labelledby="store-orders-title">
+      <div className="store-section-heading">
+        <h2 id="store-orders-title">Meus pedidos</h2>
+        {data && <span>{data.orders.length} {data.orders.length === 1 ? 'pedido' : 'pedidos'}</span>}
+      </div>
+      {data ? <DataTable rows={data.orders} columns={[["id", "PEDIDO"], ["date", "DATA"], ["description", "ITEM"], ["total", "TOTAL", row => brl(row.total)], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}
+    </section>
+  </Page>
 }
 
 function UserFinance({ session }: { session: Session }) {
@@ -324,7 +382,7 @@ type CrudField = { key: string; label: string; type?: 'text' | 'number' | 'selec
 type CollectionType = 'vehicles' | 'investments' | 'orders' | 'invoices' | 'withdrawals' | 'tickets'
 const collectionConfig: Record<CollectionType, { title: string; singular: string; subtitle: string; columns: TableColumn[]; fields: CrudField[] }> = {
   vehicles: { title: 'Gestão de frota', singular: 'veículo', subtitle: 'Cadastre ativos, vincule usuários e controle a disponibilidade.', columns: [["plate", "PLACA"], ["model", "MODELO"], ["category", "CATEGORIA"], ["ownerName", "USUÁRIO"], ["battery", "BATERIA", row => `${row.battery || 0}%`], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Usuário vinculado', type: 'user' }, { key: 'plate', label: 'Placa / identificação', required: true }, { key: 'model', label: 'Modelo', required: true }, { key: 'category', label: 'Categoria', type: 'select', required: true, options: ['Scooter', 'Automóvel', 'Bicicleta', 'Outro'] }, { key: 'location', label: 'Localização', required: true }, { key: 'battery', label: 'Bateria (%)', type: 'number', required: true }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Em operação', 'Disponível', 'Manutenção', 'Indisponível'] }] },
-  investments: { title: 'Gestão de investimentos', singular: 'investimento', subtitle: 'Cadastre contratos e sincronize aportes com cada investidor.', columns: [["id", "CONTRATO"], ["ownerName", "USUÁRIO"], ["pack", "PLANO"], ["amount", "VALOR", row => brl(row.amount)], ["date", "DATA"], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Investidor', type: 'user', required: true }, { key: 'pack', label: 'Plano', required: true }, { key: 'amount', label: 'Valor investido', type: 'number', step: '0.01', required: true }, { key: 'profit', label: 'Rendimento acumulado', type: 'number', step: '0.01' }, { key: 'days', label: 'Dias de contrato', type: 'number' }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Ativo', 'Encerrado', 'Cancelado'] }] },
+  investments: { title: 'Gestão de investimentos', singular: 'investimento', subtitle: 'Cadastre contratos e sincronize aportes com cada investidor.', columns: [["id", "CONTRATO"], ["ownerName", "USUÁRIO"], ["pack", "PLANO"], ["amount", "VALOR", row => brl(row.amount)], ["paymentMethod", "PAGAMENTO", row => row.paymentMethod || '—'], ["paymentStatus", "STATUS PAG.", row => row.paymentStatus ? status(row.paymentStatus) : '—'], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Investidor', type: 'user', required: true }, { key: 'pack', label: 'Plano', required: true }, { key: 'amount', label: 'Valor investido', type: 'number', step: '0.01', required: true }, { key: 'profit', label: 'Rendimento acumulado', type: 'number', step: '0.01' }, { key: 'days', label: 'Dias de contrato', type: 'number' }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Aguardando pagamento', 'Ativo', 'Encerrado', 'Cancelado'] }] },
   orders: { title: 'Gestão de pedidos', singular: 'pedido', subtitle: 'Inclua vendas, acompanhe entregas e mantenha o histórico do cliente.', columns: [["id", "PEDIDO"], ["ownerName", "USUÁRIO"], ["description", "ITEM"], ["quantity", "QTD."], ["total", "TOTAL", row => brl(row.total)], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Cliente', type: 'user', required: true }, { key: 'description', label: 'Item / descrição', required: true }, { key: 'quantity', label: 'Quantidade', type: 'number', required: true }, { key: 'total', label: 'Valor total', type: 'number', step: '0.01', required: true }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Processando', 'Separação', 'Em trânsito', 'Entregue', 'Cancelado'] }] },
   invoices: { title: 'Gestão de faturas', singular: 'fatura', subtitle: 'Crie cobranças e acompanhe recebimentos por usuário.', columns: [["id", "FATURA"], ["ownerName", "USUÁRIO"], ["description", "DESCRIÇÃO"], ["due", "VENCIMENTO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Cliente', type: 'user', required: true }, { key: 'description', label: 'Descrição', required: true }, { key: 'amount', label: 'Valor', type: 'number', step: '0.01', required: true }, { key: 'remaining', label: 'Saldo pendente', type: 'number', step: '0.01', required: true }, { key: 'due', label: 'Vencimento', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Pago', 'Vencido', 'Cancelado'] }] },
   withdrawals: { title: 'Gestão de saques', singular: 'saque', subtitle: 'Registre e processe solicitações financeiras dos usuários.', columns: [["id", "SAQUE"], ["ownerName", "USUÁRIO"], ["date", "DATA"], ["method", "MÉTODO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Usuário', type: 'user', required: true }, { key: 'amount', label: 'Valor', type: 'number', step: '0.01', required: true }, { key: 'method', label: 'Método', type: 'select', required: true, options: ['PIX', 'TED', 'Transferência'] }, { key: 'account', label: 'Conta / chave', required: true }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'paidAt', label: 'Data do pagamento', placeholder: 'dd/mm/aaaa ou —' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Em análise', 'Pago', 'Recusado'] }] },
