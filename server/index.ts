@@ -1,121 +1,86 @@
-import express from 'express'
+import express, { type Request, type Response, type NextFunction } from 'express'
 import cors from 'cors'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { buildNetworkTree, calculateBonuses, createBonusReversal, createRegistration, transitionBonus, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const root = path.resolve(__dirname, '..')
-const dataDir = path.join(root, '.data')
-const dataFile = path.join(dataDir, 'db.json')
-
-type RecordItem = Record<string, unknown> & { id: string }
-type Database = {
-  invoices: RecordItem[]
-  orders: RecordItem[]
-  investments: RecordItem[]
-  transactions: RecordItem[]
-  withdrawals: RecordItem[]
-  tickets: RecordItem[]
-  profile: Record<string, unknown>
-  cart: RecordItem[]
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), dataFile = path.join(root, '.data', 'db.json')
+type Item = Record<string, any> & { id: string }
+type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; bonusEntries: Item[]; auditLogs: Item[]; investments: Item[] }
+const now = () => new Date().toISOString()
+const hash = (password: string) => { const salt = crypto.randomBytes(16).toString('hex'); return `scrypt$${salt}$${crypto.scryptSync(password, salt, 64).toString('hex')}` }
+const verify = (password: string, encoded: string) => { const [, salt, expected] = encoded.split('$'); if (!salt || !expected) return false; const actual = crypto.scryptSync(password, salt, 64).toString('hex'); return crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex')) }
+const publicUser = (u: MlmUser) => { const { passwordHash, ...safe } = u; return safe }
+function seeded(): Db {
+ const admin = { id: crypto.randomUUID(), username: 'admin', email: 'admin@gomove.local', name: 'Administrador GoMove', passwordHash: hash('gomove2026'), role: 'ADMIN_MASTER' as const, status: 'ACTIVE' as const, sponsorId: null, inviteCode: 'admin01' }
+ const matheus = { id: crypto.randomUUID(), username: 'matheus', email: 'matheus@gomove.com.br', name: 'Matheus Oliveira', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: admin.id, inviteCode: 'matheus01' }
+ const ana = { id: crypto.randomUUID(), username: 'ana', email: 'ana@gomove.local', name: 'Ana Silva', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: matheus.id, inviteCode: 'ana01' }
+ const bruno = { id: crypto.randomUUID(), username: 'bruno', email: 'bruno@gomove.local', name: 'Bruno Costa', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: ana.id, inviteCode: 'bruno01' }
+ return { users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Unilevel padrão', eventType:'INVESTMENT_CONFIRMED', active:true, levels:[{level:1,bps:1000},{level:2,bps:500},{level:3,bps:300}], createdAt:now() }], commissionEvents:[], bonusEntries:[], auditLogs:[], invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profile:{} }
 }
-
-const seed: Database = {
-  invoices: [
-    { id: 'INV-1084', due: '05/08/2026', description: 'Assinatura GoMove Pro', amount: 349, remaining: 349, status: 'Pendente' },
-    { id: 'INV-1031', due: '05/07/2026', description: 'Adesão Scooter Urban', amount: 890, remaining: 0, status: 'Pago' },
-    { id: 'INV-0978', due: '05/06/2026', description: 'Mensalidade de plataforma', amount: 129, remaining: 0, status: 'Pago' }
-  ],
-  orders: [
-    { id: 'PED-2048', date: '28/07/2026', description: 'Capacete Urban Carbon', quantity: 1, total: 289, status: 'Em trânsito' },
-    { id: 'PED-1984', date: '04/07/2026', description: 'Kit mobilidade GoMove', quantity: 1, total: 149, status: 'Entregue' }
-  ],
-  investments: [
-    { id: 'ATV-441', date: '15/03/2026', pack: 'Scooter Performance', amount: 8500, profit: 1278.34, days: 138, status: 'Ativo' },
-    { id: 'ATV-318', date: '08/01/2026', pack: 'Frota Essencial', amount: 5000, profit: 943.12, days: 204, status: 'Ativo' }
-  ],
-  transactions: [
-    { id: 'MOV-9812', date: '30/07/2026', description: 'Rendimento operacional', amount: 184.2, status: 'Crédito' },
-    { id: 'MOV-9801', date: '26/07/2026', description: 'Bônus de rede', amount: 92.5, status: 'Crédito' },
-    { id: 'MOV-9742', date: '18/07/2026', description: 'Compra PED-2048', amount: -289, status: 'Débito' },
-    { id: 'MOV-9680', date: '10/07/2026', description: 'Rendimento operacional', amount: 176.8, status: 'Crédito' }
-  ],
-  withdrawals: [
-    { id: 'SAQ-401', date: '12/07/2026', amount: 500, method: 'PIX', account: '***.982.***-**', paidAt: '13/07/2026', status: 'Pago' }
-  ],
-  tickets: [
-    { id: 'TK-184', date: '29/07/2026', department: 'Financeiro', category: 'Fatura', subject: 'Confirmação de pagamento', priority: 'Média', status: 'Em análise' },
-    { id: 'TK-163', date: '12/07/2026', department: 'Operações', category: 'Veículo', subject: 'Agendamento preventivo', priority: 'Baixa', status: 'Resolvido' }
-  ],
-  profile: { name: 'Matheus Oliveira', email: 'matheus@gomove.com.br', phone: '(47) 99988-2040', birthdate: '1992-08-15', language: 'Português', country: 'Brasil', twoFactorLogin: false, twoFactorWithdraw: true, pixType: 'CPF' },
-  cart: [{ id: 'PROD-01', name: 'Capacete Urban Carbon', price: 289, quantity: 1 }]
+function ensureDemoContent(db: Db) {
+ const matheus=db.users.find(user=>user.username==='matheus'), ana=db.users.find(user=>user.username==='ana')
+ if(!Array.isArray(db.vehicles)||!db.vehicles.length) db.vehicles=[
+  {id:'VEI-1248',plate:'GOM-1248',model:'Scooter Urban E2',category:'Scooter',status:'Em operação',battery:78,driver:'Matheus Oliveira',location:'São Paulo - SP'},
+  {id:'VEI-0931',plate:'GOM-0931',model:'GoMove SUV E',category:'Automóvel',status:'Disponível',battery:96,driver:'—',location:'Barueri - SP'},
+  {id:'VEI-0712',plate:'GOM-0712',model:'Scooter Cargo',category:'Scooter',status:'Manutenção',battery:31,driver:'Ana Silva',location:'Osasco - SP'}]
+ if(!db.investments.length&&matheus) db.investments=[{id:'ATV-441',userId:matheus.id,date:'15/03/2026',pack:'Scooter Performance',amount:8500,amountCents:850000,profit:1278.34,days:138,status:'Ativo'},{id:'ATV-318',userId:matheus.id,date:'08/01/2026',pack:'Frota Essencial',amount:5000,amountCents:500000,profit:943.12,days:204,status:'Ativo'}]
+ if(!db.orders.length&&matheus) db.orders=[{id:'PED-2048',userId:matheus.id,date:'28/07/2026',description:'Capacete Urban Carbon',quantity:1,total:289,status:'Em trânsito'},{id:'PED-1984',userId:matheus.id,date:'04/07/2026',description:'Kit mobilidade GoMove',quantity:1,total:149,status:'Entregue'}]
+ if(!db.invoices.length&&matheus) db.invoices=[{id:'INV-1084',userId:matheus.id,due:'05/08/2026',description:'Assinatura GoMove Pro',amount:349,remaining:349,status:'Pendente'},{id:'INV-1031',userId:matheus.id,due:'05/07/2026',description:'Adesão Scooter Urban',amount:890,remaining:0,status:'Pago'}]
+ if(!db.transactions.length&&matheus) db.transactions=[{id:'MOV-9812',userId:matheus.id,date:'30/07/2026',description:'Rendimento operacional',amount:184.2,status:'Crédito'},{id:'MOV-9801',userId:matheus.id,date:'26/07/2026',description:'Bônus de rede',amount:92.5,status:'Crédito'},{id:'MOV-9742',userId:matheus.id,date:'18/07/2026',description:'Compra PED-2048',amount:-289,status:'Débito'}]
+ if(!db.withdrawals.length&&matheus) db.withdrawals=[{id:'SAQ-401',userId:matheus.id,date:'12/07/2026',amount:500,method:'PIX',account:'***.982.***-**',paidAt:'13/07/2026',status:'Pago'},...(ana?[{id:'SAQ-419',userId:ana.id,date:'30/07/2026',amount:240,method:'PIX',account:'***.441.***-**',paidAt:'—',status:'Pendente'}]:[])]
+ if(!db.tickets.length&&matheus) db.tickets=[{id:'TK-184',userId:matheus.id,date:'29/07/2026',department:'Financeiro',category:'Fatura',subject:'Confirmação de pagamento',priority:'Média',status:'Em análise'},{id:'TK-163',userId:matheus.id,date:'12/07/2026',department:'Operações',category:'Veículo',subject:'Agendamento preventivo',priority:'Baixa',status:'Resolvido'}]
+ if(!Object.keys(db.profile||{}).length&&matheus) db.profile={name:'Matheus Oliveira',email:'matheus@gomove.com.br',phone:'(47) 99988-2040',birthdate:'1992-08-15',language:'Português',country:'Brasil',twoFactorLogin:false,twoFactorWithdraw:true,pixType:'CPF'}
 }
-
-function readDb(): Database {
-  if (!fs.existsSync(dataFile)) {
-    fs.mkdirSync(dataDir, { recursive: true })
-    fs.writeFileSync(dataFile, JSON.stringify(seed, null, 2))
-  }
-  return JSON.parse(fs.readFileSync(dataFile, 'utf8')) as Database
+function readDb(): Db { let db: any; if (!fs.existsSync(dataFile)) db=seeded(); else db=JSON.parse(fs.readFileSync(dataFile,'utf8')); for (const k of ['users','vehicles','commissionRules','commissionEvents','bonusEntries','auditLogs','invoices','orders','investments','transactions','withdrawals','tickets','cart']) if (!Array.isArray(db[k])) db[k]=[]; if (!db.profile) db.profile={}; if (!db.users.length) Object.assign(db, seeded(), db); ensureDemoContent(db); writeDb(db); return db }
+function writeDb(db: Db) { fs.mkdirSync(path.dirname(dataFile),{recursive:true}); const tmp=`${dataFile}.${process.pid}.${crypto.randomUUID()}.tmp`; fs.writeFileSync(tmp,JSON.stringify(db,null,2),'utf8'); fs.renameSync(tmp,dataFile) }
+const audit=(db:Db, actorId:string, action:string, targetType:string, targetId:string, details:any={}) => db.auditLogs.unshift({id:crypto.randomUUID(),actorId,action,targetType,targetId,details,createdAt:now()})
+const tokens=new Map<string,string>()
+const app=express(); app.use(cors()); app.use(express.json())
+function auth(req:Request,res:Response,next:NextFunction) { const token=req.header('authorization')?.replace(/^Bearer\s+/i,''); const id=token&&tokens.get(token); const user=id&&readDb().users.find(u=>u.id===id); if(!user) return res.status(401).json({error:'Autenticação obrigatória'}); (req as any).user=user; next() }
+function admin(req:Request,res:Response,next:NextFunction) { if((req as any).user.role!=='ADMIN_MASTER') return res.status(403).json({error:'Acesso administrativo obrigatório'}); next() }
+function page<T>(items:T[], req:Request) { const p=Math.max(1,Number(req.query.page)||1), size=Math.min(100,Math.max(1,Number(req.query.pageSize)||20)); return {items:items.slice((p-1)*size,p*size),page:p,pageSize:size,total:items.length} }
+app.post(['/api/auth/login','/api/login'],(req,res)=>{ const {username,password}=req.body??{}, login=String(username).toLowerCase()==='master'?'admin':String(username).toLowerCase(); const u=readDb().users.find(x=>x.username.toLowerCase()===login||x.email.toLowerCase()===login); if(!u||!verify(String(password??''),String(u.passwordHash))||u.status!=='ACTIVE') return res.status(401).json({error:'Usuário ou senha inválidos'}); const token=crypto.randomBytes(32).toString('base64url'); tokens.set(token,u.id); res.json({token,user:publicUser(u)}) })
+app.get('/api/auth/me',auth,(req,res)=>res.json({user:publicUser((req as any).user)}))
+app.get('/api/public/invites/:inviteCode',(req,res)=>{const u=readDb().users.find(x=>x.inviteCode.toLowerCase()===req.params.inviteCode.toLowerCase()); if(!u||u.status!=='ACTIVE') return res.status(404).json({error:'Convite indisponível'}); res.json({sponsor:{name:(u as any).name,inviteCode:u.inviteCode}})})
+app.post('/api/public/register',(req,res)=>{ const b=req.body??{}; if(!b.username||!b.email||!b.password||!b.inviteCode||!b.name) return res.status(422).json({error:'Campos obrigatórios ausentes'}); const db=readDb(); try { const u=createRegistration(db.users,{username:b.username,email:b.email,passwordHash:hash(b.password),inviteCode:b.inviteCode,name:b.name}); db.users.push(u); audit(db,u.id,'REGISTER','USER',u.id,{sponsorId:u.sponsorId});writeDb(db);res.status(201).json({user:publicUser(u)}) } catch(e:any) { res.status(/already exists/.test(e.message)?409:422).json({error:e.message}) } })
+function descendants(db:Db,id:string) { const out=new Set<string>([id]); let changed=true; while(changed){changed=false; for(const u of db.users) if(u.sponsorId&&out.has(u.sponsorId)&&!out.has(u.id)){out.add(u.id);changed=true}} return out }
+app.get('/api/network/summary',auth,(req,res)=>{const db=readDb(),u=(req as any).user, ids=descendants(db,u.id);res.json({directs:db.users.filter(x=>x.sponsorId===u.id).length,networkSize:ids.size-1,activeNetwork:db.users.filter(x=>ids.has(x.id)&&x.status==='ACTIVE').length-1,pendingDirects:db.users.filter(x=>x.sponsorId===u.id&&x.status==='PENDING').length})})
+app.get('/api/network/directs',auth,(req,res)=>res.json(page(readDb().users.filter(x=>x.sponsorId===(req as any).user.id).map(publicUser),req)))
+app.get('/api/network/unilevel',auth,(req,res)=>{const db=readDb(), root=(req as any).user.id; let frontier=[root], out:any[]=[]; for(let l=1;l<=Math.min(20,Number(req.query.depth)||3);l++){frontier=db.users.filter(u=>frontier.includes(u.sponsorId||''));out.push(...frontier.map(u=>({...publicUser(u),level:l})));}res.json(out)})
+app.get('/api/network/tree',auth,(req,res)=>{const db=readDb(), max=Math.min(10,Math.max(0,Number(req.query.depth)||3)); const build=(id:string,d:number):any=>{const u=db.users.find(x=>x.id===id)!;return {...publicUser(u),children:d<max?db.users.filter(x=>x.sponsorId===id).map(x=>build(x.id,d+1)):[]}};res.json(build((req as any).user.id,0))})
+app.get('/api/network/search',auth,(req,res)=>{const db=readDb(), q=String(req.query.q||'').toLowerCase(),ids=descendants(db,(req as any).user.id);res.json(page(db.users.filter(u=>ids.has(u.id)&&((u as any).name?.toLowerCase().includes(q)||u.username.toLowerCase().includes(q))).map(publicUser),req))})
+app.get('/api/bonuses/me',auth,(req,res)=>res.json(page(readDb().bonusEntries.filter(x=>x.userId===(req as any).user.id),req)))
+app.get('/api/admin/dashboard',auth,admin,(_req,res)=>{const d=readDb();res.json({users:d.users.length,active:d.users.filter(u=>u.status==='ACTIVE').length,pending:d.users.filter(u=>u.status==='PENDING').length,vehicles:d.vehicles.length,activeVehicles:d.vehicles.filter((v:any)=>v.status==='Em operação').length,revenue:d.invoices.filter((x:any)=>x.status==='Pago').reduce((s:number,x:any)=>s+Number(x.amount||0),0),pendingWithdrawals:d.withdrawals.filter((x:any)=>x.status==='Pendente').length,openTickets:d.tickets.filter((x:any)=>x.status!=='Resolvido').length,bonusPendingCents:d.bonusEntries.filter(b=>b.status==='PENDING').reduce((s,b)=>s+b.amountCents,0)})})
+app.get('/api/admin/associates',auth,admin,(req,res)=>res.json(page(readDb().users.filter(u=>u.role==='ASSOCIATE').map(publicUser),req)))
+app.get('/api/admin/network/tree',auth,admin,(req,res)=>{const d=readDb(), requestedRoot=typeof req.query.rootUserId==='string'?req.query.rootUserId.trim():'', rootId=requestedRoot||(d.users.find(user=>user.role==='ADMIN_MASTER')?.id||''); const requestedDepth=Number(req.query.depth);const depth=Math.min(10,Math.max(0,Number.isFinite(requestedDepth)?Math.floor(requestedDepth):3));try{const redact=(node:any):any=>{const {passwordHash,...user}=node;return {...user,children:node.children.map(redact)}};res.json(redact(buildNetworkTree(d.users,rootId,depth)))}catch(error:any){res.status(422).json({error:error.message})}})
+app.get('/api/admin/associates/:id',auth,admin,(req,res)=>{const u=readDb().users.find(x=>x.id===req.params.id);if(!u)return res.status(404).json({error:'Associado não encontrado'});res.json(publicUser(u))})
+app.patch('/api/admin/associates/:id/status',auth,admin,(req,res)=>{const d=readDb(),u=d.users.find(x=>x.id===req.params.id),status=req.body?.status;if(!u)return res.status(404).json({error:'Associado não encontrado'});if(!['ACTIVE','BLOCKED','PENDING'].includes(status)||(status==='BLOCKED'&&!req.body.reason))return res.status(422).json({error:'Status/reason inválido'});u.status=status;audit(d,(req as any).user.id,'STATUS_CHANGE','USER',u.id,{status,reason:req.body.reason});writeDb(d);res.json(publicUser(u))})
+app.patch('/api/admin/associates/:id/sponsor',auth,admin,(req,res)=>{const d=readDb(),u=d.users.find(x=>x.id===req.params.id),s=d.users.find(x=>x.id===req.body?.sponsorId);if(!u||!s)return res.status(404).json({error:'Associado não encontrado'});if(!req.body.reason||wouldCreateSponsorCycle(d.users,u.id,s.id))return res.status(422).json({error:'Patrocinador inválido, ciclo ou reason ausente'});u.sponsorId=s.id;audit(d,(req as any).user.id,'SPONSOR_CHANGE','USER',u.id,{sponsorId:s.id,reason:req.body.reason});writeDb(d);res.json(publicUser(u))})
+app.get('/api/admin/commission-rules',auth,admin,(req,res)=>res.json(page(readDb().commissionRules,req)))
+app.post('/api/admin/commission-rules',auth,admin,(req,res)=>{const b=req.body??{};if(!b.name||!Array.isArray(b.levels)||!b.levels.length)return res.status(422).json({error:'Regra inválida'});const d=readDb(),r={id:crypto.randomUUID(),name:b.name,eventType:'INVESTMENT_CONFIRMED',active:false,levels:b.levels,createdAt:now()};d.commissionRules.push(r);audit(d,(req as any).user.id,'RULE_CREATE','RULE',r.id);writeDb(d);res.status(201).json(r)})
+app.patch('/api/admin/commission-rules/:id',auth,admin,(req,res)=>{const d=readDb(),r=d.commissionRules.find(x=>x.id===req.params.id);if(!r)return res.status(404).json({error:'Regra não encontrada'});Object.assign(r,req.body);if(r.active)d.commissionRules.filter(x=>x.id!==r.id&&x.eventType===r.eventType).forEach(x=>x.active=false);audit(d,(req as any).user.id,'RULE_UPDATE','RULE',r.id);writeDb(d);res.json(r)})
+app.get('/api/admin/bonus-entries',auth,admin,(req,res)=>res.json(page(readDb().bonusEntries,req)))
+for (const [action,status] of [['approve','APPROVED'],['cancel','CANCELLED']] as const) app.post(`/api/admin/bonus-entries/:id/${action}`,auth,admin,(req,res)=>{const d=readDb(),id=String(req.params.id),index=d.bonusEntries.findIndex(x=>x.id===id);if(index<0)return res.status(404).json({error:'Bônus não encontrado'});try{const entry=transitionBonus(d.bonusEntries[index] as any,status);d.bonusEntries[index]=entry;audit(d,(req as any).user.id,`BONUS_${action.toUpperCase()}`,'BONUS',entry.id);writeDb(d);res.json(entry)}catch(error:any){res.status(422).json({error:error.message})}})
+app.post('/api/admin/bonus-entries/:id/reverse',auth,admin,(req,res)=>{const d=readDb(),id=String(req.params.id),reason=typeof req.body?.reason==='string'?req.body.reason:'';try{const reversal=createBonusReversal(d.bonusEntries as any,id,reason);d.bonusEntries.push(reversal);audit(d,(req as any).user.id,'BONUS_REVERSE','BONUS',id,{reversalId:reversal.id,reason:reversal.reason});writeDb(d);res.status(201).json(reversal)}catch(error:any){const status=/not found/.test(error.message)?404:422;res.status(status).json({error:error.message})}})
+app.post('/api/admin/bonus-entries/manual-credit',auth,admin,(req,res)=>{const b=req.body??{},d=readDb();if(!b.userId||!Number.isInteger(b.amountCents)||b.amountCents<=0||!b.reason)return res.status(422).json({error:'Crédito inválido'});const e={id:crypto.randomUUID(),userId:b.userId,amountCents:b.amountCents,status:'PENDING',type:'MANUAL',reason:b.reason,createdAt:now()};d.bonusEntries.push(e);audit(d,(req as any).user.id,'BONUS_MANUAL','BONUS',e.id);writeDb(d);res.status(201).json(e)})
+app.post('/api/admin/investments/:id/confirm',auth,admin,(req,res)=>{const d=readDb(),inv=d.investments.find(x=>x.id===req.params.id);if(!inv)return res.status(404).json({error:'Investimento não encontrado'});const existing=d.commissionEvents.find(e=>e.investmentId===inv.id);if(existing)return res.json({event:existing,idempotent:true});if(!inv.userId||!Number.isInteger(inv.amountCents))return res.status(422).json({error:'Investimento sem userId/amountCents'});const rule=d.commissionRules.find(r=>r.active&&r.eventType==='INVESTMENT_CONFIRMED');if(!rule)return res.status(422).json({error:'Sem regra ativa'});const event={id:crypto.randomUUID(),investmentId:inv.id,investorId:inv.userId,amountCents:inv.amountCents,ruleSnapshot:{id:rule.id,levels:rule.levels},createdAt:now()};d.commissionEvents.push(event);for(const x of calculateBonuses(d.users,inv.userId,event.id,inv.amountCents,rule.levels))if(!d.bonusEntries.some(b=>b.idempotencyKey===x.idempotencyKey))d.bonusEntries.push({id:crypto.randomUUID(),...x,eventId:event.id,status:'PENDING',ruleSnapshot:event.ruleSnapshot,createdAt:now()});inv.status='CONFIRMED';audit(d,(req as any).user.id,'INVESTMENT_CONFIRM','INVESTMENT',inv.id);writeDb(d);res.json({event,bonuses:d.bonusEntries.filter(b=>b.eventId===event.id)})})
+app.get('/api/admin/audit-logs',auth,admin,(req,res)=>res.json(page(readDb().auditLogs,req)))
+for(const key of ['vehicles','investments','orders','invoices','withdrawals','tickets'] as const) {
+ app.get(`/api/admin/${key}`,auth,admin,(req,res)=>res.json(page(readDb()[key],req)))
+ app.patch(`/api/admin/${key}/:id`,auth,admin,(req,res)=>{const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id);if(!item)return res.status(404).json({error:'Registro não encontrado'});Object.assign(item,req.body??{},{id:item.id});audit(d,(req as any).user.id,'RECORD_UPDATE',key.toUpperCase(),item.id,req.body);writeDb(d);res.json(item)})
 }
-
-function writeDb(db: Database) {
-  fs.mkdirSync(dataDir, { recursive: true })
-  fs.writeFileSync(dataFile, JSON.stringify(db, null, 2))
+// Legacy UI resources are authenticated and scoped to the caller where owner/user ownership exists.
+for(const key of ['cart','investments','tickets','invoices','withdrawals'] as const) app.get(`/api/${key}`,auth,(req,res)=>{const d=readDb(),u=(req as any).user;res.json(d[key].filter((x:any)=>!x.userId||x.userId===u.id))})
+app.put('/api/profile',auth,(req,res)=>{const d=readDb(),u=(req as any).user;const allowed=['name','phone','birthdate','language','country','twoFactorLogin','twoFactorWithdraw','pixType'];d.profile={...d.profile,...Object.fromEntries(Object.entries(req.body??{}).filter(([k])=>allowed.includes(k)))};if(req.body?.name) (d.users.find(x=>x.id===u.id) as any).name=req.body.name;writeDb(d);res.json(d.profile)})
+for(const key of ['cart','investments','tickets','invoices','withdrawals'] as const) {
+ app.post(`/api/${key}`,auth,(req,res)=>{const d=readDb(),item={...(req.body??{}),id:crypto.randomUUID(),userId:(req as any).user.id,createdAt:now()};d[key].unshift(item);writeDb(d);res.status(201).json(item)})
+ app.patch(`/api/${key}/:id`,auth,(req,res)=>{const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id&&x.userId===(req as any).user.id);if(!item)return res.status(404).json({error:'Registro não encontrado'});Object.assign(item,req.body??{}, {id:item.id,userId:item.userId});writeDb(d);res.json(item)})
 }
-
-const app = express()
-app.use(cors())
-app.use(express.json())
-
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body ?? {}
-  if ((username === 'admin' || username === 'matheus') && password === 'gomove2026') {
-    return res.json({ token: 'gomove-demo-token', user: { name: 'Matheus Oliveira', role: 'Administrador', initials: 'MO' } })
-  }
-  return res.status(401).json({ error: 'Usuário ou senha inválidos' })
-})
-
-app.get('/api/state', (_req, res) => res.json(readDb()))
-
-app.post('/api/:collection', (req, res) => {
-  const db = readDb()
-  const key = req.params.collection as keyof Database
-  const collection = db[key]
-  if (!Array.isArray(collection)) return res.status(400).json({ error: 'Coleção inválida' })
-  const item = { ...req.body, id: req.body.id || `${key.slice(0, 3).toUpperCase()}-${Date.now().toString().slice(-6)}` }
-  collection.unshift(item)
-  writeDb(db)
-  res.status(201).json(item)
-})
-
-app.patch('/api/:collection/:id', (req, res) => {
-  const db = readDb()
-  const key = req.params.collection as keyof Database
-  const collection = db[key]
-  if (!Array.isArray(collection)) return res.status(400).json({ error: 'Coleção inválida' })
-  const index = collection.findIndex(item => item.id === req.params.id)
-  if (index < 0) return res.status(404).json({ error: 'Registro não encontrado' })
-  collection[index] = { ...collection[index], ...req.body }
-  writeDb(db)
-  res.json(collection[index])
-})
-
-app.put('/api/profile', (req, res) => {
-  const db = readDb()
-  db.profile = { ...db.profile, ...req.body }
-  writeDb(db)
-  res.json(db.profile)
-})
-
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'GoMove API' }))
-
-const dist = path.join(root, 'dist')
-if (fs.existsSync(dist)) {
-  app.use(express.static(dist))
-  app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
-}
-
-const port = Number(process.env.PORT || 4010)
-app.listen(port, () => console.log(`GoMove API disponível em http://localhost:${port}`))
+app.get('/api/state',auth,(req,res)=>{const d=readDb(),u=(req as any).user;res.json({...d,users:undefined,commissionRules:undefined,commissionEvents:undefined,bonusEntries:undefined,auditLogs:undefined,profile:u.id===d.users.find(x=>x.username==='matheus')?.id?d.profile:{}})})
+app.get('/api/health',(_req,res)=>res.json({ok:true,service:'GoMove API'}))
+const dist=path.join(root,'dist');if(fs.existsSync(dist)){app.use(express.static(dist));app.get(/.*/,(_req,res)=>res.sendFile(path.join(dist,'index.html')))}
+if (process.env.NODE_ENV!=='test') app.listen(Number(process.env.PORT||4010),()=>console.log(`GoMove API disponível em http://localhost:${process.env.PORT||4010}`))
+export { app, readDb, writeDb }
