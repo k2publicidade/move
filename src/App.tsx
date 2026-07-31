@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, BarChart3, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
+  Activity, AlertCircle, BarChart3, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
   Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Plus, RotateCcw, Search,
   Settings, ShieldCheck, ShoppingBag, TicketCheck, UserRound, UsersRound, Wallet,
   WalletCards, Wrench, X,
@@ -20,7 +20,14 @@ const emptyState: PortalState = { vehicles: [], investments: [], orders: [], inv
 const brl = (value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0)
 const cents = (value: number) => brl((value || 0) / 100)
 const initials = (name: string) => name.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase()
-const status = (value: string) => <span className={`status status-${String(value).toLowerCase().replaceAll(' ', '-')}`}>{value}</span>
+const statusLabels: Record<string, string> = {
+  ACTIVE: 'Ativo', INACTIVE: 'Inativo', PENDING: 'Pendente', BLOCKED: 'Bloqueado',
+  APPROVED: 'Aprovado', CANCELLED: 'Cancelado', REVERSAL: 'Estorno',
+}
+const status = (value: string) => {
+  const label = statusLabels[value] || value
+  return <span className={`status status-${String(label).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replaceAll(' ', '-')}`}>{label}</span>
+}
 const go = (path: string) => { history.pushState({}, '', path); dispatchEvent(new PopStateEvent('popstate')) }
 
 function usePath() {
@@ -47,24 +54,29 @@ function usePortalState(session: Session) {
 }
 
 function NavLink({ to, icon: Icon, children, current, onNavigate }: { to: string; icon: any; children: ReactNode; current: string; onNavigate?: () => void }) {
-  const active = current === to || (to !== '/dashboard' && current.startsWith(`${to}/`))
-  return <a href={to} className={active ? 'active' : ''} onClick={event => { event.preventDefault(); go(to); onNavigate?.() }}><Icon /><span>{children}</span></a>
+  const active = current === to || (!['/dashboard', '/admin'].includes(to) && current.startsWith(`${to}/`))
+  return <a href={to} className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} onClick={event => { event.preventDefault(); go(to); onNavigate?.() }}><Icon aria-hidden="true" /><span>{children}</span></a>
 }
 
-function Loader() { return <div className="loading-screen"><div className="loader-mark">G</div><p>Carregando a operação…</p></div> }
-function ErrorBox({ error }: { error: string }) { return error ? <div className="form-error">{error}</div> : null }
+function Loader() { return <div className="loading-screen" role="status" aria-live="polite"><div className="loader-mark" aria-hidden="true">G</div><p>Carregando a operação…</p></div> }
+function ErrorBox({ error }: { error: string }) { return error ? <div className="form-error" role="alert"><AlertCircle aria-hidden="true" />{error}</div> : null }
 function Page({ title, subtitle, action, children }: { title: string; subtitle?: string; action?: ReactNode; children: ReactNode }) {
-  return <><div className="page-heading"><div><span className="eyebrow">ECOSSISTEMA GOMOVE</span><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>{action}</div>{children}</>
+  return <><header className="page-heading"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>{action}</header>{children}</>
 }
 function Metric({ label, value, icon: Icon, note }: { label: string; value: string; icon: any; note?: string }) {
   return <article className="metric-card tone-lime"><div className="metric-top"><span>{label}</span><i><Icon /></i></div><strong>{value}</strong>{note && <small>{note}</small>}</article>
 }
 function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
-  return <div className="modal-backdrop" onClick={close}><section className="modal" onClick={event => event.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button className="icon-btn" onClick={close}><X /></button></div>{children}</section></div>
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    addEventListener('keydown', onKeyDown)
+    return () => removeEventListener('keydown', onKeyDown)
+  }, [close])
+  return <div className="modal-backdrop" onClick={close}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={event => event.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button type="button" className="icon-btn" aria-label="Fechar janela" onClick={close}><X aria-hidden="true" /></button></div>{children}</section></div>
 }
 type TableColumn = [string, string, ((row: Row) => ReactNode)?]
 function DataTable({ columns, rows, empty = 'Nenhum registro encontrado.', action }: { columns: TableColumn[]; rows: Row[]; empty?: string; action?: (row: Row) => ReactNode }) {
-  return <div className="table-card"><div className="table-scroll"><table><thead><tr>{columns.map(([, label]) => <th key={label}>{label}</th>)}{action && <th>AÇÕES</th>}</tr></thead><tbody>{rows.length ? rows.map(row => <tr key={row.id}>{columns.map(([key, , render]) => <td key={key}>{render ? render(row) : String(row[key] ?? '—')}</td>)}{action && <td>{action(row)}</td>}</tr>) : <tr><td colSpan={columns.length + (action ? 1 : 0)}>{empty}</td></tr>}</tbody></table></div></div>
+  return <div className="table-card"><div className="table-scroll"><table><thead><tr>{columns.map(([, label]) => <th scope="col" key={label}>{label}</th>)}{action && <th scope="col">AÇÕES</th>}</tr></thead><tbody>{rows.length ? rows.map(row => <tr key={row.id}>{columns.map(([key, label, render]) => <td data-label={label} key={key}>{render ? render(row) : String(row[key] ?? '—')}</td>)}{action && <td data-label="AÇÕES" className="table-actions">{action(row)}</td>}</tr>) : <tr className="empty-table-row"><td colSpan={columns.length + (action ? 1 : 0)}><span>{empty}</span><small>Os novos registros aparecerão aqui.</small></td></tr>}</tbody></table></div></div>
 }
 
 function Login({ setSession }: { setSession: (session: Session) => void }) {
@@ -80,7 +92,7 @@ function Login({ setSession }: { setSession: (session: Session) => void }) {
       go(session.user.role === 'ADMIN_MASTER' ? '/admin' : '/dashboard')
     } catch (reason: any) { setError(reason.message) } finally { setLoading(false) }
   }
-  return <main className="login-shell"><div className="login-visual"><img src="/brand/gomove-hero.jpeg" alt="Mobilidade inteligente GoMove" /></div><section className="login-panel"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">ACESSO RESTRITO</span><h1>Bem-vindo <em>de volta.</em></h1><p>Entre no ambiente correspondente ao seu perfil.</p><form onSubmit={submit}><label>Usuário<input autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} /></label><label>Senha<input autoComplete="current-password" type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={loading}>{loading ? 'Autenticando…' : 'Entrar na plataforma'}</button></form><div className="demo-credentials"><b>Acessos de demonstração</b><span>MASTER: admin / gomove2026</span><span>USUÁRIO: matheus / gomove2026</span></div></div></section></main>
+  return <main className="login-shell"><div className="login-visual"><img src="/brand/gomove-hero.jpeg" alt="Mobilidade inteligente GoMove" /></div><section className="login-panel"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><h1>Bem-vindo <em>de volta.</em></h1><p>Entre no ambiente correspondente ao seu perfil.</p><form onSubmit={submit} aria-busy={loading}><label>Usuário<input autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} /></label><label>Senha<input autoComplete="current-password" type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={loading}>{loading ? 'Autenticando…' : 'Entrar na plataforma'}</button></form><div className="demo-credentials"><b>Acessos de demonstração</b><span>MASTER: admin / gomove2026</span><span>USUÁRIO: matheus / gomove2026</span></div></div></section></main>
 }
 
 function Invite() {
@@ -89,13 +101,15 @@ function Invite() {
   const [invite, setInvite] = useState<any>()
   const [error, setError] = useState('')
   const [done, setDone] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({ name: '', email: '', username: '', password: '' })
   useEffect(() => { api.get(`/public/invites/${code}`).then(setInvite).catch(reason => setError(reason.message)) }, [code])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    try { await api.post('/public/register', { ...form, inviteCode: code }); setDone(true) } catch (reason: any) { setError(reason.message) }
+    setBusy(true); setError('')
+    try { await api.post('/public/register', { ...form, inviteCode: code }); setDone(true) } catch (reason: any) { setError(reason.message) } finally { setBusy(false) }
   }
-  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">CONVITE GOMOVE</span>{done ? <><h1>Cadastro recebido.</h1><p>Sua conta aguarda ativação pelo administrador MASTER.</p><button className="primary-btn" onClick={() => go('/')}>Ir para o login</button></> : <><h1>Entre para a rede.</h1><p>{invite ? `Indicado por ${invite.sponsor.name}.` : 'Verificando convite…'}</p><form onSubmit={submit}><label>Nome<input required value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>E-mail<input required type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required minLength={6} type="password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-btn" disabled={!invite}>Criar conta</button></form></>}</div></section></main>
+  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" />{done ? <><h1>Cadastro recebido.</h1><p>Sua conta aguarda ativação pelo administrador MASTER.</p><button type="button" className="primary-btn" onClick={() => go('/')}>Ir para o login</button></> : <><h1>Entre para a rede.</h1><p>{invite ? `Indicado por ${invite.sponsor.name}.` : 'Verificando convite…'}</p><form onSubmit={submit} aria-busy={busy}><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-btn" disabled={!invite || busy}>{busy ? 'Criando conta…' : 'Criar conta'}</button></form></>}</div></section></main>
 }
 
 const userLinks = [
@@ -115,7 +129,7 @@ function Shell({ session, logout }: { session: Session; logout: () => void }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const isAdmin = session.user.role === 'ADMIN_MASTER'
   const links = isAdmin ? adminLinks : userLinks
-  return <div className="app-shell">{mobileOpen && <button className="mobile-overlay" aria-label="Fechar menu" onClick={() => setMobileOpen(false)} />}<aside className={`sidebar ${mobileOpen ? 'is-mobile-open' : ''}`}><div className="sidebar-top"><img src="/brand/gomove-logo-oficial.png" alt="GoMove" /></div><nav><div className="nav-group"><span className="nav-label">{isAdmin ? 'ADMINISTRAÇÃO MASTER' : 'MINHA CONTA'}</span>{links.map(([to, label, Icon]) => <NavLink key={to} to={to} icon={Icon} current={path} onNavigate={() => setMobileOpen(false)}>{label}</NavLink>)}</div></nav><div className="sidebar-profile"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{isAdmin ? 'Administrador MASTER' : 'Usuário GoMove'}</small></span></div></aside><div className="app-main"><header className="topbar"><button className="icon-btn mobile-menu" aria-label="Abrir menu" onClick={() => setMobileOpen(true)}><Menu /></button><span className="environment-pill"><span /> Sistema operacional</span><div className="topbar-spacer" /><div className="user-chip"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{isAdmin ? 'MASTER' : 'USUÁRIO'}</small></span></div><button className="icon-btn" aria-label="Sair" onClick={logout}><LogOut /></button></header><main className="page-content"><Router session={session} path={path} /></main></div></div>
+  return <div className="app-shell">{mobileOpen && <button type="button" className="mobile-overlay" aria-label="Fechar menu" onClick={() => setMobileOpen(false)} />}<aside className={`sidebar ${mobileOpen ? 'is-mobile-open' : ''}`} aria-label={isAdmin ? 'Navegação MASTER' : 'Navegação do usuário'}><div className="sidebar-top"><img src="/brand/gomove-logo-oficial.png" alt="GoMove" /></div><nav aria-label="Menu principal"><div className="nav-group"><span className="nav-label">{isAdmin ? 'ADMINISTRAÇÃO MASTER' : 'MINHA CONTA'}</span>{links.map(([to, label, Icon]) => <NavLink key={to} to={to} icon={Icon} current={path} onNavigate={() => setMobileOpen(false)}>{label}</NavLink>)}</div></nav><div className="sidebar-profile"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{isAdmin ? 'Administrador MASTER' : 'Usuário GoMove'}</small></span></div></aside><div className="app-main"><header className="topbar"><button type="button" className="icon-btn mobile-menu" aria-label="Abrir menu" onClick={() => setMobileOpen(true)}><Menu aria-hidden="true" /></button><span className="environment-pill"><span /> Sistema operacional</span><div className="topbar-spacer" /><div className="user-chip"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{isAdmin ? 'MASTER' : 'USUÁRIO'}</small></span></div><button type="button" className="icon-btn" aria-label="Sair" onClick={logout}><LogOut aria-hidden="true" /></button></header><main className="page-content" id="conteudo-principal"><Router session={session} path={path} /></main></div></div>
 }
 
 function Router({ session, path }: { session: Session; path: string }) {
@@ -171,8 +185,14 @@ const plans = [
 function UserInvestments({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [busy, setBusy] = useState('')
-  const invest = async (plan: typeof plans[number]) => { setBusy(plan.name); await api.post('/investments', { pack: plan.name, amount: plan.amount, amountCents: plan.amount * 100, profit: 0, days: 0, status: 'Pendente' }); await load(); setBusy('') }
-  return <Page title="Investimentos" subtitle="Ativos de mobilidade com acompanhamento transparente."><ErrorBox error={error} /><div className="plan-grid">{plans.map(plan => <article className="plan-card" key={plan.name}><plan.icon /><span>PLANO GOMOVE</span><h2>{plan.name}</h2><strong>{brl(plan.amount)}</strong><p>Retorno projetado: {plan.returnRate}</p><button className="primary-btn" disabled={!!busy} onClick={() => void invest(plan)}>{busy === plan.name ? 'Solicitando…' : 'Solicitar investimento'}</button></article>)}</div><h2 className="section-title">Meus contratos</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PLANO"], ["amount", "VALOR", row => brl(row.amount)], ["profit", "RENDIMENTO", row => brl(row.profit)], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
+  const [actionError, setActionError] = useState('')
+  const [notice, setNotice] = useState('')
+  const invest = async (plan: typeof plans[number]) => {
+    setBusy(plan.name); setActionError(''); setNotice('')
+    try { await api.post('/investments', { pack: plan.name, amount: plan.amount, amountCents: plan.amount * 100, profit: 0, days: 0, status: 'Pendente' }); await load(); setNotice(`Solicitação do plano ${plan.name} enviada.`) }
+    catch (reason: any) { setActionError(reason.message) } finally { setBusy('') }
+  }
+  return <Page title="Investimentos" subtitle="Ativos de mobilidade com acompanhamento transparente."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<div className="plan-grid">{plans.map(plan => <article className="plan-card" key={plan.name}><plan.icon aria-hidden="true" /><span>PLANO GOMOVE</span><h2>{plan.name}</h2><strong>{brl(plan.amount)}</strong><p>Retorno projetado: {plan.returnRate}</p><button className="primary-btn" disabled={!!busy} aria-busy={busy === plan.name} onClick={() => void invest(plan)}>{busy === plan.name ? 'Solicitando…' : 'Solicitar investimento'}</button></article>)}</div><h2 className="section-title">Meus contratos</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PLANO"], ["amount", "VALOR", row => brl(row.amount)], ["profit", "RENDIMENTO", row => brl(row.profit)], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
 }
 
 const products = [
@@ -183,18 +203,30 @@ const products = [
 function Store({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [notice, setNotice] = useState('')
-  const buy = async (product: typeof products[number]) => { await api.post('/orders', { description: product.name, quantity: 1, total: product.price, status: 'Processando' }); setNotice(`${product.name} adicionado aos seus pedidos.`); await load() }
-  return <Page title="Loja e pedidos" subtitle="Produtos selecionados para sua experiência GoMove."><ErrorBox error={error} />{notice && <div className="success-box"><Check />{notice}</div>}<div className="product-grid">{products.map(product => <article className="product-card" key={product.id}><div className="product-art"><ShoppingBag /></div><span>{product.category}</span><h2>{product.name}</h2><strong>{brl(product.price)}</strong><button className="primary-btn" onClick={() => void buy(product)}>Comprar agora</button></article>)}</div><h2 className="section-title">Meus pedidos</h2>{data ? <DataTable rows={data.orders} columns={[["id", "PEDIDO"], ["date", "DATA"], ["description", "ITEM"], ["total", "TOTAL", row => brl(row.total)], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
+  const [busy, setBusy] = useState('')
+  const [actionError, setActionError] = useState('')
+  const buy = async (product: typeof products[number]) => {
+    setBusy(product.id); setNotice(''); setActionError('')
+    try { await api.post('/orders', { description: product.name, quantity: 1, total: product.price, status: 'Processando' }); setNotice(`${product.name} adicionado aos seus pedidos.`); await load() }
+    catch (reason: any) { setActionError(reason.message) } finally { setBusy('') }
+  }
+  return <Page title="Loja e pedidos" subtitle="Produtos selecionados para sua experiência GoMove."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<div className="product-grid">{products.map(product => <article className="product-card" key={product.id}><div className="product-art"><ShoppingBag aria-hidden="true" /></div><span>{product.category}</span><h2>{product.name}</h2><strong>{brl(product.price)}</strong><button className="primary-btn" disabled={!!busy} aria-busy={busy === product.id} onClick={() => void buy(product)}>{busy === product.id ? 'Processando…' : 'Comprar agora'}</button></article>)}</div><h2 className="section-title">Meus pedidos</h2>{data ? <DataTable rows={data.orders} columns={[["id", "PEDIDO"], ["date", "DATA"], ["description", "ITEM"], ["total", "TOTAL", row => brl(row.total)], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
 }
 
 function UserFinance({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [amount, setAmount] = useState('')
   const [notice, setNotice] = useState('')
-  const withdraw = async (event: FormEvent) => { event.preventDefault(); await api.post('/withdrawals', { amount: Number(amount), method: 'PIX', account: data?.profile.pixType || 'CPF', status: 'Pendente', paidAt: '—' }); setAmount(''); setNotice('Solicitação de saque enviada para análise.'); await load() }
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState('')
+  const withdraw = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setNotice(''); setActionError('')
+    try { await api.post('/withdrawals', { amount: Number(amount), method: 'PIX', account: data?.profile.pixType || 'CPF', status: 'Pendente', paidAt: '—' }); setAmount(''); setNotice('Solicitação de saque enviada para análise.'); await load() }
+    catch (reason: any) { setActionError(reason.message) } finally { setBusy(false) }
+  }
   if (!data && !error) return <Loader />
   const state = data || emptyState
-  return <Page title="Financeiro" subtitle="Faturas, extrato e saques em um só lugar."><ErrorBox error={error} />{notice && <div className="success-box"><Check />{notice}</div>}<section className="metric-grid"><Metric label="CRÉDITOS" value={brl(state.transactions.filter(item => item.amount > 0).reduce((sum, item) => sum + item.amount, 0))} icon={CircleDollarSign} /><Metric label="FATURAS PENDENTES" value={String(state.invoices.filter(item => item.status === 'Pendente').length)} icon={FileText} /><Metric label="SAQUES" value={brl(state.withdrawals.reduce((sum, item) => sum + item.amount, 0))} icon={WalletCards} /></section><section className="dashboard-split"><div><h2 className="section-title">Faturas</h2><DataTable rows={state.invoices} columns={[["id", "FATURA"], ["due", "VENCIMENTO"], ["description", "DESCRIÇÃO"], ["remaining", "SALDO", row => brl(row.remaining)], ["status", "STATUS", row => status(row.status)]]} /></div><form className="form-panel withdrawal-form" onSubmit={withdraw}><h2>Solicitar saque</h2><label>Valor disponível para saque<input required min="50" step="0.01" type="number" value={amount} onChange={event => setAmount(event.target.value)} placeholder="R$ 0,00" /></label><p>O pedido será revisado pelo financeiro MASTER.</p><button className="primary-btn">Enviar solicitação</button></form></section><h2 className="section-title">Extrato</h2><DataTable rows={state.transactions} columns={[["date", "DATA"], ["description", "DESCRIÇÃO"], ["status", "TIPO"], ["amount", "VALOR", row => <strong className={row.amount >= 0 ? 'positive-text' : ''}>{brl(row.amount)}</strong>]]} /></Page>
+  return <Page title="Financeiro" subtitle="Faturas, extrato e saques em um só lugar."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<section className="metric-grid"><Metric label="CRÉDITOS" value={brl(state.transactions.filter(item => item.amount > 0).reduce((sum, item) => sum + item.amount, 0))} icon={CircleDollarSign} /><Metric label="FATURAS PENDENTES" value={String(state.invoices.filter(item => item.status === 'Pendente').length)} icon={FileText} /><Metric label="SAQUES" value={brl(state.withdrawals.reduce((sum, item) => sum + item.amount, 0))} icon={WalletCards} /></section><section className="dashboard-split"><div><h2 className="section-title">Faturas</h2><DataTable rows={state.invoices} columns={[["id", "FATURA"], ["due", "VENCIMENTO"], ["description", "DESCRIÇÃO"], ["remaining", "SALDO", row => brl(row.remaining)], ["status", "STATUS", row => status(row.status)]]} /></div><form className="form-panel withdrawal-form" onSubmit={withdraw} aria-busy={busy}><h2>Solicitar saque</h2><label>Valor disponível para saque<input required min="50" step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} placeholder="R$ 0,00" /></label><p>O pedido será revisado pelo financeiro MASTER.</p><button className="primary-btn" disabled={busy}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button></form></section><h2 className="section-title">Extrato</h2><DataTable rows={state.transactions} columns={[["date", "DATA"], ["description", "DESCRIÇÃO"], ["status", "TIPO"], ["amount", "VALOR", row => <strong className={row.amount >= 0 ? 'positive-text' : ''}>{brl(row.amount)}</strong>]]} /></Page>
 }
 
 function NetworkPage({ session }: { session: Session }) {
@@ -213,19 +245,32 @@ function Support({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [subject, setSubject] = useState('')
   const [message, setMessage] = useState('')
-  const submit = async (event: FormEvent) => { event.preventDefault(); await api.post('/tickets', { department: 'Atendimento', category: 'Solicitação', subject, message, priority: 'Média', status: 'Aberto' }); setSubject(''); setMessage(''); await load() }
-  return <Page title="Atendimento" subtitle="Nossa equipe acompanha cada solicitação."><ErrorBox error={error} /><form className="form-panel" onSubmit={submit}><h2>Abrir novo ticket</h2><div className="form-grid"><label>Assunto<input required value={subject} onChange={event => setSubject(event.target.value)} /></label><label>Prioridade<select><option>Baixa</option><option>Média</option><option>Alta</option></select></label></div><label>Mensagem<textarea required value={message} onChange={event => setMessage(event.target.value)} /></label><button className="primary-btn"><Plus />Enviar ticket</button></form><h2 className="section-title">Meus atendimentos</h2>{data ? <DataTable rows={data.tickets} columns={[["id", "TICKET"], ["date", "DATA"], ["subject", "ASSUNTO"], ["priority", "PRIORIDADE"], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
+  const [priority, setPriority] = useState('Média')
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState('')
+  const [notice, setNotice] = useState('')
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setActionError(''); setNotice('')
+    try { await api.post('/tickets', { department: 'Atendimento', category: 'Solicitação', subject, message, priority, status: 'Aberto' }); setSubject(''); setMessage(''); setPriority('Média'); setNotice('Ticket enviado. Nossa equipe já pode acompanhar sua solicitação.'); await load() }
+    catch (reason: any) { setActionError(reason.message) } finally { setBusy(false) }
+  }
+  return <Page title="Atendimento" subtitle="Nossa equipe acompanha cada solicitação."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<form className="form-panel" onSubmit={submit} aria-busy={busy}><h2>Abrir novo ticket</h2><div className="form-grid"><label>Assunto<input required value={subject} onChange={event => setSubject(event.target.value)} /></label><label>Prioridade<select value={priority} onChange={event => setPriority(event.target.value)}><option>Baixa</option><option>Média</option><option>Alta</option></select></label></div><label>Mensagem<textarea required value={message} onChange={event => setMessage(event.target.value)} /></label><button className="primary-btn" disabled={busy}><Plus aria-hidden="true" />{busy ? 'Enviando…' : 'Enviar ticket'}</button></form><h2 className="section-title">Meus atendimentos</h2>{data ? <DataTable rows={data.tickets} columns={[["id", "TICKET"], ["date", "DATA"], ["subject", "ASSUNTO"], ["priority", "PRIORIDADE"], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
 }
 
 function Profile({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [form, setForm] = useState<Record<string, any>>()
   const [saved, setSaved] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState('')
   useEffect(() => { if (data && !form) setForm(data.profile) }, [data])
   if (!form && !error) return <Loader />
   const update = (key: string, value: any) => setForm({ ...form, [key]: value })
-  const submit = async (event: FormEvent) => { event.preventDefault(); await api.put('/profile', form); await load(); setSaved(true) }
-  return <Page title="Meu perfil" subtitle="Mantenha seus dados e preferências de segurança atualizados."><ErrorBox error={error} />{saved && <div className="success-box"><Check />Perfil salvo com sucesso.</div>}<form className="form-panel profile-form" onSubmit={submit}><div className="profile-identity"><span className="avatar large">{initials(form?.name || session.user.name)}</span><div><h2>{form?.name || session.user.name}</h2><p>@{session.user.username}</p></div></div><div className="form-grid"><label>Nome completo<input value={form?.name || ''} onChange={event => update('name', event.target.value)} /></label><label>E-mail<input type="email" value={form?.email || ''} onChange={event => update('email', event.target.value)} /></label><label>Telefone<input value={form?.phone || ''} onChange={event => update('phone', event.target.value)} /></label><label>País<input value={form?.country || ''} onChange={event => update('country', event.target.value)} /></label></div><div className="toggle-row"><span><b>2FA no login</b><small>Proteção adicional para acessar a conta</small></span><input type="checkbox" checked={!!form?.twoFactorLogin} onChange={event => update('twoFactorLogin', event.target.checked)} /></div><div className="toggle-row"><span><b>2FA nos saques</b><small>Confirmação extra para movimentações</small></span><input type="checkbox" checked={!!form?.twoFactorWithdraw} onChange={event => update('twoFactorWithdraw', event.target.checked)} /></div><button className="primary-btn">Salvar alterações</button></form></Page>
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setSaved(false); setActionError('')
+    try { await api.put('/profile', form); await load(); setSaved(true) } catch (reason: any) { setActionError(reason.message) } finally { setBusy(false) }
+  }
+  return <Page title="Meu perfil" subtitle="Mantenha seus dados e preferências de segurança atualizados."><ErrorBox error={error || actionError} />{saved && <div className="success-box" role="status"><Check aria-hidden="true" />Perfil salvo com sucesso.</div>}<form className="form-panel profile-form" onSubmit={submit} aria-busy={busy}><div className="profile-identity"><span className="avatar large">{initials(form?.name || session.user.name)}</span><div><h2>{form?.name || session.user.name}</h2><p>@{session.user.username}</p></div></div><div className="form-grid"><label>Nome completo<input autoComplete="name" value={form?.name || ''} onChange={event => update('name', event.target.value)} /></label><label>E-mail<input autoComplete="email" type="email" value={form?.email || ''} onChange={event => update('email', event.target.value)} /></label><label>Telefone<input autoComplete="tel" value={form?.phone || ''} onChange={event => update('phone', event.target.value)} /></label><label>País<input autoComplete="country-name" value={form?.country || ''} onChange={event => update('country', event.target.value)} /></label></div><div className="toggle-row"><span><b>2FA no login</b><small>Proteção adicional para acessar a conta</small></span><input aria-label="Ativar 2FA no login" type="checkbox" checked={!!form?.twoFactorLogin} onChange={event => update('twoFactorLogin', event.target.checked)} /></div><div className="toggle-row"><span><b>2FA nos saques</b><small>Confirmação extra para movimentações</small></span><input aria-label="Ativar 2FA nos saques" type="checkbox" checked={!!form?.twoFactorWithdraw} onChange={event => update('twoFactorWithdraw', event.target.checked)} /></div><button className="primary-btn" disabled={busy}>{busy ? 'Salvando…' : 'Salvar alterações'}</button></form></Page>
 }
 
 function UserTable({ users, onSelect }: { users: User[]; onSelect?: (user: User) => void }) {
@@ -250,11 +295,17 @@ function Associates({ session }: { session: Session }) {
   const [selected, setSelected] = useState<User>()
   const [reason, setReason] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const load = () => api.get<ApiPage<User>>('/admin/associates?pageSize=100').then(value => setRows(value.items)).catch(reason => setError(reason.message))
   useEffect(() => { void load() }, [])
-  const changeStatus = async (next: string) => { if (!selected || (next === 'BLOCKED' && !reason)) return; await api.patch(`/admin/associates/${selected.id}/status`, { status: next, reason: reason || 'Ativação administrativa' }); setSelected(undefined); setReason(''); await load() }
+  const changeStatus = async (next: string) => {
+    if (!selected || (next === 'BLOCKED' && !reason)) return
+    setBusy(true); setError('')
+    try { await api.patch(`/admin/associates/${selected.id}/status`, { status: next, reason: reason || 'Ativação administrativa' }); setSelected(undefined); setReason(''); await load() }
+    catch (reason: any) { setError(reason.message) } finally { setBusy(false) }
+  }
   const filtered = rows.filter(item => `${item.name} ${item.username} ${item.email} ${item.status}`.toLowerCase().includes(query.toLowerCase()))
-  return <Page title="Gestão de usuários" subtitle="Cadastros, acessos, patrocinadores e status da rede."><ErrorBox error={error} /><div className="table-tools"><div className="search-box"><Search /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Buscar usuário, e-mail ou status" /></div><span>{filtered.length} usuários encontrados</span></div><UserTable users={filtered} onSelect={setSelected} />{selected && <Modal title={`Gerenciar ${selected.name}`} close={() => setSelected(undefined)}><div className="modal-form"><div className="user-summary"><span className="avatar large">{initials(selected.name)}</span><div><h3>{selected.name}</h3><p>@{selected.username} · {selected.email}</p>{status(selected.status)}</div></div><label>Justificativa administrativa<textarea value={reason} onChange={event => setReason(event.target.value)} placeholder="Obrigatória para bloqueios" /></label><div className="modal-actions"><button className="outline-btn" onClick={() => void changeStatus('PENDING')}>Deixar pendente</button><button className="outline-btn" onClick={() => void changeStatus('BLOCKED')}>Bloquear</button><button className="primary-btn" onClick={() => void changeStatus('ACTIVE')}>Ativar usuário</button></div></div></Modal>}</Page>
+  return <Page title="Gestão de usuários" subtitle="Cadastros, acessos, patrocinadores e status da rede."><ErrorBox error={error} /><div className="table-tools"><div className="search-box"><Search aria-hidden="true" /><input aria-label="Buscar usuários" value={query} onChange={event => setQuery(event.target.value)} placeholder="Buscar usuário, e-mail ou status" /></div><span>{filtered.length} usuários encontrados</span></div><UserTable users={filtered} onSelect={setSelected} />{selected && <Modal title={`Gerenciar ${selected.name}`} close={() => setSelected(undefined)}><div className="modal-form" aria-busy={busy}><div className="user-summary"><span className="avatar large">{initials(selected.name)}</span><div><h3>{selected.name}</h3><p>@{selected.username} · {selected.email}</p>{status(selected.status)}</div></div><label>Justificativa administrativa<textarea value={reason} onChange={event => setReason(event.target.value)} placeholder="Obrigatória para bloqueios" /></label><div className="modal-actions"><button type="button" className="outline-btn" disabled={busy} onClick={() => void changeStatus('PENDING')}>Deixar pendente</button><button type="button" className="outline-btn" disabled={busy || !reason} onClick={() => void changeStatus('BLOCKED')}>Bloquear</button><button type="button" className="primary-btn" disabled={busy} onClick={() => void changeStatus('ACTIVE')}>{busy ? 'Salvando…' : 'Ativar usuário'}</button></div></div></Modal>}</Page>
 }
 
 const collectionConfig: Record<string, { title: string; subtitle: string; columns: TableColumn[]; statuses: string[] }> = {
@@ -269,21 +320,30 @@ function AdminCollection({ session, type }: { session: Session; type: 'vehicles'
   const [rows, setRows] = useState<Row[]>([])
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
+  const [busyId, setBusyId] = useState('')
   const load = () => api.get<ApiPage<Row>>(`/admin/${type}?pageSize=100`).then(value => setRows(value.items)).catch(reason => setError(reason.message))
   useEffect(() => { void load() }, [type])
-  const update = async (row: Row, value: string) => { await api.patch(`/admin/${type}/${row.id}`, { status: value }); await load() }
+  const update = async (row: Row, value: string) => {
+    setBusyId(row.id); setError('')
+    try { await api.patch(`/admin/${type}/${row.id}`, { status: value }); await load() } catch (reason: any) { setError(reason.message) } finally { setBusyId('') }
+  }
   const filtered = rows.filter(row => JSON.stringify(row).toLowerCase().includes(query.toLowerCase()))
-  return <Page title={config.title} subtitle={config.subtitle}><ErrorBox error={error} /><div className="table-tools"><div className="search-box"><Search /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Buscar nesta área" /></div><span>{filtered.length} registros</span></div><DataTable rows={filtered} columns={config.columns} action={row => <select className="table-select" value={row.status} onChange={event => void update(row, event.target.value)}>{config.statuses.map(value => <option key={value}>{value}</option>)}</select>} /></Page>
+  return <Page title={config.title} subtitle={config.subtitle}><ErrorBox error={error} /><div className="table-tools"><div className="search-box"><Search aria-hidden="true" /><input aria-label={`Buscar em ${config.title}`} value={query} onChange={event => setQuery(event.target.value)} placeholder="Buscar nesta área" /></div><span>{filtered.length} registros</span></div><DataTable rows={filtered} columns={config.columns} action={row => <select className="table-select" aria-label={`Alterar status do registro ${row.id}`} disabled={busyId === row.id} value={row.status} onChange={event => void update(row, event.target.value)}>{config.statuses.map(value => <option key={value}>{value}</option>)}</select>} /></Page>
 }
 
 function AdminFinance({ session }: { session: Session }) {
   const api = useApi(session)
   const [invoices, setInvoices] = useState<Row[]>([])
   const [withdrawals, setWithdrawals] = useState<Row[]>([])
-  const load = () => Promise.all([api.get<ApiPage<Row>>('/admin/invoices'), api.get<ApiPage<Row>>('/admin/withdrawals')]).then(([a, b]) => { setInvoices(a.items); setWithdrawals(b.items) })
+  const [error, setError] = useState('')
+  const [busyId, setBusyId] = useState('')
+  const load = () => Promise.all([api.get<ApiPage<Row>>('/admin/invoices'), api.get<ApiPage<Row>>('/admin/withdrawals')]).then(([a, b]) => { setInvoices(a.items); setWithdrawals(b.items) }).catch(reason => setError(reason.message))
   useEffect(() => { void load() }, [])
-  const update = async (collection: string, row: Row, statusValue: string) => { await api.patch(`/admin/${collection}/${row.id}`, { status: statusValue, paidAt: statusValue === 'Pago' ? new Date().toLocaleDateString('pt-BR') : row.paidAt }); await load() }
-  return <Page title="Operação financeira" subtitle="Controle de recebíveis e solicitações de saque."><section className="metric-grid"><Metric label="FATURAS PENDENTES" value={String(invoices.filter(item => item.status === 'Pendente').length)} icon={FileText} /><Metric label="RECEBIDO" value={brl(invoices.filter(item => item.status === 'Pago').reduce((sum, item) => sum + item.amount, 0))} icon={CircleDollarSign} /><Metric label="SAQUES PENDENTES" value={String(withdrawals.filter(item => item.status === 'Pendente').length)} icon={WalletCards} /></section><h2 className="section-title">Faturas</h2><DataTable rows={invoices} columns={[["id", "FATURA"], ["description", "DESCRIÇÃO"], ["due", "VENCIMENTO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]]} action={row => <select className="table-select" value={row.status} onChange={event => void update('invoices', row, event.target.value)}><option>Pendente</option><option>Pago</option><option>Vencido</option><option>Cancelado</option></select>} /><h2 className="section-title">Saques</h2><DataTable rows={withdrawals} columns={[["id", "SAQUE"], ["date", "DATA"], ["method", "MÉTODO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]]} action={row => <select className="table-select" value={row.status} onChange={event => void update('withdrawals', row, event.target.value)}><option>Pendente</option><option>Em análise</option><option>Pago</option><option>Recusado</option></select>} /></Page>
+  const update = async (collection: string, row: Row, statusValue: string) => {
+    setBusyId(row.id); setError('')
+    try { await api.patch(`/admin/${collection}/${row.id}`, { status: statusValue, paidAt: statusValue === 'Pago' ? new Date().toLocaleDateString('pt-BR') : row.paidAt }); await load() } catch (reason: any) { setError(reason.message) } finally { setBusyId('') }
+  }
+  return <Page title="Operação financeira" subtitle="Controle de recebíveis e solicitações de saque."><ErrorBox error={error} /><section className="metric-grid"><Metric label="FATURAS PENDENTES" value={String(invoices.filter(item => item.status === 'Pendente').length)} icon={FileText} /><Metric label="RECEBIDO" value={brl(invoices.filter(item => item.status === 'Pago').reduce((sum, item) => sum + item.amount, 0))} icon={CircleDollarSign} /><Metric label="SAQUES PENDENTES" value={String(withdrawals.filter(item => item.status === 'Pendente').length)} icon={WalletCards} /></section><h2 className="section-title">Faturas</h2><DataTable rows={invoices} columns={[["id", "FATURA"], ["description", "DESCRIÇÃO"], ["due", "VENCIMENTO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]]} action={row => <select className="table-select" aria-label={`Alterar status da fatura ${row.id}`} disabled={busyId === row.id} value={row.status} onChange={event => void update('invoices', row, event.target.value)}><option>Pendente</option><option>Pago</option><option>Vencido</option><option>Cancelado</option></select>} /><h2 className="section-title">Saques</h2><DataTable rows={withdrawals} columns={[["id", "SAQUE"], ["date", "DATA"], ["method", "MÉTODO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]]} action={row => <select className="table-select" aria-label={`Alterar status do saque ${row.id}`} disabled={busyId === row.id} value={row.status} onChange={event => void update('withdrawals', row, event.target.value)}><option>Pendente</option><option>Em análise</option><option>Pago</option><option>Recusado</option></select>} /></Page>
 }
 
 function AdminNetwork({ session }: { session: Session }) {
