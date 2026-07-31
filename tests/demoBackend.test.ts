@@ -44,3 +44,62 @@ test('invited account remains pending until MASTER activation', async () => {
   const session = await demoRequest<{ user: User }>('/auth/login', 'POST', { username: 'nova', password: 'segura123' })
   assert.equal(session.user.status, 'ACTIVE')
 })
+
+test('MASTER CRUD synchronizes fleet records with the linked user account', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const associates = await demoRequest<Page<User>>('/admin/associates', 'GET', undefined, master.token)
+  const matheus = associates.items.find(user => user.username === 'matheus')!
+
+  const vehicle = await demoRequest<Record<string, any>>('/admin/vehicles', 'POST', { userId: matheus.id, plate: 'CRUD-01', model: 'Scooter CRUD', category: 'Scooter', location: 'Joinville - SC', battery: 100, status: 'Disponível' }, master.token)
+  const userSession = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
+  let state = await demoRequest<{ vehicles: Record<string, any>[] }>('/state', 'GET', undefined, userSession.token)
+  assert.equal(state.vehicles.find(item => item.id === vehicle.id)?.model, 'Scooter CRUD')
+
+  await demoRequest(`/admin/vehicles/${vehicle.id}`, 'PATCH', { model: 'Scooter CRUD Pro', status: 'Em operação' }, master.token)
+  state = await demoRequest('/state', 'GET', undefined, userSession.token)
+  assert.equal(state.vehicles.find(item => item.id === vehicle.id)?.model, 'Scooter CRUD Pro')
+
+  await demoRequest(`/admin/vehicles/${vehicle.id}`, 'DELETE', undefined, master.token)
+  state = await demoRequest('/state', 'GET', undefined, userSession.token)
+  assert.equal(state.vehicles.some(item => item.id === vehicle.id), false)
+})
+
+test('MASTER can create, edit and delete a user account', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const created = await demoRequest<User>('/admin/associates', 'POST', { name: 'Usuário CRUD', username: 'usuariocrud', email: 'crud@gomove.com.br', password: 'segura123', status: 'ACTIVE' }, master.token)
+  const session = await demoRequest<{ user: User }>('/auth/login', 'POST', { username: 'usuariocrud', password: 'segura123' })
+  assert.equal(session.user.id, created.id)
+
+  const updated = await demoRequest<User>(`/admin/associates/${created.id}`, 'PATCH', { ...created, name: 'Usuário Atualizado', email: 'atualizado@gomove.com.br' }, master.token)
+  assert.equal(updated.name, 'Usuário Atualizado')
+
+  await demoRequest(`/admin/associates/${created.id}`, 'DELETE', undefined, master.token)
+  await assert.rejects(() => demoRequest('/auth/login', 'POST', { username: 'usuariocrud', password: 'segura123' }), /inválidos/)
+})
+
+test('all MASTER operational collections support integrated create, update and delete', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const userSession = await demoRequest<{ token: string; user: User }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
+  const owner = userSession.user.id
+  const cases = [
+    ['investments', { userId: owner, pack: 'Plano CRUD', amount: 1000, profit: 0, days: 0, date: '31/07/2026', status: 'Pendente' }],
+    ['orders', { userId: owner, description: 'Pedido CRUD', quantity: 1, total: 99, date: '31/07/2026', status: 'Processando' }],
+    ['invoices', { userId: owner, description: 'Fatura CRUD', amount: 199, remaining: 199, due: '10/08/2026', status: 'Pendente' }],
+    ['withdrawals', { userId: owner, amount: 50, method: 'PIX', account: 'teste@pix', date: '31/07/2026', status: 'Pendente' }],
+    ['tickets', { userId: owner, subject: 'Ticket CRUD', department: 'Atendimento', category: 'Teste', priority: 'Média', status: 'Aberto' }],
+  ] as const
+
+  for (const [collection, payload] of cases) {
+    const created = await demoRequest<Record<string, any>>(`/admin/${collection}`, 'POST', payload, master.token)
+    const updated = await demoRequest<Record<string, any>>(`/admin/${collection}/${created.id}`, 'PATCH', { status: 'Atualizado' }, master.token)
+    assert.equal(updated.status, 'Atualizado')
+    const state = await demoRequest<Record<string, Record<string, any>[]>>('/state', 'GET', undefined, userSession.token)
+    assert.equal(state[collection].some(item => item.id === created.id), true)
+    await demoRequest(`/admin/${collection}/${created.id}`, 'DELETE', undefined, master.token)
+    const after = await demoRequest<Record<string, Record<string, any>[]>>('/state', 'GET', undefined, userSession.token)
+    assert.equal(after[collection].some(item => item.id === created.id), false)
+  }
+})

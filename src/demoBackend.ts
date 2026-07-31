@@ -40,10 +40,10 @@ export function createDemoDatabase(): DemoDatabase {
   return {
     users,
     vehicles: [
-      { id: 'VEI-1248', plate: 'GOM-1248', model: 'Scooter Urban E2', category: 'Scooter', status: 'Em operação', battery: 78, driver: 'Matheus Oliveira', location: 'São Paulo - SP' },
+      { id: 'VEI-1248', userId: 'usr-matheus', plate: 'GOM-1248', model: 'Scooter Urban E2', category: 'Scooter', status: 'Em operação', battery: 78, driver: 'Matheus Oliveira', location: 'São Paulo - SP' },
       { id: 'VEI-0931', plate: 'GOM-0931', model: 'GoMove SUV E', category: 'Automóvel', status: 'Disponível', battery: 96, driver: '—', location: 'Barueri - SP' },
-      { id: 'VEI-0712', plate: 'GOM-0712', model: 'Scooter Cargo', category: 'Scooter', status: 'Manutenção', battery: 31, driver: 'Ana Silva', location: 'Osasco - SP' },
-      { id: 'VEI-0455', plate: 'GOM-0455', model: 'GoMove Compact', category: 'Automóvel', status: 'Em operação', battery: 84, driver: 'Camila Rocha', location: 'São Paulo - SP' },
+      { id: 'VEI-0712', userId: 'usr-ana', plate: 'GOM-0712', model: 'Scooter Cargo', category: 'Scooter', status: 'Manutenção', battery: 31, driver: 'Ana Silva', location: 'Osasco - SP' },
+      { id: 'VEI-0455', userId: 'usr-camila', plate: 'GOM-0455', model: 'GoMove Compact', category: 'Automóvel', status: 'Em operação', battery: 84, driver: 'Camila Rocha', location: 'São Paulo - SP' },
     ],
     investments: [
       { id: 'ATV-441', userId: 'usr-matheus', date: '15/03/2026', pack: 'Scooter Performance', amount: 8500, amountCents: 850000, profit: 1278.34, days: 138, status: 'Ativo' },
@@ -109,6 +109,11 @@ function currentUser(db: DemoDatabase, token: string | null) {
   return db.users.find(user => user.username === username) ?? null
 }
 
+function publicUser(user: User & { demoPassword?: string }): User {
+  const { demoPassword: _password, ...safe } = user
+  return safe
+}
+
 function paged<T>(items: T[]) {
   return { items, page: 1, pageSize: items.length || 20, total: items.length }
 }
@@ -131,7 +136,7 @@ function descendants(db: DemoDatabase, rootId: string) {
 function tree(db: DemoDatabase, userId: string, depth: number): TreeUser {
   const user = db.users.find(item => item.id === userId)
   if (!user) throw new Error('Usuário não encontrado')
-  return { ...user, children: depth > 0 ? db.users.filter(item => item.sponsorId === userId).map(item => tree(db, item.id, depth - 1)) : [] }
+  return { ...publicUser(user), children: depth > 0 ? db.users.filter(item => item.sponsorId === userId).map(item => tree(db, item.id, depth - 1)) : [] }
 }
 
 function audit(db: DemoDatabase, actorId: string, action: string, targetType: string, targetId: string, details: Record<string, any> = {}) {
@@ -157,7 +162,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (!user || expectedPassword !== body?.password || user.status !== 'ACTIVE') {
       throw Object.assign(new Error('Usuário ou senha inválidos'), { status: 401 })
     }
-    return { token: `demo:${user.username}`, user } as T
+    return { token: `demo:${user.username}`, user: publicUser(user) } as T
   }
 
   if (method === 'GET' && route.startsWith('/public/invites/')) {
@@ -175,29 +180,29 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     db.users.push(user)
     audit(db, user.id, 'REGISTER', 'USER', user.id, { sponsorId: sponsor.id })
     save(db)
-    return { user } as T
+    return { user: publicUser(user) } as T
   }
 
   const user = requireUser(db, token)
   const isAdmin = user.role === 'ADMIN_MASTER'
   if (route.startsWith('/admin/') && !isAdmin) throw Object.assign(new Error('Acesso administrativo obrigatório'), { status: 403 })
-  if (method === 'GET' && route === '/auth/me') return { user } as T
+  if (method === 'GET' && route === '/auth/me') return { user: publicUser(user) } as T
 
   if (method === 'GET' && route === '/state') {
     const owned = (rows: Row[]) => rows.filter(row => !row.userId || row.userId === user.id)
-    return { vehicles: db.vehicles, investments: owned(db.investments), orders: owned(db.orders), invoices: owned(db.invoices), transactions: owned(db.transactions), withdrawals: owned(db.withdrawals), tickets: owned(db.tickets), cart: owned(db.cart), profile: db.profiles[user.id] ?? { name: user.name, email: user.email } } as T
+    return { vehicles: owned(db.vehicles), investments: owned(db.investments), orders: owned(db.orders), invoices: owned(db.invoices), transactions: owned(db.transactions), withdrawals: owned(db.withdrawals), tickets: owned(db.tickets), cart: owned(db.cart), profile: db.profiles[user.id] ?? { name: user.name, email: user.email } } as T
   }
 
   const ids = descendants(db, user.id)
   if (method === 'GET' && route === '/network/summary') return { directs: db.users.filter(item => item.sponsorId === user.id).length, networkSize: ids.size - 1, activeNetwork: db.users.filter(item => ids.has(item.id) && item.status === 'ACTIVE').length - 1, pendingDirects: db.users.filter(item => item.sponsorId === user.id && item.status === 'PENDING').length } as T
-  if (method === 'GET' && route === '/network/directs') return paged(db.users.filter(item => item.sponsorId === user.id)) as T
+  if (method === 'GET' && route === '/network/directs') return paged(db.users.filter(item => item.sponsorId === user.id).map(publicUser)) as T
   if (method === 'GET' && route === '/network/tree') return tree(db, user.id, Number(url.searchParams.get('depth') ?? 5)) as T
   if (method === 'GET' && route === '/network/unilevel') {
     let frontier = [user.id]
     const rows: Array<User & { level: number }> = []
     for (let level = 1; level <= Number(url.searchParams.get('depth') ?? 10); level += 1) {
       const next = db.users.filter(item => item.sponsorId && frontier.includes(item.sponsorId))
-      rows.push(...next.map(item => ({ ...item, level })))
+      rows.push(...next.map(item => ({ ...publicUser(item), level })))
       frontier = next.map(item => item.id)
     }
     return rows as T
@@ -207,7 +212,54 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'GET' && route === '/admin/dashboard') {
     return { users: db.users.length, active: db.users.filter(item => item.status === 'ACTIVE').length, pending: db.users.filter(item => item.status === 'PENDING').length, vehicles: db.vehicles.length, activeVehicles: db.vehicles.filter(item => item.status === 'Em operação').length, revenue: db.invoices.filter(item => item.status === 'Pago').reduce((sum, item) => sum + item.amount, 0), pendingWithdrawals: db.withdrawals.filter(item => item.status === 'Pendente').length, openTickets: db.tickets.filter(item => item.status !== 'Resolvido').length, bonusPendingCents: db.bonusEntries.filter(item => item.status === 'PENDING').reduce((sum, item) => sum + item.amountCents, 0) } as T
   }
-  if (method === 'GET' && route === '/admin/associates') return paged(db.users.filter(item => item.role === 'ASSOCIATE')) as T
+  if (method === 'GET' && route === '/admin/associates') return paged(db.users.filter(item => item.role === 'ASSOCIATE').map(item => ({ ...publicUser(item), phone: db.profiles[item.id]?.phone ?? '' }))) as T
+
+  if (method === 'POST' && route === '/admin/associates') {
+    const username = String(body?.username ?? '').trim().toLowerCase()
+    const email = String(body?.email ?? '').trim().toLowerCase()
+    const sponsor = db.users.find(item => item.id === body?.sponsorId) ?? db.users.find(item => item.role === 'ADMIN_MASTER')
+    if (!body?.name?.trim() || username.length < 3 || !email.includes('@') || String(body?.password ?? '').length < 6 || !sponsor) throw new Error('Preencha nome, usuário, e-mail, senha e patrocinador válidos')
+    if (db.users.some(item => item.username.toLowerCase() === username || item.email?.toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
+    const account: User & { demoPassword: string } = { id: id('USR'), name: body.name.trim(), username, email, role: 'ASSOCIATE', status: ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : 'PENDING', sponsorId: sponsor.id, inviteCode: `${username}${Math.floor(10 + Math.random() * 90)}`, demoPassword: body.password }
+    db.users.push(account)
+    db.profiles[account.id] = { name: account.name, email: account.email, phone: body.phone ?? '', country: 'Brasil' }
+    audit(db, user.id, 'RECORD_CREATE', 'USER', account.id, { sponsorId: account.sponsorId, status: account.status })
+    save(db)
+    return publicUser(account) as T
+  }
+
+  const associateCrud = route.match(/^\/admin\/associates\/([^/]+)$/)
+  if (associateCrud && method === 'PATCH') {
+    const target = db.users.find(item => item.id === associateCrud[1]) as (User & { demoPassword?: string }) | undefined
+    if (!target || target.role !== 'ASSOCIATE') throw new Error('Usuário não encontrado')
+    const requestedSponsorId = body.sponsorId === null ? db.users.find(item => item.role === 'ADMIN_MASTER')?.id : body.sponsorId
+    const username = String(body?.username ?? target.username).trim().toLowerCase()
+    const email = String(body?.email ?? target.email ?? '').trim().toLowerCase()
+    if (!body?.name?.trim() || username.length < 3 || !email.includes('@')) throw new Error('Nome, usuário e e-mail são obrigatórios')
+    if (db.users.some(item => item.id !== target.id && (item.username.toLowerCase() === username || item.email?.toLowerCase() === email))) throw new Error('Usuário ou e-mail já cadastrado')
+    if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId) || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador inválido')
+    const previousName = target.name
+    Object.assign(target, { name: body.name.trim(), username, email, status: ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : target.status, sponsorId: requestedSponsorId ?? target.sponsorId })
+    if (body.password) { if (String(body.password).length < 6) throw new Error('A senha deve ter ao menos 6 caracteres'); target.demoPassword = body.password }
+    db.profiles[target.id] = { ...(db.profiles[target.id] ?? {}), name: target.name, email: target.email, phone: body.phone ?? db.profiles[target.id]?.phone ?? '' }
+    db.vehicles.filter(item => item.userId === target.id || item.driver === previousName).forEach(item => { item.userId = target.id; item.driver = target.name })
+    audit(db, user.id, 'RECORD_UPDATE', 'USER', target.id, { name: target.name, username, email, status: target.status, sponsorId: target.sponsorId })
+    save(db)
+    return publicUser(target) as T
+  }
+  if (associateCrud && method === 'DELETE') {
+    const target = db.users.find(item => item.id === associateCrud[1])
+    if (!target || target.role !== 'ASSOCIATE') throw new Error('Usuário não encontrado')
+    db.users.filter(item => item.sponsorId === target.id).forEach(item => { item.sponsorId = target.sponsorId })
+    for (const key of ['investments', 'orders', 'invoices', 'transactions', 'withdrawals', 'tickets', 'cart'] as const) db[key] = db[key].filter(item => item.userId !== target.id)
+    db.vehicles.filter(item => item.userId === target.id).forEach(item => { delete item.userId; item.driver = '—' })
+    db.bonusEntries = db.bonusEntries.filter(item => item.userId !== target.id)
+    delete db.profiles[target.id]
+    audit(db, user.id, 'RECORD_DELETE', 'USER', target.id, { username: target.username })
+    db.users = db.users.filter(item => item.id !== target.id)
+    save(db)
+    return { id: target.id } as T
+  }
   if (method === 'GET' && route === '/admin/network/tree') return tree(db, url.searchParams.get('rootUserId') || 'usr-admin', Number(url.searchParams.get('depth') ?? 5)) as T
   if (method === 'GET' && route === '/admin/commission-rules') return paged(db.commissionRules) as T
   if (method === 'GET' && route === '/admin/bonus-entries') return paged(db.bonusEntries) as T
@@ -215,6 +267,20 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
 
   const adminCollection = route.match(/^\/admin\/(vehicles|investments|orders|invoices|withdrawals|tickets)$/)?.[1] as keyof DemoDatabase | undefined
   if (method === 'GET' && adminCollection) return paged(db[adminCollection] as Row[]) as T
+  if (method === 'POST' && adminCollection) {
+    const requiresOwner = adminCollection !== 'vehicles'
+    const owner = body?.userId ? db.users.find(item => item.id === body.userId && item.role === 'ASSOCIATE') : undefined
+    if (requiresOwner && !owner) throw new Error('Selecione uma conta de usuário válida')
+    const prefixes: Record<string, string> = { vehicles: 'VEI', investments: 'ATV', orders: 'PED', invoices: 'INV', withdrawals: 'SAQ', tickets: 'TK' }
+    const item: Row = { ...body, id: id(prefixes[adminCollection]), createdAt: today() }
+    if (!item.date && adminCollection !== 'vehicles' && adminCollection !== 'invoices') item.date = new Date().toLocaleDateString('pt-BR')
+    if (adminCollection === 'vehicles') item.driver = owner?.name ?? '—'
+    if (adminCollection === 'investments') item.amountCents = Math.round(Number(item.amount || 0) * 100)
+    ;(db[adminCollection] as Row[]).unshift(item)
+    audit(db, user.id, 'RECORD_CREATE', String(adminCollection).toUpperCase(), item.id, item)
+    save(db)
+    return item as T
+  }
 
   const associateStatus = route.match(/^\/admin\/associates\/([^/]+)\/status$/)
   if (method === 'PATCH' && associateStatus) {
@@ -284,10 +350,22 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const collection = db[adminPatch[1] as keyof DemoDatabase] as Row[]
     const item = collection.find(row => row.id === adminPatch[2])
     if (!item) throw new Error('Registro não encontrado')
+    if (body?.userId && !db.users.some(account => account.id === body.userId && account.role === 'ASSOCIATE')) throw new Error('Usuário inválido')
     Object.assign(item, body, { id: item.id })
+    if (adminPatch[1] === 'vehicles') item.driver = db.users.find(account => account.id === item.userId)?.name ?? '—'
+    if (adminPatch[1] === 'investments') item.amountCents = Math.round(Number(item.amount || 0) * 100)
     audit(db, user.id, 'RECORD_UPDATE', adminPatch[1].toUpperCase(), item.id, body)
     save(db)
     return item as T
+  }
+  if (method === 'DELETE' && adminPatch) {
+    const collection = db[adminPatch[1] as keyof DemoDatabase] as Row[]
+    const item = collection.find(row => row.id === adminPatch[2])
+    if (!item) throw new Error('Registro não encontrado')
+    collection.splice(collection.findIndex(row => row.id === item.id), 1)
+    audit(db, user.id, 'RECORD_DELETE', adminPatch[1].toUpperCase(), item.id)
+    save(db)
+    return { id: item.id } as T
   }
 
   const userCollection = route.match(/^\/(investments|orders|withdrawals|tickets)$/)?.[1] as 'investments' | 'orders' | 'withdrawals' | 'tickets' | undefined
@@ -303,6 +381,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     db.profiles[user.id] = { ...(db.profiles[user.id] ?? {}), ...body }
     const account = db.users.find(item => item.id === user.id)
     if (account && body.name) account.name = body.name
+    if (account && body.email) account.email = body.email
     save(db)
     return db.profiles[user.id] as T
   }
