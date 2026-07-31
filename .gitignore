@@ -6,3 +6,7 @@ dist/
 *.local
 WhatsApp Image*.jpeg
 *.tsbuildinfo
+.claude/
+.codex/
+.codex-dev*.log
+output/
