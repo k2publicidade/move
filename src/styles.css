@@ -209,6 +209,7 @@ tbody tr:hover{background:rgba(184,230,0,.025)}
 @media(max-width:720px){.row-actions{width:100%}.row-actions .icon-btn{flex:1}.split-actions{display:flex}.finance-tabs{display:flex;width:100%}.finance-tabs button{flex:1;justify-content:center}.page-heading .primary-btn{width:100%}}
 
 /* User store */
+.product-card .primary-btn:hover{transform:translateY(-1px)}
 .store-catalog,.store-orders{min-width:0}
 .store-section-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 14px}
 .store-section-heading h2{margin:0;font:700 21px/1.2 'Barlow Condensed';letter-spacing:.01em;text-transform:uppercase}
