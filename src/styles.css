@@ -209,7 +209,8 @@ tbody tr:hover{background:rgba(184,230,0,.025)}
 @media(max-width:720px){.row-actions{width:100%}.row-actions .icon-btn{flex:1}.split-actions{display:flex}.finance-tabs{display:flex;width:100%}.finance-tabs button{flex:1;justify-content:center}.page-heading .primary-btn{width:100%}}
 
 /* User store */
-.product-card .primary-btn:hover{transform:translateY(-1px)}
+.product-card .primary-btn,.store-product-card .store-product-cta{width:100%;height:48px;min-height:48px;padding:0 18px;border:1px solid transparent;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;gap:9px;transform:none}
+.product-card .primary-btn:hover,.store-product-card .store-product-cta:hover{border-color:transparent;border-radius:10px;transform:translateY(-1px)}
 .store-catalog,.store-orders{min-width:0}
 .store-section-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 14px}
 .store-section-heading h2{margin:0;font:700 21px/1.2 'Barlow Condensed';letter-spacing:.01em;text-transform:uppercase}
