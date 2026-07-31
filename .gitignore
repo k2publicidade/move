@@ -9,4 +9,5 @@ WhatsApp Image*.jpeg
 .claude/
 .codex/
 .codex-dev*.log
+.dev-ui*.log
 output/
