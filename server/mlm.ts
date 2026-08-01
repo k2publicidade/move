@@ -3,16 +3,29 @@ export type RuleLevel = { level: number; bps: number }
 export type BonusLedgerEntry = { id: string; userId: string; amountCents: number; status: string; type: string; reversalOfId?: string; reason?: string; createdAt?: string; [key: string]: unknown }
 export type NetworkTree = MlmUser & { children: NetworkTree[] }
 
+export function validateCommissionLevels(input: unknown): RuleLevel[] {
+  if (!Array.isArray(input) || input.length === 0 || input.length > 20) throw new Error('Commission rule must have between 1 and 20 levels')
+  const levels = input.map((item: any) => ({ level: Number(item?.level), bps: Number(item?.bps) }))
+  if (levels.some(item => !Number.isInteger(item.level) || item.level < 1 || item.level > 20 || !Number.isInteger(item.bps) || item.bps < 1 || item.bps > 10000)) throw new Error('Commission levels and basis points are invalid')
+  if (new Set(levels.map(item => item.level)).size !== levels.length) throw new Error('Commission levels must be unique')
+  if (levels.reduce((sum, item) => sum + item.bps, 0) > 10000) throw new Error('Total commission cannot exceed 100%')
+  return levels.sort((a, b) => a.level - b.level)
+}
+
 export function buildNetworkTree(users: MlmUser[], rootId: string, depth: number) {
   const byId = new Map(users.map(user => [user.id, user]))
   const root = byId.get(rootId)
   if (!root) throw new Error('network root not found')
   const maxDepth = Math.max(0, Math.floor(depth))
-  const build = (user: MlmUser, level: number): NetworkTree => ({
-    ...user,
-    children: level < maxDepth ? users.filter(candidate => candidate.sponsorId === user.id).map(candidate => build(candidate, level + 1)) : [],
-  })
-  return build(root, 0)
+  const build = (user: MlmUser, level: number, path: Set<string>): NetworkTree => {
+    if (path.has(user.id)) throw new Error('network contains a sponsor cycle')
+    const nextPath = new Set(path).add(user.id)
+    return {
+      ...user,
+      children: level < maxDepth ? users.filter(candidate => candidate.sponsorId === user.id).map(candidate => build(candidate, level + 1, nextPath)) : [],
+    }
+  }
+  return build(root, 0, new Set())
 }
 
 export function transitionBonus(entry: BonusLedgerEntry, targetStatus: 'APPROVED' | 'CANCELLED'): BonusLedgerEntry {
@@ -31,10 +44,15 @@ export function createBonusReversal(entries: BonusLedgerEntry[], originalId: str
 }
 
 export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode: string; name: string }, id = crypto.randomUUID): MlmUser {
-  if (users.some(u => u.username.toLowerCase() === input.username.toLowerCase() || u.email.toLowerCase() === input.email.toLowerCase())) throw new Error('username or email already exists')
-  const sponsor = users.find(u => u.inviteCode.toLowerCase() === input.inviteCode.toLowerCase())
+  const username = input.username.trim().toLowerCase(), email = input.email.trim().toLowerCase(), name = input.name.trim()
+  if (username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || !name || !input.passwordHash) throw new Error('registration data is invalid')
+  if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
+  const sponsor = users.find(u => u.inviteCode.toLowerCase() === input.inviteCode.trim().toLowerCase())
   if (!sponsor || sponsor.status !== 'ACTIVE') throw new Error('active sponsor not found')
-  return { id: id(), username: input.username.trim(), email: input.email.trim().toLowerCase(), passwordHash: input.passwordHash, name: input.name.trim(), role: 'ASSOCIATE', status: 'PENDING', sponsorId: sponsor.id, inviteCode: `${input.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 14)}${Math.random().toString(36).slice(2, 6)}` }
+  const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'
+  let inviteCode = ''
+  do inviteCode = `${prefix}${Math.random().toString(36).slice(2, 8)}`; while (users.some(user => user.inviteCode.toLowerCase() === inviteCode.toLowerCase()))
+  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'PENDING', sponsorId: sponsor.id, inviteCode }
 }
 
 export function wouldCreateSponsorCycle(users: Pick<MlmUser, 'id' | 'sponsorId'>[], userId: string, sponsorId: string | null): boolean {
@@ -47,12 +65,17 @@ export function wouldCreateSponsorCycle(users: Pick<MlmUser, 'id' | 'sponsorId'>
 }
 
 export function calculateBonuses(users: MlmUser[], investorId: string, eventId: string, amountCents: number, levels: RuleLevel[]) {
-  const byId = new Map(users.map(u => [u.id, u])); const out: { userId: string; level: number; amountCents: number; idempotencyKey: string }[] = []
+  if (!Number.isInteger(amountCents) || amountCents <= 0 || !eventId.trim()) throw new Error('Commission event is invalid')
+  const byId = new Map(users.map(u => [u.id, u])), investor = byId.get(investorId)
+  if (!investor) throw new Error('Investor not found')
+  const rules = validateCommissionLevels(levels), byLevel = new Map(rules.map(rule => [rule.level, rule]))
+  const out: { userId: string; level: number; amountCents: number; idempotencyKey: string }[] = []
   let current = byId.get(investorId)
-  for (const rule of [...levels].sort((a, b) => a.level - b.level)) {
+  for (let level = 1; level <= rules[rules.length - 1].level; level += 1) {
     current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
     if (!current) break
-    if (current.status === 'ACTIVE') out.push({ userId: current.id, level: rule.level, amountCents: Math.floor(amountCents * rule.bps / 10000), idempotencyKey: `${eventId}:${current.id}:${rule.level}` })
+    const rule = byLevel.get(level)
+    if (rule && current.status === 'ACTIVE') out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), idempotencyKey: `${eventId}:${current.id}:${level}` })
   }
   return out
 }

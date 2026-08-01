@@ -31,6 +31,6 @@ Toda mutação administrativa gera uma entrada em `audit_logs`. As respostas de 
 1. Executar [`supabase/schema.sql`](../supabase/schema.sql) em um projeto novo.
 2. Criar o primeiro usuário no Supabase Auth e atualizar seu perfil para `ADMIN_MASTER`.
 3. Substituir a implementação do `ApiClient` por um adapter Supabase mantendo os mesmos DTOs.
-4. Migrar os IDs para UUID e importar dados na ordem: perfis, frota, investimentos, pedidos, faturas, transações, saques, tickets e bônus.
+4. Migrar os IDs para UUID e importar dados na ordem: perfis, frota, investimentos, pedidos, faturas, saques, tickets, regras, eventos de comissão, bônus e transações.
 5. Validar as políticas RLS com uma sessão MASTER e uma sessão ASSOCIATE antes de produção.
 

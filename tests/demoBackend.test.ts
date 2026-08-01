@@ -47,6 +47,86 @@ test('investment requires immediate payment through an accepted method', async (
   assert.equal(state.investments.filter(item => item.idempotencyKey === payload.idempotencyKey).length, 1)
 })
 
+test('investment confirmation generates idempotent unilevel bonuses and synchronizes the user ledger', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
+  const camila = users.items.find(item => item.username === 'camila')!
+  const matheus = users.items.find(item => item.username === 'matheus')!
+  const investment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Mobilidade Start', amount: 2500, status: 'Aguardando pagamento' }, master.token)
+  const confirmation = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
+  assert.equal(confirmation.idempotent, false)
+  assert.deepEqual(confirmation.bonuses.map(item => [item.level, item.amountCents]).sort((a, b) => a[0] - b[0]), [[1, 25000], [2, 12500], [3, 7500]])
+  const retry = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
+  assert.equal(retry.idempotent, true)
+  assert.equal(retry.event.id, confirmation.event.id)
+
+  const matheusBonus = confirmation.bonuses.find(item => item.userId === matheus.id)!
+  await demoRequest(`/admin/bonus-entries/${matheusBonus.id}/approve`, 'POST', {}, master.token)
+  const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
+  let state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
+  assert.equal(state.transactions.filter(item => item.bonusEntryId === matheusBonus.id).length, 1)
+  assert.equal(state.transactions.find(item => item.bonusEntryId === matheusBonus.id)?.amount, 125)
+
+  const reversal = await demoRequest<Record<string, any>>(`/admin/bonus-entries/${matheusBonus.id}/reverse`, 'POST', { reason: 'Teste de estorno auditável' }, master.token)
+  state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
+  assert.equal(state.transactions.find(item => item.bonusEntryId === reversal.id)?.amount, -125)
+  await assert.rejects(() => demoRequest(`/admin/bonus-entries/${matheusBonus.id}/reverse`, 'POST', { reason: 'Duplicado' }, master.token), /já estornado/)
+})
+
+test('commission rule CRUD validates percentages and preserves a single active rule', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  await assert.rejects(() => demoRequest('/admin/commission-rules', 'POST', { name: 'Inválida', levels: [{ level: 1, bps: 7000 }, { level: 2, bps: 4000 }] }, master.token), /100%/)
+  const created = await demoRequest<Record<string, any>>('/admin/commission-rules', 'POST', { name: 'Nova regra', active: true, levels: [{ level: 1, bps: 800 }] }, master.token)
+  const rules = await demoRequest<{ items: Record<string, any>[] }>('/admin/commission-rules', 'GET', undefined, master.token)
+  assert.equal(rules.items.filter(item => item.active).length, 1)
+  assert.equal(rules.items.find(item => item.id === created.id)?.active, true)
+  await assert.rejects(() => demoRequest(`/admin/commission-rules/${created.id}`, 'DELETE', undefined, master.token), /Desative/)
+  await demoRequest(`/admin/commission-rules/${created.id}`, 'PATCH', { active: false }, master.token)
+  await demoRequest(`/admin/commission-rules/${created.id}`, 'DELETE', undefined, master.token)
+})
+
+test('approved bonuses fund withdrawals and paid withdrawals debit the user ledger once', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
+  const matheus = users.items.find(item => item.username === 'matheus')!
+  const credit = await demoRequest<Record<string, any>>('/admin/bonus-entries/manual-credit', 'POST', { userId: matheus.id, amountCents: 20_000, reason: 'Crédito de teste' }, master.token)
+  await demoRequest(`/admin/bonus-entries/${credit.id}/approve`, 'POST', {}, master.token)
+  const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
+  const withdrawal = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: 'CPF' }, user.token)
+  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 1_000, method: 'PIX', account: 'CPF' }, user.token), /indisponível/)
+  await demoRequest(`/admin/withdrawals/${withdrawal.id}`, 'PATCH', { ...withdrawal, status: 'Pago' }, master.token)
+  await demoRequest(`/admin/withdrawals/${withdrawal.id}`, 'PATCH', { ...withdrawal, status: 'Pago' }, master.token)
+  const state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
+  assert.equal(state.transactions.filter(item => item.withdrawalId === withdrawal.id).length, 1)
+  assert.equal(state.transactions.find(item => item.withdrawalId === withdrawal.id)?.amount, -100)
+})
+
+test('accounts with financial history are blocked instead of destructively deleted', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
+  const matheus = users.items.find(item => item.username === 'matheus')!
+  await assert.rejects(() => demoRequest(`/admin/associates/${matheus.id}`, 'DELETE', undefined, master.token), /histórico financeiro/)
+})
+
+test('user unilevel view returns the complete network with stable generation levels', async () => {
+  localStorage.clear()
+  const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
+  const network = await demoRequest<Array<Record<string, any>>>('/network/unilevel?depth=10', 'GET', undefined, user.token)
+  assert.deepEqual(network.map(item => [item.username, item.level]), [['ana', 1], ['bruno', 1], ['camila', 2]])
+})
+
+test('MASTER cannot assign a new account to an inactive sponsor', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
+  const pendingSponsor = users.items.find(item => item.status === 'PENDING')!
+  await assert.rejects(() => demoRequest('/admin/associates', 'POST', { name: 'Conta inválida', username: 'invalidsponsor', email: 'invalidsponsor@gomove.local', password: 'segura123', sponsorId: pendingSponsor.id, status: 'PENDING' }, master.token), /patrocinador/i)
+})
+
 test('invited account remains pending until MASTER activation', async () => {
   localStorage.clear()
   await demoRequest('/public/register', 'POST', { name: 'Nova Pessoa', email: 'nova@gomove.com.br', username: 'nova', password: 'segura123', inviteCode: 'matheus01' })

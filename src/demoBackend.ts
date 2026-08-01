@@ -14,6 +14,7 @@ export interface DemoDatabase {
   cart: Row[]
   profiles: Record<string, Record<string, any>>
   commissionRules: CommissionRule[]
+  commissionEvents: Row[]
   bonusEntries: Bonus[]
   auditLogs: Row[]
 }
@@ -79,6 +80,7 @@ export function createDemoDatabase(): DemoDatabase {
       'usr-matheus': { name: 'Matheus Oliveira', email: 'matheus@gomove.com.br', phone: '(47) 99988-2040', birthdate: '1992-08-15', language: 'Português', country: 'Brasil', twoFactorLogin: false, twoFactorWithdraw: true, pixType: 'CPF' },
     },
     commissionRules: [{ id: 'rule-default', name: 'Unilevel padrão', eventType: 'INVESTMENT_CONFIRMED', active: true, levels: [{ level: 1, bps: 1000 }, { level: 2, bps: 500 }, { level: 3, bps: 300 }], createdAt: today() }],
+    commissionEvents: [],
     bonusEntries: [
       { id: 'BON-001', userId: 'usr-matheus', amountCents: 9250, status: 'APPROVED', type: 'UNILEVEL', reason: 'Bônus de indicação', level: 1, createdAt: today() },
       { id: 'BON-002', userId: 'usr-ana', amountCents: 25000, status: 'PENDING', type: 'UNILEVEL', reason: 'Investimento confirmado', level: 1, createdAt: today() },
@@ -133,6 +135,28 @@ function descendants(db: DemoDatabase, rootId: string) {
   return found
 }
 
+function validatedLevels(input: unknown) {
+  if (!Array.isArray(input) || input.length === 0 || input.length > 20) throw new Error('A regra deve possuir entre 1 e 20 níveis')
+  const levels = input.map((item: any) => ({ level: Number(item?.level), bps: Number(item?.bps) }))
+  if (levels.some(item => !Number.isInteger(item.level) || item.level < 1 || item.level > 20 || !Number.isInteger(item.bps) || item.bps < 1 || item.bps > 10000)) throw new Error('Níveis e percentuais inválidos')
+  if (new Set(levels.map(item => item.level)).size !== levels.length) throw new Error('Os níveis não podem se repetir')
+  if (levels.reduce((sum, item) => sum + item.bps, 0) > 10000) throw new Error('A comissão total não pode ultrapassar 100%')
+  return levels.sort((a, b) => a.level - b.level)
+}
+
+function calculateDemoBonuses(db: DemoDatabase, investorId: string, eventId: string, amountCents: number, input: unknown) {
+  const levels = validatedLevels(input), byLevel = new Map(levels.map(rule => [rule.level, rule])), byId = new Map(db.users.map(item => [item.id, item]))
+  let current = byId.get(investorId)
+  const rows: Array<{ userId: string; level: number; amountCents: number; idempotencyKey: string }> = []
+  for (let level = 1; level <= levels[levels.length - 1].level; level += 1) {
+    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
+    if (!current) break
+    const rule = byLevel.get(level)
+    if (rule && current.status === 'ACTIVE') rows.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), idempotencyKey: `${eventId}:${current.id}:${level}` })
+  }
+  return rows
+}
+
 function tree(db: DemoDatabase, userId: string, depth: number): TreeUser {
   const user = db.users.find(item => item.id === userId)
   if (!user) throw new Error('Usuário não encontrado')
@@ -145,7 +169,7 @@ function audit(db: DemoDatabase, actorId: string, action: string, targetType: st
 
 function requireUser(db: DemoDatabase, token: string | null) {
   const user = currentUser(db, token)
-  if (!user) throw Object.assign(new Error('Autenticação obrigatória'), { status: 401 })
+  if (!user || user.status !== 'ACTIVE') throw Object.assign(new Error('Sessão inválida ou conta inativa'), { status: 401 })
   return user
 }
 
@@ -217,7 +241,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'POST' && route === '/admin/associates') {
     const username = String(body?.username ?? '').trim().toLowerCase()
     const email = String(body?.email ?? '').trim().toLowerCase()
-    const sponsor = db.users.find(item => item.id === body?.sponsorId) ?? db.users.find(item => item.role === 'ADMIN_MASTER')
+    const sponsor = body?.sponsorId ? db.users.find(item => item.id === body.sponsorId && item.status === 'ACTIVE') : db.users.find(item => item.role === 'ADMIN_MASTER' && item.status === 'ACTIVE')
     if (!body?.name?.trim() || username.length < 3 || !email.includes('@') || String(body?.password ?? '').length < 6 || !sponsor) throw new Error('Preencha nome, usuário, e-mail, senha e patrocinador válidos')
     if (db.users.some(item => item.username.toLowerCase() === username || item.email?.toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
     const account: User & { demoPassword: string } = { id: id('USR'), name: body.name.trim(), username, email, role: 'ASSOCIATE', status: ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : 'PENDING', sponsorId: sponsor.id, inviteCode: `${username}${Math.floor(10 + Math.random() * 90)}`, demoPassword: body.password }
@@ -237,7 +261,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const email = String(body?.email ?? target.email ?? '').trim().toLowerCase()
     if (!body?.name?.trim() || username.length < 3 || !email.includes('@')) throw new Error('Nome, usuário e e-mail são obrigatórios')
     if (db.users.some(item => item.id !== target.id && (item.username.toLowerCase() === username || item.email?.toLowerCase() === email))) throw new Error('Usuário ou e-mail já cadastrado')
-    if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId) || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador inválido')
+    if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId && item.status === 'ACTIVE') || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador precisa estar ativo e não pode criar um ciclo')
     const previousName = target.name
     Object.assign(target, { name: body.name.trim(), username, email, status: ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : target.status, sponsorId: requestedSponsorId ?? target.sponsorId })
     if (body.password) { if (String(body.password).length < 6) throw new Error('A senha deve ter ao menos 6 caracteres'); target.demoPassword = body.password }
@@ -250,6 +274,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (associateCrud && method === 'DELETE') {
     const target = db.users.find(item => item.id === associateCrud[1])
     if (!target || target.role !== 'ASSOCIATE') throw new Error('Usuário não encontrado')
+    if (db.commissionEvents.some(event => event.investorId === target.id) || db.bonusEntries.some(entry => entry.userId === target.id) || db.investments.some(investment => investment.userId === target.id)) throw new Error('Conta com histórico financeiro não pode ser excluída; altere o status para Bloqueado')
     db.users.filter(item => item.sponsorId === target.id).forEach(item => { item.sponsorId = target.sponsorId })
     for (const key of ['investments', 'orders', 'invoices', 'transactions', 'withdrawals', 'tickets', 'cart'] as const) db[key] = db[key].filter(item => item.userId !== target.id)
     db.vehicles.filter(item => item.userId === target.id).forEach(item => { delete item.userId; item.driver = '—' })
@@ -295,7 +320,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   const associateSponsor = route.match(/^\/admin\/associates\/([^/]+)\/sponsor$/)
   if (method === 'PATCH' && associateSponsor) {
     const target = db.users.find(item => item.id === associateSponsor[1])
-    if (!target || !db.users.some(item => item.id === body?.sponsorId) || descendants(db, target.id).has(body.sponsorId)) throw new Error('Patrocinador inválido')
+    if (!target || !db.users.some(item => item.id === body?.sponsorId && item.status === 'ACTIVE') || descendants(db, target.id).has(body.sponsorId) || !String(body?.reason ?? '').trim()) throw new Error('Patrocinador inválido, inativo, cíclico ou sem justificativa')
     target.sponsorId = body.sponsorId
     audit(db, user.id, 'SPONSOR_CHANGE', 'USER', target.id, { sponsorId: body.sponsorId, reason: body.reason })
     save(db)
@@ -303,9 +328,12 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   }
 
   if (method === 'POST' && route === '/admin/commission-rules') {
-    const rule: CommissionRule = { id: id('REG'), name: body.name, eventType: 'INVESTMENT_CONFIRMED', active: false, levels: body.levels, createdAt: today() }
+    const name = String(body?.name ?? '').trim()
+    if (!name) throw new Error('Informe o nome da regra')
+    const rule: CommissionRule = { id: id('REG'), name, eventType: 'INVESTMENT_CONFIRMED', active: Boolean(body?.active), levels: validatedLevels(body?.levels), createdAt: today() }
+    if (rule.active) db.commissionRules.forEach(item => { item.active = false })
     db.commissionRules.push(rule)
-    audit(db, user.id, 'RULE_CREATE', 'RULE', rule.id)
+    audit(db, user.id, 'RULE_CREATE', 'RULE', rule.id, { levels: rule.levels, active: rule.active })
     save(db)
     return rule as T
   }
@@ -314,15 +342,35 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'PATCH' && rulePatch) {
     const rule = db.commissionRules.find(item => item.id === rulePatch[1])
     if (!rule) throw new Error('Regra não encontrada')
-    Object.assign(rule, body)
+    if (body?.name !== undefined) {
+      const name = String(body.name).trim()
+      if (!name) throw new Error('Informe o nome da regra')
+      rule.name = name
+    }
+    if (body?.levels !== undefined) rule.levels = validatedLevels(body.levels)
+    if (body?.active !== undefined) rule.active = Boolean(body.active)
     if (rule.active) db.commissionRules.filter(item => item.id !== rule.id).forEach(item => { item.active = false })
-    audit(db, user.id, 'RULE_UPDATE', 'RULE', rule.id)
+    audit(db, user.id, 'RULE_UPDATE', 'RULE', rule.id, { levels: rule.levels, active: rule.active })
     save(db)
     return rule as T
   }
 
+  if (method === 'DELETE' && rulePatch) {
+    const index = db.commissionRules.findIndex(item => item.id === rulePatch[1])
+    if (index < 0) throw new Error('Regra não encontrada')
+    const rule = db.commissionRules[index]
+    if (rule.active) throw new Error('Desative a regra antes de excluí-la')
+    if (db.commissionEvents.some(event => event.ruleSnapshot?.id === rule.id)) throw new Error('Regra utilizada em comissões não pode ser excluída')
+    db.commissionRules.splice(index, 1)
+    audit(db, user.id, 'RULE_DELETE', 'RULE', rule.id)
+    save(db)
+    return { id: rule.id } as T
+  }
+
   if (method === 'POST' && route === '/admin/bonus-entries/manual-credit') {
-    const entry: Bonus = { id: id('BON'), userId: body.userId, amountCents: body.amountCents, status: 'PENDING', type: 'MANUAL', reason: body.reason, createdAt: today() }
+    const recipient = db.users.find(item => item.id === body?.userId && item.status === 'ACTIVE')
+    if (!recipient || !Number.isInteger(body?.amountCents) || body.amountCents <= 0 || !String(body?.reason ?? '').trim()) throw new Error('Selecione uma conta ativa, valor e justificativa válidos')
+    const entry: Bonus = { id: id('BON'), userId: recipient.id, amountCents: body.amountCents, status: 'PENDING', type: 'MANUAL', reason: String(body.reason).trim(), createdAt: today() }
     db.bonusEntries.unshift(entry)
     audit(db, user.id, 'BONUS_MANUAL', 'BONUS', entry.id)
     save(db)
@@ -334,15 +382,46 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const entry = db.bonusEntries.find(item => item.id === bonusAction[1])
     if (!entry) throw new Error('Bônus não encontrado')
     if (bonusAction[2] === 'reverse') {
-      const reversal: Bonus = { id: id('BON'), userId: entry.userId, amountCents: -Math.abs(entry.amountCents), status: 'APPROVED', type: 'REVERSAL', reason: body.reason, reversalOfId: entry.id, createdAt: today() }
+      if (entry.status !== 'APPROVED' || entry.type === 'REVERSAL' || entry.reversalOfId) throw new Error('Somente bônus aprovados podem ser estornados')
+      if (!String(body?.reason ?? '').trim()) throw new Error('Informe a justificativa do estorno')
+      if (db.bonusEntries.some(item => item.reversalOfId === entry.id)) throw new Error('Bônus já estornado')
+      const reversal: Bonus = { id: id('BON'), userId: entry.userId, amountCents: -Math.abs(entry.amountCents), status: 'APPROVED', type: 'REVERSAL', reason: String(body.reason).trim(), reversalOfId: entry.id, createdAt: today() }
       db.bonusEntries.unshift(reversal)
+      db.transactions.unshift({ id: id('MOV'), userId: reversal.userId, bonusEntryId: reversal.id, date: new Date().toLocaleDateString('pt-BR'), description: 'Estorno de bônus aprovado', amount: reversal.amountCents / 100, status: 'Débito', createdAt: today() })
+      audit(db, user.id, 'BONUS_REVERSE', 'BONUS', entry.id, { reversalId: reversal.id, reason: reversal.reason })
       save(db)
       return reversal as T
     }
+    if (entry.status !== 'PENDING') throw new Error('Somente bônus pendentes podem ser aprovados ou cancelados')
     entry.status = bonusAction[2] === 'approve' ? 'APPROVED' : 'CANCELLED'
+    if (entry.status === 'APPROVED' && !db.transactions.some(item => item.bonusEntryId === entry.id)) db.transactions.unshift({ id: id('MOV'), userId: entry.userId, bonusEntryId: entry.id, date: new Date().toLocaleDateString('pt-BR'), description: entry.type === 'MANUAL' ? 'Crédito manual aprovado' : `Bônus ${entry.level ? `nível ${entry.level}` : 'de rede'} aprovado`, amount: entry.amountCents / 100, status: 'Crédito', createdAt: today() })
     audit(db, user.id, `BONUS_${bonusAction[2].toUpperCase()}`, 'BONUS', entry.id)
     save(db)
     return entry as T
+  }
+
+  const investmentConfirm = route.match(/^\/admin\/investments\/([^/]+)\/confirm$/)
+  if (method === 'POST' && investmentConfirm) {
+    const investment = db.investments.find(item => item.id === investmentConfirm[1])
+    if (!investment) throw new Error('Investimento não encontrado')
+    const existing = db.commissionEvents.find(event => event.investmentId === investment.id)
+    if (existing) return { event: existing, bonuses: db.bonusEntries.filter(item => item.eventId === existing.id), idempotent: true } as T
+    const investor = db.users.find(item => item.id === investment.userId && item.status === 'ACTIVE')
+    if (!investor || !Number.isInteger(investment.amountCents) || investment.amountCents <= 0) throw new Error('Investimento precisa estar vinculado a uma conta ativa e possuir valor válido')
+    const rule = db.commissionRules.find(item => item.active && item.eventType === 'INVESTMENT_CONFIRMED')
+    if (!rule) throw new Error('Ative uma regra de comissão antes da confirmação')
+    const levels = validatedLevels(rule.levels)
+    const event: Row = { id: id('EVT'), investmentId: investment.id, investorId: investor.id, amountCents: investment.amountCents, ruleSnapshot: { id: rule.id, name: rule.name, levels }, createdAt: today() }
+    db.commissionEvents.push(event)
+    for (const calculated of calculateDemoBonuses(db, investor.id, event.id, investment.amountCents, levels)) {
+      if (!db.bonusEntries.some(item => item.idempotencyKey === calculated.idempotencyKey)) db.bonusEntries.unshift({ id: id('BON'), ...calculated, eventId: event.id, investmentId: investment.id, status: 'PENDING', type: 'UNILEVEL', reason: `Comissão do investimento ${investment.id}`, createdAt: today() })
+    }
+    investment.paymentStatus = 'CONFIRMED'
+    investment.status = 'Ativo'
+    investment.confirmedAt = today()
+    audit(db, user.id, 'INVESTMENT_CONFIRM', 'INVESTMENT', investment.id, { eventId: event.id, ruleId: rule.id })
+    save(db)
+    return { event, bonuses: db.bonusEntries.filter(item => item.eventId === event.id), idempotent: false } as T
   }
 
   const adminPatch = route.match(/^\/admin\/(vehicles|investments|orders|invoices|withdrawals|tickets)\/([^/]+)$/)
@@ -351,9 +430,14 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const item = collection.find(row => row.id === adminPatch[2])
     if (!item) throw new Error('Registro não encontrado')
     if (body?.userId && !db.users.some(account => account.id === body.userId && account.role === 'ASSOCIATE')) throw new Error('Usuário inválido')
+    const previousStatus = item.status
     Object.assign(item, body, { id: item.id })
     if (adminPatch[1] === 'vehicles') item.driver = db.users.find(account => account.id === item.userId)?.name ?? '—'
     if (adminPatch[1] === 'investments') item.amountCents = Math.round(Number(item.amount || 0) * 100)
+    if (adminPatch[1] === 'withdrawals' && item.status === 'Pago' && previousStatus !== 'Pago' && !db.transactions.some(transaction => transaction.withdrawalId === item.id)) {
+      item.paidAt = new Date().toLocaleDateString('pt-BR')
+      db.transactions.unshift({ id: id('MOV'), userId: item.userId, withdrawalId: item.id, date: item.paidAt, description: `Saque ${item.id}`, amount: -Math.abs(Number(item.amount)), status: 'Débito', createdAt: today() })
+    }
     audit(db, user.id, 'RECORD_UPDATE', adminPatch[1].toUpperCase(), item.id, body)
     save(db)
     return item as T
@@ -379,6 +463,13 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
       if (existing) return existing as T
       body = { ...body, amountCents: planAmounts[body.pack] * 100, profit: 0, days: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentReference: id(body.paymentMethod) }
+    }
+    if (userCollection === 'withdrawals') {
+      const amount = Number(body?.amount)
+      const ledger = db.transactions.filter(item => item.userId === user.id).reduce((sum, item) => sum + Number(item.amount || 0), 0)
+      const reserved = db.withdrawals.filter(item => item.userId === user.id && ['Pendente', 'Em análise'].includes(item.status)).reduce((sum, item) => sum + Number(item.amount || 0), 0)
+      if (!Number.isFinite(amount) || amount < 50 || amount > ledger - reserved) throw new Error('Valor indisponível para saque')
+      body = { ...body, amount, method: 'PIX', status: 'Pendente', paidAt: '—' }
     }
     const prefix = { investments: 'ATV', orders: 'PED', withdrawals: 'SAQ', tickets: 'TK' }[userCollection]
     const item = { ...body, id: id(prefix), userId: user.id, date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }
