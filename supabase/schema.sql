@@ -46,6 +46,8 @@ create table public.investments (
   user_id uuid not null references public.profiles(id) on delete restrict,
   pack text not null, amount numeric(14,2) not null check (amount >= 0),
   profit numeric(14,2) not null default 0, contract_days integer not null default 0 check (contract_days >= 0),
+  payment_method text check (payment_method in ('BTC', 'USDT', 'USTD', 'PIX')),
+  payment_status text not null default 'PENDING', payment_reference text unique, idempotency_key text unique,
   status text not null default 'Pendente', contracted_at date not null default current_date,
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(), deleted_at timestamptz
 );
@@ -93,17 +95,34 @@ create table public.tickets (
 
 create table public.commission_rules (
   id uuid primary key default gen_random_uuid(), name text not null,
-  event_type text not null default 'INVESTMENT_CONFIRMED', levels jsonb not null,
+  event_type text not null default 'INVESTMENT_CONFIRMED', levels jsonb not null check (jsonb_typeof(levels) = 'array' and jsonb_array_length(levels) between 1 and 20),
   active boolean not null default false, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+
+create unique index commission_rules_one_active_event_idx on public.commission_rules(event_type) where active;
+
+create table public.commission_events (
+  id uuid primary key default gen_random_uuid(),
+  investment_id uuid not null unique references public.investments(id) on delete restrict,
+  investor_id uuid not null references public.profiles(id) on delete restrict,
+  amount_cents bigint not null check (amount_cents > 0),
+  rule_id uuid references public.commission_rules(id) on delete restrict,
+  rule_snapshot jsonb not null,
+  created_at timestamptz not null default now()
 );
 
 create table public.bonus_entries (
   id uuid primary key default gen_random_uuid(), user_id uuid not null references public.profiles(id) on delete restrict,
   investment_id uuid references public.investments(id) on delete set null,
-  amount_cents bigint not null, status text not null default 'PENDING', type text not null,
+  event_id uuid references public.commission_events(id) on delete restrict,
+  amount_cents bigint not null check (amount_cents <> 0), status text not null default 'PENDING', type text not null,
   level integer, reason text, reversal_of_id uuid references public.bonus_entries(id) on delete restrict,
   idempotency_key text unique, created_at timestamptz not null default now()
 );
+
+create unique index bonus_entries_one_reversal_idx on public.bonus_entries(reversal_of_id) where reversal_of_id is not null;
+alter table public.transactions add column bonus_entry_id uuid unique references public.bonus_entries(id) on delete restrict;
+alter table public.transactions add column withdrawal_id uuid unique references public.withdrawals(id) on delete restrict;
 
 create table public.audit_logs (
   id uuid primary key default gen_random_uuid(), actor_id uuid references public.profiles(id) on delete set null,
@@ -122,10 +141,27 @@ create index transactions_user_date_idx on public.transactions(user_id, occurred
 create index withdrawals_user_status_idx on public.withdrawals(user_id, status) where deleted_at is null;
 create index tickets_user_status_idx on public.tickets(user_id, status, created_at desc) where deleted_at is null;
 create index bonuses_user_status_idx on public.bonus_entries(user_id, status, created_at desc);
+create index commission_events_investor_idx on public.commission_events(investor_id, created_at desc);
 create index audit_target_idx on public.audit_logs(target_type, target_id, created_at desc);
 
 create or replace function public.set_updated_at() returns trigger language plpgsql as $$
 begin new.updated_at = now(); return new; end $$;
+
+create or replace function public.prevent_sponsor_cycle() returns trigger language plpgsql as $$
+declare cycle_found boolean;
+begin
+  if new.sponsor_id is null then return new; end if;
+  with recursive ancestry as (
+    select id, sponsor_id from public.profiles where id = new.sponsor_id
+    union all
+    select profile.id, profile.sponsor_id from public.profiles profile join ancestry on profile.id = ancestry.sponsor_id
+  )
+  select exists(select 1 from ancestry where id = new.id) into cycle_found;
+  if cycle_found then raise exception 'Sponsor relationship would create a cycle'; end if;
+  return new;
+end $$;
+
+create trigger profiles_prevent_sponsor_cycle before insert or update of sponsor_id on public.profiles for each row execute function public.prevent_sponsor_cycle();
 
 do $$ declare table_name text; begin
   foreach table_name in array array['profiles','vehicles','investments','orders','invoices','withdrawals','tickets','commission_rules'] loop
@@ -179,6 +215,7 @@ alter table public.transactions enable row level security;
 alter table public.withdrawals enable row level security;
 alter table public.tickets enable row level security;
 alter table public.commission_rules enable row level security;
+alter table public.commission_events enable row level security;
 alter table public.bonus_entries enable row level security;
 alter table public.audit_logs enable row level security;
 
@@ -198,5 +235,7 @@ create policy withdrawals_owner_create on public.withdrawals for insert with che
 create policy investments_owner_create on public.investments for insert with check (user_id = auth.uid());
 create policy orders_owner_create on public.orders for insert with check (user_id = auth.uid());
 create policy commission_rules_master on public.commission_rules for all using (public.is_master()) with check (public.is_master());
+create policy commission_events_master_read on public.commission_events for select using (public.is_master());
+create policy commission_events_master_insert on public.commission_events for insert with check (public.is_master());
 create policy audit_master_read on public.audit_logs for select using (public.is_master());
 create policy audit_master_insert on public.audit_logs for insert with check (public.is_master());

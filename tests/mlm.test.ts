@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import { strict as assert } from 'node:assert'
-import { buildNetworkTree, calculateBonuses, createBonusReversal, createRegistration, transitionBonus, wouldCreateSponsorCycle } from '../server/mlm.ts'
+import { buildNetworkTree, calculateBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionLevels, wouldCreateSponsorCycle } from '../server/mlm.ts'
 
 const users = [
   { id: 'admin', username: 'admin', email: 'admin@gomove.local', role: 'ADMIN_MASTER', status: 'ACTIVE', inviteCode: 'admin01', sponsorId: null },
@@ -34,12 +34,24 @@ test('bonus calculation idempotency key is stable per event recipient and level'
   assert.equal(one[0].idempotencyKey, two[0].idempotencyKey)
 })
 
+test('honors explicit level numbers without compressing gaps', () => {
+  const bonuses = calculateBonuses(users, 'c', 'event-gap', 100_00, [{ level: 2, bps: 500 }, { level: 3, bps: 300 }])
+  assert.deepEqual(bonuses.map(item => [item.userId, item.level, item.amountCents]), [['a', 2, 500], ['admin', 3, 300]])
+})
+
+test('rejects malformed, duplicated and excessive commission rules', () => {
+  assert.throws(() => validateCommissionLevels([{ level: 1, bps: 1000 }, { level: 1, bps: 500 }]), /unique/)
+  assert.throws(() => validateCommissionLevels([{ level: 0, bps: 1000 }]), /invalid/)
+  assert.throws(() => validateCommissionLevels([{ level: 1, bps: 7000 }, { level: 2, bps: 4000 }]), /100%/)
+})
+
 test('builds a bounded administrative subtree from the requested root', () => {
   const tree = buildNetworkTree(users, 'a', 1)
   assert.equal(tree.id, 'a')
   assert.deepEqual(tree.children.map(child => child.id), ['b'])
   assert.deepEqual(tree.children[0].children, [])
   assert.throws(() => buildNetworkTree(users, 'missing', 2), /not found/)
+  assert.throws(() => buildNetworkTree([{ ...users[0], sponsorId: 'a' }, users[1]], 'admin', 5), /cycle/)
 })
 
 test('transitions only pending bonuses and creates one immutable approved reversal', () => {
