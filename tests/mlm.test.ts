@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import { strict as assert } from 'node:assert'
-import { buildNetworkTree, calculateBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionLevels, wouldCreateSponsorCycle } from '../server/mlm.ts'
+import { buildNetworkTree, calculateBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionLevels, validateCommissionPlan, wouldCreateSponsorCycle } from '../server/mlm.ts'
 
 const users = [
   { id: 'admin', username: 'admin', email: 'admin@gomove.local', role: 'ADMIN_MASTER', status: 'ACTIVE', inviteCode: 'admin01', sponsorId: null },
@@ -23,9 +23,9 @@ test('prevents direct and indirect sponsor cycles', () => {
 })
 
 test('calculates unilevel bonuses in cents without compression', () => {
-  const bonuses = calculateBonuses(users, 'c', 'investment-1', 100_00, [{ level: 1, bps: 1000 }, { level: 2, bps: 500 }, { level: 3, bps: 300 }])
+  const bonuses = calculateBonuses(users, 'c', 'investment-1', 100_00, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
   // Cora is blocked and therefore earns nothing, but she remains level 0: levels are not compressed.
-  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.amountCents]), [['b', 1, 1000], ['a', 2, 500], ['admin', 3, 300]])
+  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.type, b.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 500], ['b', 1, 'UNILEVEL', 600], ['a', 2, 'UNILEVEL', 500]])
 })
 
 test('bonus calculation idempotency key is stable per event recipient and level', () => {
@@ -36,7 +36,12 @@ test('bonus calculation idempotency key is stable per event recipient and level'
 
 test('honors explicit level numbers without compressing gaps', () => {
   const bonuses = calculateBonuses(users, 'c', 'event-gap', 100_00, [{ level: 2, bps: 500 }, { level: 3, bps: 300 }])
-  assert.deepEqual(bonuses.map(item => [item.userId, item.level, item.amountCents]), [['a', 2, 500], ['admin', 3, 300]])
+  assert.deepEqual(bonuses.map(item => [item.userId, item.level, item.type, item.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 500], ['a', 2, 'UNILEVEL', 500]])
+})
+
+test('validates direct referral together with the unilevel percentages', () => {
+  assert.deepEqual(validateCommissionPlan([{ level: 1, bps: 600 }, { level: 2, bps: 500 }], 500), { directReferralBps: 500, levels: [{ level: 1, bps: 600 }, { level: 2, bps: 500 }] })
+  assert.throws(() => validateCommissionPlan([{ level: 1, bps: 9600 }], 500), /100%/)
 })
 
 test('rejects malformed, duplicated and excessive commission rules', () => {

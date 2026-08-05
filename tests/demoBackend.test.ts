@@ -31,32 +31,40 @@ test('user-created ticket is visible to MASTER and protected by role', async () 
   assert.equal(tickets.items[0].subject, 'Teste integrado')
 })
 
-test('investment requires immediate payment through an accepted method', async () => {
+test('investment creates an idempotent CoinPayments checkout', async () => {
   localStorage.clear()
   const session = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
-  await assert.rejects(() => demoRequest('/investments', 'POST', { pack: 'Mobilidade Start', amount: 2500 }, session.token), /forma de pagamento/)
-  const payload = { pack: 'Mobilidade Start', amount: 2500, paymentMethod: 'PIX', idempotencyKey: 'checkout-test-1' }
+  await assert.rejects(() => demoRequest('/investments', 'POST', { pack: 'Cotas GoMove', amount: 500 }, session.token), /Identificador idempotente/)
+  const payload = { pack: 'Cotas GoMove', amount: 500, preferredPaymentAsset: 'BTC', idempotencyKey: 'checkout-test-1' }
   const investment = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
   const retry = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
-  assert.equal(investment.paymentMethod, 'PIX')
+  assert.equal(investment.paymentMethod, 'CoinPayments')
+  assert.equal(investment.paymentAsset, 'BTC')
+  assert.equal(investment.paymentProvider, 'COINPAYMENTS')
   assert.equal(investment.paymentStatus, 'PENDING')
   assert.equal(investment.status, 'Aguardando pagamento')
-  assert.match(investment.paymentReference, /^PIX-/)
+  assert.match(investment.paymentReference, /^CP-/)
+  assert.equal(investment.paymentUrl, '/investments?demo-payment=pending')
   assert.equal(retry.id, investment.id)
   const state = await demoRequest<{ investments: Record<string, any>[] }>('/state', 'GET', undefined, session.token)
   assert.equal(state.investments.filter(item => item.idempotencyKey === payload.idempotencyKey).length, 1)
 })
 
-test('investment confirmation generates idempotent unilevel bonuses and synchronizes the user ledger', async () => {
+test('investment confirmation generates separate direct and unilevel bonuses idempotently', async () => {
   localStorage.clear()
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
   const camila = users.items.find(item => item.username === 'camila')!
   const matheus = users.items.find(item => item.username === 'matheus')!
-  const investment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Mobilidade Start', amount: 2500, status: 'Aguardando pagamento' }, master.token)
+  const investment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Cotas GoMove', amount: 2500, status: 'Aguardando pagamento' }, master.token)
   const confirmation = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
   assert.equal(confirmation.idempotent, false)
-  assert.deepEqual(confirmation.bonuses.map(item => [item.level, item.amountCents]).sort((a, b) => a[0] - b[0]), [[1, 25000], [2, 12500], [3, 7500]])
+  const totals = confirmation.bonuses.reduce<Record<string, number>>((result, item) => {
+    const key = `${item.type}:N${item.level}`
+    result[key] = (result[key] || 0) + item.amountCents
+    return result
+  }, {})
+  assert.deepEqual(totals, { 'DIRECT_REFERRAL:N1': 12500, 'UNILEVEL:N1': 15000, 'UNILEVEL:N2': 12500 })
   const retry = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
   assert.equal(retry.idempotent, true)
   assert.equal(retry.event.id, confirmation.event.id)
@@ -104,6 +112,38 @@ test('approved bonuses fund withdrawals and paid withdrawals debit the user ledg
   assert.equal(state.transactions.find(item => item.withdrawalId === withdrawal.id)?.amount, -100)
 })
 
+test('migrates an existing demo database to the current commission plan', async () => {
+  const legacy = createDemoDatabase()
+  delete legacy.commissionPlanVersion
+  legacy.commissionRules = [{ id: 'legacy-rule', name: 'Regra antiga', eventType: 'INVESTMENT_CONFIRMED', active: true, directReferralBps: 100, levels: [{ level: 1, bps: 1000 }] }]
+  localStorage.setItem('gomove-demo-database-v4', JSON.stringify(legacy))
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const rules = await demoRequest<{ items: Record<string, any>[] }>('/admin/commission-rules', 'GET', undefined, master.token)
+  const active = rules.items.find(item => item.active)
+  assert.equal(active.directReferralBps, 500)
+  assert.deepEqual(active.levels.map((item: Record<string, number>) => item.bps), [600, 500, 400, 300, 200, 100])
+})
+
+test('associate cap blocks excess bonus and confirmed quota upgrades to shareholder', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  let users = await demoRequest<Page<User>>('/admin/associates', 'GET', undefined, master.token)
+  const ana = users.items.find(user => user.username === 'ana')!
+
+  await demoRequest('/admin/bonus-entries/manual-credit', 'POST', { userId: ana.id, amountCents: 30_000, reason: 'Teste do teto do plano' }, master.token)
+  let bonuses = await demoRequest<Page<Record<string, any>>>('/admin/bonus-entries', 'GET', undefined, master.token)
+  const blocked = bonuses.items.find(entry => entry.userId === ana.id && entry.status === 'BLOCKED_UPGRADE')
+  assert.equal(blocked?.amountCents, 5_000)
+
+  const quota = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: ana.id, pack: 'Cotas GoMove', amount: 500, status: 'Aguardando pagamento' }, master.token)
+  await demoRequest(`/admin/investments/${quota.id}/confirm`, 'POST', {}, master.token)
+
+  users = await demoRequest<Page<User>>('/admin/associates', 'GET', undefined, master.token)
+  assert.equal(users.items.find(user => user.id === ana.id)?.membershipType, 'SHAREHOLDER')
+  bonuses = await demoRequest<Page<Record<string, any>>>('/admin/bonus-entries', 'GET', undefined, master.token)
+  assert.equal(bonuses.items.find(entry => entry.id === blocked?.id)?.status, 'PENDING')
+})
+
 test('accounts with financial history are blocked instead of destructively deleted', async () => {
   localStorage.clear()
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
@@ -136,6 +176,8 @@ test('invited account remains pending until MASTER activation', async () => {
   const associates = await demoRequest<Page<User>>('/admin/associates', 'GET', undefined, masterSession.token)
   const created = associates.items.find(user => user.username === 'nova')
   assert.ok(created)
+  await assert.rejects(() => demoRequest(`/admin/associates/${created.id}/status`, 'PATCH', { status: 'ACTIVE', reason: 'Cadastro validado' }, masterSession.token), /Plano de Associado/)
+  await demoRequest(`/admin/associates/${created.id}`, 'PATCH', { ...created, associatePlanStatus: 'ACTIVE' }, masterSession.token)
   await demoRequest(`/admin/associates/${created.id}/status`, 'PATCH', { status: 'ACTIVE', reason: 'Cadastro validado' }, masterSession.token)
   const session = await demoRequest<{ user: User }>('/auth/login', 'POST', { username: 'nova', password: 'segura123' })
   assert.equal(session.user.status, 'ACTIVE')
@@ -164,7 +206,7 @@ test('MASTER CRUD synchronizes fleet records with the linked user account', asyn
 test('MASTER can create, edit and delete a user account', async () => {
   localStorage.clear()
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
-  const created = await demoRequest<User>('/admin/associates', 'POST', { name: 'Usuário CRUD', username: 'usuariocrud', email: 'crud@gomove.com.br', password: 'segura123', status: 'ACTIVE' }, master.token)
+  const created = await demoRequest<User>('/admin/associates', 'POST', { name: 'Usuário CRUD', username: 'usuariocrud', email: 'crud@gomove.com.br', password: 'segura123', status: 'ACTIVE', associatePlanStatus: 'ACTIVE' }, master.token)
   const session = await demoRequest<{ user: User }>('/auth/login', 'POST', { username: 'usuariocrud', password: 'segura123' })
   assert.equal(session.user.id, created.id)
 
@@ -181,7 +223,7 @@ test('all MASTER operational collections support integrated create, update and d
   const userSession = await demoRequest<{ token: string; user: User }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
   const owner = userSession.user.id
   const cases = [
-    ['investments', { userId: owner, pack: 'Plano CRUD', amount: 1000, profit: 0, days: 0, date: '31/07/2026', status: 'Pendente' }],
+    ['investments', { userId: owner, pack: 'Cotas GoMove', amount: 1000, profit: 0, date: '31/07/2026', status: 'Pendente' }],
     ['orders', { userId: owner, description: 'Pedido CRUD', quantity: 1, total: 99, date: '31/07/2026', status: 'Processando' }],
     ['invoices', { userId: owner, description: 'Fatura CRUD', amount: 199, remaining: 199, due: '10/08/2026', status: 'Pendente' }],
     ['withdrawals', { userId: owner, amount: 50, method: 'PIX', account: 'teste@pix', date: '31/07/2026', status: 'Pendente' }],

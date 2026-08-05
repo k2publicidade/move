@@ -4,6 +4,9 @@ dist/
 .server.log
 .server.err.log
 *.local
+.env
+.env.*
+!.env.example
 WhatsApp Image*.jpeg
 *.tsbuildinfo
 .claude/

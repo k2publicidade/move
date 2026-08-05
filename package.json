@@ -12,7 +12,9 @@
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@coinpayments/sdk": "https://github.com/coinpaymentsnet/sdk/releases/download/1.0.0/coinpayments-sdk-javascript-1.0.0.tar.gz",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",

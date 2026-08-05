@@ -1,16 +1,14 @@
 export const demoState = {
   invoices: [
-    { id: 'INV-1084', due: '05/08/2026', description: 'Assinatura GoMove Pro', amount: 349, remaining: 349, status: 'Pendente' },
-    { id: 'INV-1031', due: '05/07/2026', description: 'Adesão Scooter Urban', amount: 890, remaining: 0, status: 'Pago' },
-    { id: 'INV-0978', due: '05/06/2026', description: 'Mensalidade de plataforma', amount: 129, remaining: 0, status: 'Pago' }
+    { id: 'INV-1084', due: '15/03/2026', description: 'Plano de Associado GoMove', amount: 55, remaining: 0, status: 'Pago' }
   ],
   orders: [
     { id: 'PED-2048', date: '28/07/2026', description: 'Capacete Urban Carbon', quantity: 1, total: 289, status: 'Em trânsito' },
     { id: 'PED-1984', date: '04/07/2026', description: 'Kit mobilidade GoMove', quantity: 1, total: 149, status: 'Entregue' }
   ],
   investments: [
-    { id: 'ATV-441', date: '15/03/2026', pack: 'Scooter Performance', amount: 8500, profit: 1278.34, days: 138, status: 'Ativo' },
-    { id: 'ATV-318', date: '08/01/2026', pack: 'Frota Essencial', amount: 5000, profit: 943.12, days: 204, status: 'Ativo' }
+    { id: 'ATV-441', date: '15/03/2026', pack: 'Cotas GoMove', amount: 8500, profit: 1278.34, status: 'Ativo' },
+    { id: 'ATV-318', date: '08/01/2026', pack: 'Cotas GoMove', amount: 5000, profit: 943.12, status: 'Ativo' }
   ],
   transactions: [
     { id: 'MOV-9812', date: '30/07/2026', description: 'Rendimento operacional', amount: 184.2, status: 'Crédito' },
