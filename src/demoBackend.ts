@@ -510,7 +510,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
       const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
       if (existing) return existing as T
-      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: 'COINPAYMENTS', paymentMethod: 'CoinPayments', paymentReference: id('CP'), coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }
+      const paymentAsset = ['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER'
+      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: 'COINPAYMENTS', paymentMethod: 'CoinPayments', paymentAsset, paymentReference: id('CP'), coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }
     }
     if (userCollection === 'withdrawals') {
       const amount = Number(body?.amount)

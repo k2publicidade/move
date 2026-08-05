@@ -35,10 +35,11 @@ test('investment creates an idempotent CoinPayments checkout', async () => {
   localStorage.clear()
   const session = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
   await assert.rejects(() => demoRequest('/investments', 'POST', { pack: 'Cotas GoMove', amount: 500 }, session.token), /Identificador idempotente/)
-  const payload = { pack: 'Cotas GoMove', amount: 500, idempotencyKey: 'checkout-test-1' }
+  const payload = { pack: 'Cotas GoMove', amount: 500, preferredPaymentAsset: 'BTC', idempotencyKey: 'checkout-test-1' }
   const investment = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
   const retry = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
   assert.equal(investment.paymentMethod, 'CoinPayments')
+  assert.equal(investment.paymentAsset, 'BTC')
   assert.equal(investment.paymentProvider, 'COINPAYMENTS')
   assert.equal(investment.paymentStatus, 'PENDING')
   assert.equal(investment.status, 'Aguardando pagamento')

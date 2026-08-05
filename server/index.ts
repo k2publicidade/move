@@ -206,7 +206,7 @@ app.post('/api/investments',auth,async(req,res)=>{
  let d=readDb(),investment=d.investments.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey)
  if(investment?.paymentUrl)return res.json(investment)
  if(investment?.paymentStatus==='INVOICE_CREATING')return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})
- if(!investment){investment={id:crypto.randomUUID(),userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),pack,amount,amountCents,profit:0,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:'COINPAYMENTS',paymentMethod:'CoinPayments',idempotencyKey};d.investments.unshift(investment)}
+ if(!investment){const paymentAsset=['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER';investment={id:crypto.randomUUID(),userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),pack,amount,amountCents,profit:0,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:'COINPAYMENTS',paymentMethod:'CoinPayments',paymentAsset,idempotencyKey};d.investments.unshift(investment)}
  else {investment.paymentStatus='INVOICE_CREATING';delete investment.paymentError}
  const targetInvestmentId=investment.id
  writeDb(d)

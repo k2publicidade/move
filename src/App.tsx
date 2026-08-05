@@ -1,6 +1,6 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import {
-  Activity, AlertCircle, BarChart3, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
+  Activity, AlertCircle, BarChart3, Bitcoin, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
   Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Pencil, Plus, RotateCcw, Search,
   Settings, ShieldCheck, ShoppingBag, TicketCheck, UserRound, UsersRound, Wallet,
   Trash2, WalletCards, Wrench, X,
@@ -186,26 +186,41 @@ function UserFleet({ session }: { session: Session }) {
   return <Page title="Minha mobilidade" subtitle="Acompanhe veículos, bateria e disponibilidade em tempo real."><ErrorBox error={error} />{data ? <div className="vehicle-grid">{vehicles.length ? vehicles.map(vehicle => <article className="vehicle-card" key={vehicle.id}><div className="vehicle-icon"><Car /></div><div><span>{vehicle.category}</span><h2>{vehicle.model}</h2><p>{vehicle.plate} · {vehicle.location}</p></div><div className="vehicle-stats"><span>Bateria <b>{vehicle.battery}%</b></span>{status(vehicle.status)}</div></article>) : <div className="empty-panel"><Car /><h2>Nenhum veículo vinculado</h2><p>Fale com a operação GoMove para ativar sua mobilidade.</p></div>}</div> : <Loader />}</Page>
 }
 
+const quotaPaymentOptions = [
+  { id: 'BTC', label: 'Bitcoin (BTC)', description: 'Pagamento com Bitcoin', icon: Bitcoin },
+  { id: 'USDT', label: 'Tether (USDT)', description: 'Stablecoin pareada ao dólar', icon: CircleDollarSign },
+  { id: 'OTHER', label: 'Outras criptomoedas', description: 'Escolha no checkout CoinPayments', icon: WalletCards },
+] as const
+type QuotaPaymentOption = typeof quotaPaymentOptions[number]['id']
+
 function UserInvestments({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
   const [amount, setAmount] = useState('500')
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const [checkoutKey, setCheckoutKey] = useState('')
+  const [paymentOption, setPaymentOption] = useState<QuotaPaymentOption>('BTC')
+  const [demoCheckout, setDemoCheckout] = useState<Row>()
+  const openCheckout = (event: FormEvent) => {
+    event.preventDefault(); setActionError(''); setDemoCheckout(undefined); setPaymentOption('BTC'); setCheckoutKey(crypto.randomUUID()); setCheckoutOpen(true)
+  }
   const invest = async (event: FormEvent) => {
     event.preventDefault()
     setBusy(true); setActionError('')
     try {
-      const investment = await api.post<Row>('/investments', { pack: 'Cotas GoMove', amount: Number(amount), idempotencyKey: crypto.randomUUID() })
+      const investment = await api.post<Row>('/investments', { pack: 'Cotas GoMove', amount: Number(amount), preferredPaymentAsset: paymentOption, idempotencyKey: checkoutKey })
       if (!investment.paymentUrl) throw new Error('O CoinPayments não retornou o link de pagamento')
       await load()
-      window.location.assign(investment.paymentUrl)
+      if (/^https?:\/\//i.test(investment.paymentUrl)) window.location.assign(investment.paymentUrl)
+      else setDemoCheckout(investment)
     }
     catch (reason: any) { setActionError(reason.message) } finally { setBusy(false) }
   }
   const participant = data?.business || {}
   const planActive = participant.associatePlanStatus === 'ACTIVE'
   const isShareholder = participant.membershipType === 'SHAREHOLDER'
-  return <Page title="Cotas GoMove" subtitle={isShareholder ? 'Amplie sua participação como Cotista.' : 'Adquira cotas para realizar o upgrade de Associado para Cotista.'}><ErrorBox error={error || actionError} /><section className="dashboard-split quota-section"><form className="form-panel" onSubmit={invest} aria-busy={busy}><span className="eyebrow">AQUISIÇÃO DE COTAS</span><h2>{isShareholder ? 'Adquirir novas cotas' : 'Evoluir para Cotista'}</h2><p>O Plano de Negócios exige aquisição mínima de {cents(SHAREHOLDER_MIN_QUOTA_CENTS)} e manutenção do Plano de Associado ativo.</p><label>Valor das cotas<input required min={SHAREHOLDER_MIN_QUOTA_CENTS / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} /></label><div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>Checkout seguro CoinPayments</b><small>A modalidade Cotista será ativada somente após a confirmação assinada do pagamento.</small></span></div><button className="primary-btn" disabled={busy || !planActive}>{busy ? 'Criando cobrança…' : 'Adquirir cotas'}</button>{!planActive && <small className="field-warning">Ative primeiro o Plano de Associado de {cents(ASSOCIATE_PLAN_PRICE_CENTS)}.</small>}</form><div className="panel business-rights"><h2>Direitos após o upgrade</h2><div><Check aria-hidden="true" /><span><b>Participação nos resultados financeiros</b><small>Direito exclusivo da modalidade Cotista.</small></span></div><div><Check aria-hidden="true" /><span><b>Bonificações sem o teto de R$ 500,00</b><small>Valores bloqueados são liberados após a confirmação do upgrade.</small></span></div><div><Check aria-hidden="true" /><span><b>Indicações diretas e indiretas</b><small>O desenvolvimento da rede continua normalmente.</small></span></div></div></section><h2 className="section-title">Minhas aquisições</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PRODUTO"], ["amount", "VALOR", row => brl(row.amount)], ["paymentMethod", "PAGAMENTO", row => row.paymentMethod || '—'], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}</Page>
+  return <Page title="Cotas GoMove" subtitle={isShareholder ? 'Amplie sua participação como Cotista.' : 'Adquira cotas para realizar o upgrade de Associado para Cotista.'}><ErrorBox error={error || actionError} /><section className="dashboard-split quota-section"><form className="form-panel" onSubmit={openCheckout}><span className="eyebrow">AQUISIÇÃO DE COTAS</span><h2>{isShareholder ? 'Adquirir novas cotas' : 'Evoluir para Cotista'}</h2><p>O Plano de Negócios exige aquisição mínima de {cents(SHAREHOLDER_MIN_QUOTA_CENTS)} e manutenção do Plano de Associado ativo.</p><label>Valor das cotas<input required min={SHAREHOLDER_MIN_QUOTA_CENTS / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} /></label><div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>Checkout seguro CoinPayments</b><small>Na próxima etapa você escolherá como deseja pagar.</small></span></div><button className="primary-btn" disabled={!planActive}>Escolher pagamento</button>{!planActive && <small className="field-warning">Ative primeiro o Plano de Associado de {cents(ASSOCIATE_PLAN_PRICE_CENTS)}.</small>}</form><div className="panel business-rights"><h2>Direitos após o upgrade</h2><div><Check aria-hidden="true" /><span><b>Participação nos resultados financeiros</b><small>Direito exclusivo da modalidade Cotista.</small></span></div><div><Check aria-hidden="true" /><span><b>Bonificações sem o teto de R$ 500,00</b><small>Valores bloqueados são liberados após a confirmação do upgrade.</small></span></div><div><Check aria-hidden="true" /><span><b>Indicações diretas e indiretas</b><small>O desenvolvimento da rede continua normalmente.</small></span></div></div></section><h2 className="section-title">Minhas aquisições</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PRODUTO"], ["amount", "VALOR", row => brl(row.amount)], ["paymentMethod", "PAGAMENTO", row => row.paymentAsset ? `CoinPayments · ${row.paymentAsset}` : row.paymentMethod || '—'], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}{checkoutOpen && <Modal title={demoCheckout ? 'Pagamento iniciado' : 'Escolha como pagar'} close={() => !busy && setCheckoutOpen(false)}>{demoCheckout ? <div className="modal-form investment-checkout"><div className="checkout-summary"><span><small>Referência</small><b>{demoCheckout.paymentReference}</b></span><strong>{brl(demoCheckout.amount)}</strong></div><div className="payment-notice"><Check aria-hidden="true" /><span><b>Checkout de demonstração criado</b><small>Forma escolhida: {paymentOption === 'OTHER' ? 'Outras criptomoedas' : paymentOption}. Em produção, o checkout hospedado do CoinPayments será aberto em uma nova tela.</small></span></div><div className="modal-actions"><button className="primary-btn" onClick={() => setCheckoutOpen(false)}>Concluir</button></div></div> : <form className="modal-form investment-checkout" onSubmit={invest} aria-busy={busy}><div className="checkout-summary"><span><small>Aquisição</small><b>Cotas GoMove</b></span><strong>{brl(Number(amount))}</strong></div><fieldset><legend>Como você deseja pagar?</legend><div className="payment-method-grid">{quotaPaymentOptions.map(option => <label className={paymentOption === option.id ? 'selected' : ''} key={option.id}><input type="radio" name="paymentOption" value={option.id} checked={paymentOption === option.id} onChange={() => setPaymentOption(option.id)} /><option.icon aria-hidden="true" /><span><b>{option.label}</b><small>{option.description}</small></span><Check className="method-check" aria-hidden="true" /></label>)}</div></fieldset><div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>Pagamento processado pelo CoinPayments</b><small>A aquisição só será confirmada após o webhook assinado do provedor.</small></span></div><ErrorBox error={actionError} /><div className="modal-actions"><button type="button" className="outline-btn" disabled={busy} onClick={() => setCheckoutOpen(false)}>Cancelar</button><button className="primary-btn" disabled={busy}>{busy ? 'Criando cobrança…' : 'Continuar para pagamento'}</button></div></form>}</Modal>}</Page>
 }
 
 const products = [
