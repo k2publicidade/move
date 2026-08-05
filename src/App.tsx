@@ -114,11 +114,11 @@ function Invite() {
   return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" />{done ? <><h1>Cadastro recebido.</h1><p>Para ingressar como Associado, sua conta aguarda a confirmação do Plano de Associado no valor de {cents(ASSOCIATE_PLAN_PRICE_CENTS)} e a ativação pelo MASTER.</p><button type="button" className="primary-btn" onClick={() => go('/')}>Ir para o login</button></> : <><h1>Seja um Associado.</h1><p>{invite ? `Indicado por ${invite.sponsor.name}. Plano de Associado: ${cents(ASSOCIATE_PLAN_PRICE_CENTS)}.` : 'Verificando convite…'}</p><form onSubmit={submit} aria-busy={busy}><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-btn" disabled={!invite || busy}>{busy ? 'Criando conta…' : 'Solicitar adesão'}</button></form></>}</div></section></main>
 }
 
-const userLinks = ([
-  ['/dashboard', 'Visão geral', LayoutDashboard], ['/fleet', 'Minha mobilidade', Car], ['/investments', 'Cotas GoMove', BarChart3],
+const userLinks = [
+  ['/dashboard', 'Visão geral', LayoutDashboard], ['/investments', 'Cotas GoMove', BarChart3],
   ['/store', 'Loja e pedidos', ShoppingBag], ['/finance', 'Financeiro', Wallet], ['/network', 'Minha rede', Network],
   ['/support', 'Atendimento', Headphones], ['/profile', 'Meu perfil', UserRound],
-] as const).filter(([to]) => vehicleFeatureEnabled || to !== '/fleet')
+] as const
 const adminLinks = ([
   ['/admin', 'Dashboard MASTER', LayoutDashboard], ['/admin/associates', 'Usuários', UsersRound], ['/admin/fleet', 'Frota', Car],
   ['/admin/investments', 'Cotas', BarChart3], ['/admin/orders', 'Pedidos', Package], ['/admin/finance', 'Financeiro', Wallet],
@@ -156,10 +156,6 @@ function Router({ session, path }: { session: Session; path: string }) {
   }
   if (path.startsWith('/admin')) { go('/dashboard'); return <Loader /> }
   if (path === '/dashboard' || path === '/') return <UserDashboard session={session} />
-  if (path === '/fleet') {
-    if (!vehicleFeatureEnabled) { go('/dashboard'); return <Loader /> }
-    return <UserFleet session={session} />
-  }
   if (path === '/investments' || path === '/my-investments') return <UserInvestments session={session} />
   if (path === '/store' || path === '/orders') return <Store session={session} />
   if (['/finance', '/invoices', '/statement', '/withdraw', '/withdrawals', '/pay'].includes(path)) return <UserFinance session={session} />
@@ -178,12 +174,6 @@ function UserDashboard({ session }: { session: Session }) {
   const participant = state.business
   const isShareholder = participant.membershipType === 'SHAREHOLDER'
   return <Page title={`Olá, ${session.user.name.split(' ')[0]}.`} subtitle="Aqui está o resumo da sua participação na GoMove."><ErrorBox error={error} />{!isShareholder && <div className="business-plan-alert"><ShieldCheck aria-hidden="true" /><span><b>Você é Associado</b><small>Bonificações são limitadas a R$ 500,00. Adquira ao menos {cents(SHAREHOLDER_MIN_QUOTA_CENTS)} em cotas para evoluir a Cotista e liberar valores bloqueados.</small></span><button className="primary-btn" onClick={() => go('/investments')}>Fazer upgrade</button></div>}<section className="metric-grid"><Metric label="MODALIDADE" value={isShareholder ? 'Cotista' : 'Associado'} icon={UserRound} note={isShareholder ? 'Direito aos resultados financeiros' : 'Participação na rede'} /><Metric label="PLANO DE ASSOCIADO" value={participant.associatePlanStatus === 'ACTIVE' ? 'Ativo' : 'Pendente'} icon={ShieldCheck} note={cents(ASSOCIATE_PLAN_PRICE_CENTS)} /><Metric label="BÔNUS APROVADOS" value={cents(participant.approvedBonusCents)} icon={WalletCards} note={participant.blockedBonusCents ? `${cents(participant.blockedBonusCents)} bloqueados` : 'Diretos e indiretos'} /><Metric label={isShareholder ? 'COTAS CONFIRMADAS' : 'LIMITE DISPONÍVEL'} value={isShareholder ? brl(invested) : cents(participant.bonusCapRemainingCents)} icon={BarChart3} note={isShareholder ? `Resultados acumulados: ${brl(earnings)}` : 'Até o teto de R$ 500,00'} /></section><section className="dashboard-split"><div className="panel"><div className="panel-title"><h2>Movimentações recentes</h2><button className="text-btn" onClick={() => go('/finance')}>Ver financeiro</button></div>{state.transactions.slice(0, 5).map(item => <div className="activity-row" key={item.id}><i className={item.amount >= 0 ? 'positive' : 'negative'}><WalletCards /></i><span><b>{item.description}</b><small>{item.date}</small></span><strong className={item.amount >= 0 ? 'positive-text' : ''}>{brl(item.amount)}</strong></div>)}</div><div className="panel quick-panel"><h2>Acesso rápido</h2><button onClick={() => go('/investments')}><BarChart3 /><span><b>{isShareholder ? 'Adquirir novas cotas' : 'Evoluir para Cotista'}</b><small>Aquisição mínima de {cents(SHAREHOLDER_MIN_QUOTA_CENTS)}</small></span></button><button onClick={() => go('/network')}><Network /><span><b>Minha rede</b><small>Indicações diretas e indiretas</small></span></button><button onClick={() => go('/support')}><Headphones /><span><b>Solicitar suporte</b><small>Atendimento especializado</small></span></button></div></section></Page>
-}
-
-function UserFleet({ session }: { session: Session }) {
-  const { data, error } = usePortalState(session)
-  const vehicles = data?.vehicles.filter(item => item.userId === session.user.id || item.driver === session.user.name) || []
-  return <Page title="Minha mobilidade" subtitle="Acompanhe veículos, bateria e disponibilidade em tempo real."><ErrorBox error={error} />{data ? <div className="vehicle-grid">{vehicles.length ? vehicles.map(vehicle => <article className="vehicle-card" key={vehicle.id}><div className="vehicle-icon"><Car /></div><div><span>{vehicle.category}</span><h2>{vehicle.model}</h2><p>{vehicle.plate} · {vehicle.location}</p></div><div className="vehicle-stats"><span>Bateria <b>{vehicle.battery}%</b></span>{status(vehicle.status)}</div></article>) : <div className="empty-panel"><Car /><h2>Nenhum veículo vinculado</h2><p>Fale com a operação GoMove para ativar sua mobilidade.</p></div>}</div> : <Loader />}</Page>
 }
 
 const quotaPaymentOptions = [
