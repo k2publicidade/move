@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   ASSOCIATE_BONUS_CAP_CENTS,
+  DIRECT_REFERRAL_BPS,
   ASSOCIATE_PLAN_PRICE_CENTS,
   SHAREHOLDER_MIN_QUOTA_CENTS,
+  UNILEVEL_LEVELS,
   allocateBonusByBusinessPlan,
   canUpgradeToShareholder,
   isBonusEligibleParticipant,
@@ -24,6 +26,11 @@ test('business plan constants match the attached document', () => {
   assert.equal(ASSOCIATE_PLAN_PRICE_CENTS, 5_500)
   assert.equal(ASSOCIATE_BONUS_CAP_CENTS, 50_000)
   assert.equal(SHAREHOLDER_MIN_QUOTA_CENTS, 50_000)
+})
+
+test('commission plan uses 5% direct referral and six descending unilevel levels', () => {
+  assert.equal(DIRECT_REFERRAL_BPS, 500)
+  assert.deepEqual(UNILEVEL_LEVELS.map(item => item.bps), [600, 500, 400, 300, 200, 100])
 })
 
 test('associate bonus is split at the accumulated R$ 500 cap', () => {

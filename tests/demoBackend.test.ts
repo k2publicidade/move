@@ -50,7 +50,7 @@ test('investment creates an idempotent CoinPayments checkout', async () => {
   assert.equal(state.investments.filter(item => item.idempotencyKey === payload.idempotencyKey).length, 1)
 })
 
-test('investment confirmation generates idempotent unilevel bonuses and synchronizes the user ledger', async () => {
+test('investment confirmation generates separate direct and unilevel bonuses idempotently', async () => {
   localStorage.clear()
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
@@ -59,7 +59,12 @@ test('investment confirmation generates idempotent unilevel bonuses and synchron
   const investment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Cotas GoMove', amount: 2500, status: 'Aguardando pagamento' }, master.token)
   const confirmation = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
   assert.equal(confirmation.idempotent, false)
-  assert.deepEqual(confirmation.bonuses.map(item => [item.level, item.amountCents]).sort((a, b) => a[0] - b[0]), [[1, 25000], [2, 12500]])
+  const totals = confirmation.bonuses.reduce<Record<string, number>>((result, item) => {
+    const key = `${item.type}:N${item.level}`
+    result[key] = (result[key] || 0) + item.amountCents
+    return result
+  }, {})
+  assert.deepEqual(totals, { 'DIRECT_REFERRAL:N1': 12500, 'UNILEVEL:N1': 15000, 'UNILEVEL:N2': 12500 })
   const retry = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
   assert.equal(retry.idempotent, true)
   assert.equal(retry.event.id, confirmation.event.id)
@@ -105,6 +110,18 @@ test('approved bonuses fund withdrawals and paid withdrawals debit the user ledg
   const state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
   assert.equal(state.transactions.filter(item => item.withdrawalId === withdrawal.id).length, 1)
   assert.equal(state.transactions.find(item => item.withdrawalId === withdrawal.id)?.amount, -100)
+})
+
+test('migrates an existing demo database to the current commission plan', async () => {
+  const legacy = createDemoDatabase()
+  delete legacy.commissionPlanVersion
+  legacy.commissionRules = [{ id: 'legacy-rule', name: 'Regra antiga', eventType: 'INVESTMENT_CONFIRMED', active: true, directReferralBps: 100, levels: [{ level: 1, bps: 1000 }] }]
+  localStorage.setItem('gomove-demo-database-v4', JSON.stringify(legacy))
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const rules = await demoRequest<{ items: Record<string, any>[] }>('/admin/commission-rules', 'GET', undefined, master.token)
+  const active = rules.items.find(item => item.active)
+  assert.equal(active.directReferralBps, 500)
+  assert.deepEqual(active.levels.map((item: Record<string, number>) => item.bps), [600, 500, 400, 300, 200, 100])
 })
 
 test('associate cap blocks excess bonus and confirmed quota upgrades to shareholder', async () => {

@@ -1,6 +1,16 @@
 export const ASSOCIATE_PLAN_PRICE_CENTS = 5_500
 export const ASSOCIATE_BONUS_CAP_CENTS = 50_000
 export const SHAREHOLDER_MIN_QUOTA_CENTS = 50_000
+export const DIRECT_REFERRAL_BPS = 500
+export const UNILEVEL_LEVELS = [
+  { level: 1, bps: 600 },
+  { level: 2, bps: 500 },
+  { level: 3, bps: 400 },
+  { level: 4, bps: 300 },
+  { level: 5, bps: 200 },
+  { level: 6, bps: 100 },
+] as const
+export const COMMISSION_PLAN_VERSION = 2
 
 export type MembershipType = 'ASSOCIATE' | 'SHAREHOLDER'
 export type AssociatePlanStatus = 'PENDING' | 'ACTIVE' | 'INACTIVE'

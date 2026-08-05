@@ -1,9 +1,10 @@
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
-import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, SHAREHOLDER_MIN_QUOTA_CENTS, allocateBonusByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateBonusByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
 
 type Row = Record<string, any> & { id: string }
 
 export interface DemoDatabase {
+  commissionPlanVersion?: number
   users: User[]
   vehicles: Row[]
   investments: Row[]
@@ -79,7 +80,8 @@ export function createDemoDatabase(): DemoDatabase {
     profiles: {
       'usr-matheus': { name: 'Matheus Oliveira', email: 'matheus@gomove.com.br', phone: '(47) 99988-2040', birthdate: '1992-08-15', language: 'Português', country: 'Brasil', twoFactorLogin: false, twoFactorWithdraw: true, pixType: 'CPF' },
     },
-    commissionRules: [{ id: 'rule-default', name: 'Unilevel padrão', eventType: 'INVESTMENT_CONFIRMED', active: true, levels: [{ level: 1, bps: 1000 }, { level: 2, bps: 500 }, { level: 3, bps: 300 }], createdAt: today() }],
+    commissionPlanVersion: COMMISSION_PLAN_VERSION,
+    commissionRules: [{ id: 'rule-default-v2', name: 'Indicação direta + Unilevel GoMove', eventType: 'INVESTMENT_CONFIRMED', active: true, directReferralBps: DIRECT_REFERRAL_BPS, levels: UNILEVEL_LEVELS.map(level => ({ ...level })), createdAt: today() }],
     commissionEvents: [],
     bonusEntries: [
       { id: 'BON-001', userId: 'usr-matheus', amountCents: 9250, status: 'APPROVED', type: 'UNILEVEL', reason: 'Bônus de indicação', level: 1, createdAt: today() },
@@ -96,13 +98,22 @@ function normalizeBusinessPlan(db: DemoDatabase) {
     Object.assign(user, withBusinessPlanDefaults(user))
     if (inferredShareholder) user.membershipType = 'SHAREHOLDER'
   }
+  if (db.commissionPlanVersion !== COMMISSION_PLAN_VERSION) {
+    db.commissionRules.forEach(rule => { rule.active = false })
+    db.commissionRules.push({ id: 'rule-default-v2', name: 'Indicação direta + Unilevel GoMove', eventType: 'INVESTMENT_CONFIRMED', active: true, directReferralBps: DIRECT_REFERRAL_BPS, levels: UNILEVEL_LEVELS.map(level => ({ ...level })), createdAt: today() })
+    db.commissionPlanVersion = COMMISSION_PLAN_VERSION
+  }
   return db
 }
 
 export function loadDemoDatabase(): DemoDatabase {
   try {
     const stored = localStorage.getItem(databaseKey)
-    return normalizeBusinessPlan(stored ? { ...createDemoDatabase(), ...JSON.parse(stored) } : createDemoDatabase())
+    if (!stored) return normalizeBusinessPlan(createDemoDatabase())
+    const persisted = JSON.parse(stored)
+    const database = { ...createDemoDatabase(), ...persisted }
+    if (!Object.prototype.hasOwnProperty.call(persisted, 'commissionPlanVersion')) delete database.commissionPlanVersion
+    return normalizeBusinessPlan(database)
   } catch {
     return normalizeBusinessPlan(createDemoDatabase())
   }
@@ -154,15 +165,25 @@ function validatedLevels(input: unknown) {
   return levels.sort((a, b) => a.level - b.level)
 }
 
-function calculateDemoBonuses(db: DemoDatabase, investorId: string, eventId: string, amountCents: number, input: unknown) {
-  const levels = validatedLevels(input), byLevel = new Map(levels.map(rule => [rule.level, rule])), byId = new Map(db.users.map(item => [item.id, item]))
+function validatedPlan(levelsInput: unknown, directReferralBpsInput: unknown = DIRECT_REFERRAL_BPS) {
+  const levels = validatedLevels(levelsInput)
+  const directReferralBps = Number(directReferralBpsInput)
+  if (!Number.isInteger(directReferralBps) || directReferralBps < 1 || directReferralBps > 10000) throw new Error('Percentual de indicação direta inválido')
+  if (directReferralBps + levels.reduce((sum, item) => sum + item.bps, 0) > 10000) throw new Error('A comissão total não pode ultrapassar 100%')
+  return { directReferralBps, levels }
+}
+
+function calculateDemoBonuses(db: DemoDatabase, investorId: string, eventId: string, amountCents: number, levelsInput: unknown, directReferralBps = DIRECT_REFERRAL_BPS) {
+  const plan = validatedPlan(levelsInput, directReferralBps), levels = plan.levels, byLevel = new Map(levels.map(rule => [rule.level, rule])), byId = new Map(db.users.map(item => [item.id, item]))
   let current = byId.get(investorId)
-  const rows: Array<{ userId: string; level: number; amountCents: number; idempotencyKey: string }> = []
+  const rows: Array<{ userId: string; level: number; amountCents: number; type: 'DIRECT_REFERRAL' | 'UNILEVEL'; idempotencyKey: string }> = []
   for (let level = 1; level <= levels[levels.length - 1].level; level += 1) {
     current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
     if (!current) break
+    if (!isBonusEligibleParticipant(current)) continue
     const rule = byLevel.get(level)
-    if (rule && isBonusEligibleParticipant(current)) rows.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), idempotencyKey: `${eventId}:${current.id}:${level}` })
+    if (level === 1) rows.push({ userId: current.id, level, amountCents: Math.floor(amountCents * plan.directReferralBps / 10000), type: 'DIRECT_REFERRAL', idempotencyKey: `${eventId}:${current.id}:DIRECT_REFERRAL` })
+    if (rule) rows.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), type: 'UNILEVEL', idempotencyKey: `${eventId}:${current.id}:UNILEVEL:${level}` })
   }
   return rows
 }
@@ -362,7 +383,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'POST' && route === '/admin/commission-rules') {
     const name = String(body?.name ?? '').trim()
     if (!name) throw new Error('Informe o nome da regra')
-    const rule: CommissionRule = { id: id('REG'), name, eventType: 'INVESTMENT_CONFIRMED', active: Boolean(body?.active), levels: validatedLevels(body?.levels), createdAt: today() }
+    const plan = validatedPlan(body?.levels, body?.directReferralBps)
+    const rule: CommissionRule = { id: id('REG'), name, eventType: 'INVESTMENT_CONFIRMED', active: Boolean(body?.active), ...plan, createdAt: today() }
     if (rule.active) db.commissionRules.forEach(item => { item.active = false })
     db.commissionRules.push(rule)
     audit(db, user.id, 'RULE_CREATE', 'RULE', rule.id, { levels: rule.levels, active: rule.active })
@@ -379,7 +401,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       if (!name) throw new Error('Informe o nome da regra')
       rule.name = name
     }
-    if (body?.levels !== undefined) rule.levels = validatedLevels(body.levels)
+    if (body?.levels !== undefined || body?.directReferralBps !== undefined) Object.assign(rule, validatedPlan(body?.levels ?? rule.levels, body?.directReferralBps ?? rule.directReferralBps))
     if (body?.active !== undefined) rule.active = Boolean(body.active)
     if (rule.active) db.commissionRules.filter(item => item.id !== rule.id).forEach(item => { item.active = false })
     audit(db, user.id, 'RULE_UPDATE', 'RULE', rule.id, { levels: rule.levels, active: rule.active })
@@ -448,14 +470,14 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (investment.amountCents < SHAREHOLDER_MIN_QUOTA_CENTS) throw new Error('A aquisição mínima para o upgrade de Cotista é de R$ 500,00 em cotas')
     const rule = db.commissionRules.find(item => item.active && item.eventType === 'INVESTMENT_CONFIRMED')
     if (!rule) throw new Error('Ative uma regra de comissão antes da confirmação')
-    const levels = validatedLevels(rule.levels)
-    const event: Row = { id: id('EVT'), investmentId: investment.id, investorId: investor.id, amountCents: investment.amountCents, ruleSnapshot: { id: rule.id, name: rule.name, levels }, createdAt: today() }
+    const plan = validatedPlan(rule.levels, rule.directReferralBps)
+    const event: Row = { id: id('EVT'), investmentId: investment.id, investorId: investor.id, amountCents: investment.amountCents, ruleSnapshot: { id: rule.id, name: rule.name, ...plan }, createdAt: today() }
     db.commissionEvents.push(event)
-    for (const calculated of calculateDemoBonuses(db, investor.id, event.id, investment.amountCents, levels)) {
+    for (const calculated of calculateDemoBonuses(db, investor.id, event.id, investment.amountCents, plan.levels, plan.directReferralBps)) {
       if (db.bonusEntries.some(item => item.idempotencyKey === calculated.idempotencyKey || item.idempotencyKey === `${calculated.idempotencyKey}:available` || item.idempotencyKey === `${calculated.idempotencyKey}:blocked`)) continue
       const recipient = db.users.find(account => account.id === calculated.userId)!
       const allocation = allocateBonusByBusinessPlan(recipient, db.bonusEntries, calculated.amountCents)
-      const base = { userId: calculated.userId, level: calculated.level, eventId: event.id, investmentId: investment.id, type: 'UNILEVEL', reason: calculated.level === 1 ? `Indicação direta do investimento ${investment.id}` : `Indicação indireta N${calculated.level} do investimento ${investment.id}`, createdAt: today() }
+      const base = { userId: calculated.userId, level: calculated.level, eventId: event.id, investmentId: investment.id, type: calculated.type, reason: calculated.type === 'DIRECT_REFERRAL' ? `Indicação direta de 5% sobre as cotas ${investment.id}` : `Unilevel N${calculated.level} sobre as cotas ${investment.id}`, createdAt: today() }
       if (allocation.availableCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.availableCents, status: 'PENDING', idempotencyKey: allocation.blockedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey })
       if (allocation.blockedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.blockedCents, status: 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:blocked`, reason: 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
     }
