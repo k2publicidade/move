@@ -25,7 +25,7 @@ test('prevents direct and indirect sponsor cycles', () => {
 test('calculates unilevel bonuses in cents without compression', () => {
   const bonuses = calculateBonuses(users, 'c', 'investment-1', 100_00, [{ level: 1, bps: 1000 }, { level: 2, bps: 500 }, { level: 3, bps: 300 }])
   // Cora is blocked and therefore earns nothing, but she remains level 0: levels are not compressed.
-  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.amountCents]), [['b', 1, 1000], ['a', 2, 500], ['admin', 3, 300]])
+  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.amountCents]), [['b', 1, 1000], ['a', 2, 500]])
 })
 
 test('bonus calculation idempotency key is stable per event recipient and level', () => {
@@ -36,7 +36,7 @@ test('bonus calculation idempotency key is stable per event recipient and level'
 
 test('honors explicit level numbers without compressing gaps', () => {
   const bonuses = calculateBonuses(users, 'c', 'event-gap', 100_00, [{ level: 2, bps: 500 }, { level: 3, bps: 300 }])
-  assert.deepEqual(bonuses.map(item => [item.userId, item.level, item.amountCents]), [['a', 2, 500], ['admin', 3, 300]])
+  assert.deepEqual(bonuses.map(item => [item.userId, item.level, item.amountCents]), [['a', 2, 500]])
 })
 
 test('rejects malformed, duplicated and excessive commission rules', () => {

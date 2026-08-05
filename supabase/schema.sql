@@ -6,6 +6,8 @@ create extension if not exists pgcrypto;
 
 create type public.user_role as enum ('ADMIN_MASTER', 'ASSOCIATE');
 create type public.user_status as enum ('ACTIVE', 'PENDING', 'BLOCKED');
+create type public.membership_type as enum ('ASSOCIATE', 'SHAREHOLDER');
+create type public.associate_plan_status as enum ('PENDING', 'ACTIVE', 'INACTIVE');
 
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -15,6 +17,12 @@ create table public.profiles (
   phone text,
   role public.user_role not null default 'ASSOCIATE',
   status public.user_status not null default 'PENDING',
+  membership_type public.membership_type not null default 'ASSOCIATE',
+  associate_plan_status public.associate_plan_status not null default 'PENDING',
+  associate_plan_amount_cents integer not null default 5500 check (associate_plan_amount_cents = 5500),
+  bonus_cap_cents integer not null default 50000 check (bonus_cap_cents = 50000),
+  associate_plan_paid_at timestamptz,
+  shareholder_since timestamptz,
   sponsor_id uuid references public.profiles(id) on delete set null,
   invite_code text not null unique,
   country text default 'Brasil',
@@ -44,8 +52,8 @@ create table public.vehicles (
 create table public.investments (
   id uuid primary key default gen_random_uuid(), code text not null unique,
   user_id uuid not null references public.profiles(id) on delete restrict,
-  pack text not null, amount numeric(14,2) not null check (amount >= 0),
-  profit numeric(14,2) not null default 0, contract_days integer not null default 0 check (contract_days >= 0),
+  pack text not null default 'Cotas GoMove', amount numeric(14,2) not null check (amount >= 500),
+  profit numeric(14,2) not null default 0,
   payment_method text check (payment_method in ('BTC', 'USDT', 'USTD', 'PIX')),
   payment_status text not null default 'PENDING', payment_reference text unique, idempotency_key text unique,
   status text not null default 'Pendente', contracted_at date not null default current_date,

@@ -1,4 +1,6 @@
-export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; [key: string]: unknown }
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, isBonusEligibleParticipant, type AssociatePlanStatus, type MembershipType } from '../src/businessPlan.js'
+
+export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
 export type RuleLevel = { level: number; bps: number }
 export type BonusLedgerEntry = { id: string; userId: string; amountCents: number; status: string; type: string; reversalOfId?: string; reason?: string; createdAt?: string; [key: string]: unknown }
 export type NetworkTree = MlmUser & { children: NetworkTree[] }
@@ -52,7 +54,7 @@ export function createRegistration(users: MlmUser[], input: { username: string; 
   const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'
   let inviteCode = ''
   do inviteCode = `${prefix}${Math.random().toString(36).slice(2, 8)}`; while (users.some(user => user.inviteCode.toLowerCase() === inviteCode.toLowerCase()))
-  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'PENDING', sponsorId: sponsor.id, inviteCode }
+  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'PENDING', sponsorId: sponsor.id, inviteCode, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
 }
 
 export function wouldCreateSponsorCycle(users: Pick<MlmUser, 'id' | 'sponsorId'>[], userId: string, sponsorId: string | null): boolean {
@@ -75,7 +77,7 @@ export function calculateBonuses(users: MlmUser[], investorId: string, eventId: 
     current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
     if (!current) break
     const rule = byLevel.get(level)
-    if (rule && current.status === 'ACTIVE') out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), idempotencyKey: `${eventId}:${current.id}:${level}` })
+    if (rule && isBonusEligibleParticipant(current)) out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), idempotencyKey: `${eventId}:${current.id}:${level}` })
   }
   return out
 }

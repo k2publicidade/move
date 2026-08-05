@@ -38,6 +38,18 @@ npm run build
 npm start
 ```
 
+## Pagamentos com CoinPayments
+
+O fluxo de investimentos cria uma invoice em BRL no checkout hospedado do CoinPayments. O contrato permanece aguardando pagamento e só é ativado após o webhook assinado `InvoiceCompleted`. Assinaturas inválidas, timestamps antigos e entregas duplicadas são rejeitados ou deduplicados.
+
+1. Conclua a conta comercial e o KYC no CoinPayments.
+2. No painel, crie uma API Integration com permissão para invoices.
+3. Copie `.env.example` para `.env` e preencha `COINPAYMENTS_CLIENT_ID` e `COINPAYMENTS_CLIENT_SECRET`.
+4. Cadastre a URL HTTPS exata de `COINPAYMENTS_WEBHOOK_URL`, assinando os eventos `invoicePending`, `invoicePaid`, `invoiceCompleted`, `invoiceCancelled` e `invoiceTimedOut`.
+5. Confirme no painel quais criptomoedas estão habilitadas para recebimento e execute um pagamento de teste antes de produção.
+
+A senha de login da conta CoinPayments não é uma credencial de API e nunca deve ser adicionada ao projeto.
+
 ## Funcionalidades
 
 ### Portal do usuário
