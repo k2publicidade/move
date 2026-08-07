@@ -17,7 +17,7 @@ const now = () => new Date().toISOString()
 const hash = (password: string) => { const salt = crypto.randomBytes(16).toString('hex'); return `scrypt$${salt}$${crypto.scryptSync(password, salt, 64).toString('hex')}` }
 const verify = (password: string, encoded: string) => { const [, salt, expected] = encoded.split('$'); if (!salt || !expected) return false; const actual = crypto.scryptSync(password, salt, 64).toString('hex'); return crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex')) }
 const publicUser = (u: MlmUser) => { const { passwordHash, ...safe } = u; return safe }
-function seeded(): Db {
+function demoSeeded(): Db {
  const admin = { id: crypto.randomUUID(), username: 'admin', email: 'admin@gomove.local', name: 'Administrador GoMove', passwordHash: hash('gomove2026'), role: 'ADMIN_MASTER' as const, status: 'ACTIVE' as const, sponsorId: null, inviteCode: 'admin01' }
  const matheus = { id: crypto.randomUUID(), username: 'matheus', email: 'matheus@gomove.com.br', name: 'Matheus Oliveira', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: admin.id, inviteCode: 'matheus01', membershipType: 'SHAREHOLDER' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now(), shareholderSince: now() }
  const ana = { id: crypto.randomUUID(), username: 'ana', email: 'ana@gomove.local', name: 'Ana Silva', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: matheus.id, inviteCode: 'ana01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now() }
@@ -38,15 +38,25 @@ function ensureDemoContent(db: Db) {
  if(!db.tickets.length&&matheus) db.tickets=[{id:'TK-184',userId:matheus.id,date:'29/07/2026',department:'Financeiro',category:'Fatura',subject:'Confirmação de pagamento',priority:'Média',status:'Em análise'},{id:'TK-163',userId:matheus.id,date:'12/07/2026',department:'Operações',category:'Veículo',subject:'Agendamento preventivo',priority:'Baixa',status:'Resolvido'}]
  if(!db.profiles)db.profiles={};if(matheus&&!db.profiles[matheus.id])db.profiles[matheus.id]={name:'Matheus Oliveira',email:'matheus@gomove.com.br',phone:'(47) 99988-2040',birthdate:'1992-08-15',language:'Português',country:'Brasil',twoFactorLogin:false,twoFactorWithdraw:true,pixType:'CPF'}
 }
+function productionSeeded(): Db {
+ const password=String(process.env.GOMOVE_ADMIN_PASSWORD??'')
+ if(password.length<12)throw new Error('GOMOVE_ADMIN_PASSWORD precisa ter pelo menos 12 caracteres no primeiro início')
+ const username=String(process.env.GOMOVE_ADMIN_USERNAME??'admin').trim().toLowerCase()
+ const email=String(process.env.GOMOVE_ADMIN_EMAIL??'admin@gomoveinfra.com.br').trim().toLowerCase()
+ const name=String(process.env.GOMOVE_ADMIN_NAME??'Administrador GoMove').trim()
+ const admin={id:crypto.randomUUID(),username,email,name,passwordHash:hash(password),role:'ADMIN_MASTER' as const,status:'ACTIVE' as const,sponsorId:null,inviteCode:String(process.env.GOMOVE_ADMIN_INVITE_CODE??'gomove').trim().toLowerCase()}
+ return {commissionPlanVersion:COMMISSION_PLAN_VERSION,users:[admin],commissionRules:[{id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()}],commissionEvents:[],bonusEntries:[],auditLogs:[{id:crypto.randomUUID(),actorId:admin.id,action:'PRODUCTION_INITIALIZED',targetType:'SYSTEM',targetId:'gomove',details:{mode:'production'},createdAt:now()}],coinPaymentsWebhookEvents:[],vehicles:[],invoices:[],orders:[],investments:[],transactions:[],withdrawals:[],tickets:[],cart:[],profiles:{[admin.id]:{name,email,country:'Brasil'}}}
+}
+const initialDatabase=()=>process.env.NODE_ENV==='test'?demoSeeded():productionSeeded()
 function readDb(): Db {
  let db: any
  const persisted = fs.existsSync(dataFile) ? fs.readFileSync(dataFile,'utf8') : ''
- if (!persisted) db=seeded(); else db=JSON.parse(persisted)
+ if (!persisted) db=initialDatabase(); else db=JSON.parse(persisted)
  for (const k of ['users','vehicles','commissionRules','commissionEvents','bonusEntries','auditLogs','coinPaymentsWebhookEvents','invoices','orders','investments','transactions','withdrawals','tickets','cart']) if (!Array.isArray(db[k])) db[k]=[]
  if (!db.profiles) db.profiles={}
- if (!db.users.length) Object.assign(db, seeded(), db)
+ if (!db.users.length) Object.assign(db, initialDatabase(), db)
  if(db.commissionPlanVersion!==COMMISSION_PLAN_VERSION){db.commissionRules.forEach((rule:any)=>rule.active=false);db.commissionRules.push({id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()});db.commissionPlanVersion=COMMISSION_PLAN_VERSION}
- ensureDemoContent(db)
+ if(process.env.NODE_ENV==='test')ensureDemoContent(db)
  for (const user of db.users) {
   if (user.role !== 'ASSOCIATE') continue
   const inferredShareholder=!user.membershipType&&db.investments.some((investment:any)=>investment.userId===user.id&&(investment.status==='Ativo'||investment.paymentStatus==='CONFIRMED')&&Number(investment.amountCents)>=SHAREHOLDER_MIN_QUOTA_CENTS)

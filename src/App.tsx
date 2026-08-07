@@ -1,13 +1,12 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
 import {
   Activity, AlertCircle, BarChart3, Bitcoin, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
-  Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Pencil, Plus, RotateCcw, Search,
+  Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Pencil, Plus, Search,
   Settings, ShieldCheck, ShoppingBag, TicketCheck, UserRound, UsersRound, Wallet,
   Trash2, WalletCards, Wrench, X,
 } from 'lucide-react'
 import { ApiClient, clearSession, loadSession, saveSession, type Session } from './api'
 import { ASSOCIATE_PLAN_PRICE_CENTS, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS } from './businessPlan'
-import { resetDemoDatabase } from './demoBackend'
 import type { Bonus, CommissionRule, Page as ApiPage, TreeUser, User } from './types'
 import './styles.css'
 
@@ -95,7 +94,7 @@ function Login({ setSession }: { setSession: (session: Session) => void }) {
       go(session.user.role === 'ADMIN_MASTER' ? '/admin' : '/dashboard')
     } catch (reason: any) { setError(reason.message) } finally { setLoading(false) }
   }
-  return <main className="login-shell"><div className="login-visual"><img src="/brand/gomove-hero.jpeg" alt="Mobilidade inteligente GoMove" /></div><section className="login-panel"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><h1>Bem-vindo <em>de volta.</em></h1><p>Entre no ambiente correspondente ao seu perfil.</p><form onSubmit={submit} aria-busy={loading}><label>Usuário<input autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} /></label><label>Senha<input autoComplete="current-password" type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={loading}>{loading ? 'Autenticando…' : 'Entrar na plataforma'}</button></form><div className="demo-credentials"><b>Acessos de demonstração</b><span>MASTER: admin / gomove2026</span><span>USUÁRIO: matheus / gomove2026</span></div></div></section></main>
+  return <main className="login-shell"><div className="login-visual"><img src="/brand/gomove-hero.jpeg" alt="Mobilidade inteligente GoMove" /></div><section className="login-panel"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><h1>Bem-vindo <em>de volta.</em></h1><p>Acesse sua conta GoMove com suas credenciais.</p><form onSubmit={submit} aria-busy={loading}><label>Usuário ou e-mail<input required autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} /></label><label>Senha<input required autoComplete="current-password" type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={loading}>{loading ? 'Autenticando…' : 'Entrar na plataforma'}</button></form></div></section></main>
 }
 
 function Invite() {
@@ -476,10 +475,7 @@ function Audit({ session }: { session: Session }) {
 }
 
 function AdminSettings() {
-  const [confirming, setConfirming] = useState(false)
-  const [notice, setNotice] = useState('')
-  const reset = () => { resetDemoDatabase(); setConfirming(false); setNotice('Dados de demonstração restaurados. Recarregue para visualizar a base inicial.') }
-  return <Page title="Configurações MASTER" subtitle="Parâmetros globais, segurança e manutenção do ambiente.">{notice && <div className="success-box"><Check />{notice}</div>}<section className="settings-grid"><div className="panel"><h2>Segurança</h2><div className="toggle-row"><span><b>Exigir 2FA dos administradores</b><small>Protege operações sensíveis</small></span><input type="checkbox" defaultChecked /></div><div className="toggle-row"><span><b>Auditar mudanças financeiras</b><small>Registra autor, data e justificativa</small></span><input type="checkbox" defaultChecked disabled /></div></div><div className="panel"><h2>Ambiente de demonstração</h2><p>As mudanças feitas no deploy ficam salvas neste navegador, permitindo demonstrar todos os fluxos sem infraestrutura externa.</p><button className="outline-btn danger-btn" onClick={() => setConfirming(true)}><RotateCcw />Restaurar dados iniciais</button></div></section>{confirming && <Modal title="Restaurar demonstração?" close={() => setConfirming(false)}><div className="modal-form"><p>Cadastros, status e solicitações criados neste navegador serão removidos.</p><div className="modal-actions"><button className="outline-btn" onClick={() => setConfirming(false)}>Cancelar</button><button className="primary-btn" onClick={reset}>Restaurar</button></div></div></Modal>}</Page>
+  return <Page title="Configurações MASTER" subtitle="Parâmetros globais, segurança e manutenção do ambiente."><section className="settings-grid"><div className="panel"><h2>Segurança</h2><div className="toggle-row"><span><b>Autenticação protegida</b><small>Senhas armazenadas com hash criptográfico e sessões privadas</small></span><input type="checkbox" checked readOnly /></div><div className="toggle-row"><span><b>Auditar mudanças financeiras</b><small>Registra autor, data e justificativa</small></span><input type="checkbox" checked readOnly /></div></div><div className="panel"><h2>Ambiente online</h2><p>Cadastros, convites, operações e dados administrativos são armazenados no servidor e compartilhados entre dispositivos autorizados.</p></div></section></Page>
 }
 
 function Root() {

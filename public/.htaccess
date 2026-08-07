@@ -1,0 +1,15 @@
+Options -MultiViews
+
+RewriteEngine On
+
+# Keep credentials and invite links on HTTPS once the domain is online.
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# Serve existing assets and directories normally.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Let the React application handle routes such as /convite/matheus01.
+RewriteRule ^ index.html [L]
