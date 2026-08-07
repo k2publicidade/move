@@ -6,6 +6,9 @@ RewriteEngine On
 RewriteCond %{HTTPS} !=on
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
 
+# Route the production API through PHP on HostGator shared hosting.
+RewriteRule ^api(?:/.*)?$ api/index.php [QSA,L]
+
 # Serve existing assets and directories normally.
 RewriteCond %{REQUEST_FILENAME} -f [OR]
 RewriteCond %{REQUEST_FILENAME} -d

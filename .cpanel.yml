@@ -1,5 +1,5 @@
 ---
 deployment:
   tasks:
-    - /bin/mkdir -p /home3/roniel22/gomove-deploy-repo/tmp
-    - /usr/bin/touch /home3/roniel22/gomove-deploy-repo/tmp/restart.txt
+    - export DEPLOYPATH=/home3/roniel22/gomoveinfra.com.br/
+    - /bin/cp -R dist/. "$DEPLOYPATH"
