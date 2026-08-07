@@ -71,7 +71,7 @@ A senha de login da conta CoinPayments não é uma credencial de API e nunca dev
 - `src/App.tsx` — portais responsivos e roteamento com proteção por função
 - `src/api.ts` — cliente único da API com tratamento de sessão
 - `server/index.ts` — API Express, autenticação, persistência JSON e operações administrativas
-- `api/[...path].ts` — entrada serverless da API na Vercel
+- `api/index.ts` — entrada serverless da API na Vercel
 - `server/mlm.ts` — regras puras de rede, ciclos, comissões e estornos
 - `tests/` — testes automatizados da API cliente e do motor multinível
 - `public/brand/` — identidade visual e logo oficial GoMove
