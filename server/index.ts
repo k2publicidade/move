@@ -4,6 +4,8 @@ import cors from 'cors'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { neon } from '@neondatabase/serverless'
 import { buildNetworkTree, calculateBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
 import { CoinPaymentsConfigurationError, createCoinPaymentsInvoice, verifyCoinPaymentsWebhook } from './coinpayments.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateBonusByBusinessPlan, canUpgradeToShareholder, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
@@ -11,7 +13,10 @@ import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_
 const root = path.resolve(process.env.GOMOVE_ROOT || process.cwd())
 const dataFile = process.env.GOMOVE_DATA_FILE ? path.resolve(process.env.GOMOVE_DATA_FILE) : path.join(root, '.data', 'db.json')
 type Item = Record<string, any> & { id: string }
-type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; coinPaymentsWebhookEvents: Item[] }
+type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; coinPaymentsWebhookEvents: Item[]; sessions: Record<string,{userId:string;expiresAt:string}> }
+type DbRequestContext = { db: Db; dirty: boolean; version: number }
+const databaseUrl=String(process.env.DATABASE_URL??'').trim()
+const dbRequestContext=new AsyncLocalStorage<DbRequestContext>()
 const now = () => new Date().toISOString()
 const hash = (password: string) => { const salt = crypto.randomBytes(16).toString('hex'); return `scrypt$${salt}$${crypto.scryptSync(password, salt, 64).toString('hex')}` }
 const verify = (password: string, encoded: string) => { const [, salt, expected] = encoded.split('$'); if (!salt || !expected) return false; const actual = crypto.scryptSync(password, salt, 64).toString('hex'); return crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex')) }
@@ -21,7 +26,7 @@ function demoSeeded(): Db {
  const matheus = { id: crypto.randomUUID(), username: 'matheus', email: 'matheus@gomove.com.br', name: 'Matheus Oliveira', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: admin.id, inviteCode: 'matheus01', membershipType: 'SHAREHOLDER' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now(), shareholderSince: now() }
  const ana = { id: crypto.randomUUID(), username: 'ana', email: 'ana@gomove.local', name: 'Ana Silva', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: matheus.id, inviteCode: 'ana01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now() }
  const bruno = { id: crypto.randomUUID(), username: 'bruno', email: 'bruno@gomove.local', name: 'Bruno Costa', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: ana.id, inviteCode: 'bruno01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now() }
- return { commissionPlanVersion:COMMISSION_PLAN_VERSION, users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Indicação direta + Unilevel GoMove', eventType:'INVESTMENT_CONFIRMED', active:true, directReferralBps:DIRECT_REFERRAL_BPS, levels:UNILEVEL_LEVELS.map(level=>({...level})), createdAt:now() }], commissionEvents:[], bonusEntries:[], auditLogs:[], coinPaymentsWebhookEvents:[], invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profiles:{} }
+ return { commissionPlanVersion:COMMISSION_PLAN_VERSION, users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Indicação direta + Unilevel GoMove', eventType:'INVESTMENT_CONFIRMED', active:true, directReferralBps:DIRECT_REFERRAL_BPS, levels:UNILEVEL_LEVELS.map(level=>({...level})), createdAt:now() }], commissionEvents:[], bonusEntries:[], auditLogs:[], coinPaymentsWebhookEvents:[], sessions:{}, invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profiles:{} }
 }
 function ensureDemoContent(db: Db) {
  const matheus=db.users.find(user=>user.username==='matheus'), ana=db.users.find(user=>user.username==='ana')
@@ -44,15 +49,24 @@ function productionSeeded(): Db {
  const email=String(process.env.GOMOVE_ADMIN_EMAIL??'admin@gomoveinfra.com.br').trim().toLowerCase()
  const name=String(process.env.GOMOVE_ADMIN_NAME??'Administrador GoMove').trim()
  const admin={id:crypto.randomUUID(),username,email,name,passwordHash:hash(password),role:'ADMIN_MASTER' as const,status:'ACTIVE' as const,sponsorId:null,inviteCode:String(process.env.GOMOVE_ADMIN_INVITE_CODE??'gomove').trim().toLowerCase()}
- return {commissionPlanVersion:COMMISSION_PLAN_VERSION,users:[admin],commissionRules:[{id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()}],commissionEvents:[],bonusEntries:[],auditLogs:[{id:crypto.randomUUID(),actorId:admin.id,action:'PRODUCTION_INITIALIZED',targetType:'SYSTEM',targetId:'gomove',details:{mode:'production'},createdAt:now()}],coinPaymentsWebhookEvents:[],vehicles:[],invoices:[],orders:[],investments:[],transactions:[],withdrawals:[],tickets:[],cart:[],profiles:{[admin.id]:{name,email,country:'Brasil'}}}
+ return {commissionPlanVersion:COMMISSION_PLAN_VERSION,users:[admin],commissionRules:[{id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()}],commissionEvents:[],bonusEntries:[],auditLogs:[{id:crypto.randomUUID(),actorId:admin.id,action:'PRODUCTION_INITIALIZED',targetType:'SYSTEM',targetId:'gomove',details:{mode:'production'},createdAt:now()}],coinPaymentsWebhookEvents:[],sessions:{},vehicles:[],invoices:[],orders:[],investments:[],transactions:[],withdrawals:[],tickets:[],cart:[],profiles:{[admin.id]:{name,email,country:'Brasil'}}}
 }
 const initialDatabase=()=>process.env.NODE_ENV==='test'?demoSeeded():productionSeeded()
 function readDb(): Db {
+ const requestStore=dbRequestContext.getStore()
+ if(databaseUrl) {
+  if(!requestStore)throw new Error('Contexto do banco indisponível')
+  return normalizeDb(requestStore.db)
+ }
  let db: any
  const persisted = fs.existsSync(dataFile) ? fs.readFileSync(dataFile,'utf8') : ''
  if (!persisted) db=initialDatabase(); else db=JSON.parse(persisted)
+ return normalizeDb(db,persisted)
+}
+function normalizeDb(db:any,persisted?:string): Db {
  for (const k of ['users','vehicles','commissionRules','commissionEvents','bonusEntries','auditLogs','coinPaymentsWebhookEvents','invoices','orders','investments','transactions','withdrawals','tickets','cart']) if (!Array.isArray(db[k])) db[k]=[]
  if (!db.profiles) db.profiles={}
+ if (!db.sessions) db.sessions={}
  if (!db.users.length) Object.assign(db, initialDatabase(), db)
  if(db.commissionPlanVersion!==COMMISSION_PLAN_VERSION){db.commissionRules.forEach((rule:any)=>rule.active=false);db.commissionRules.push({id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()});db.commissionPlanVersion=COMMISSION_PLAN_VERSION}
  if(process.env.NODE_ENV==='test')ensureDemoContent(db)
@@ -63,10 +77,15 @@ function readDb(): Db {
   if(inferredShareholder)user.membershipType='SHAREHOLDER'
  }
  const normalized=JSON.stringify(db,null,2)
- if(normalized!==persisted) writeDb(db,normalized)
+ if(persisted!==undefined&&normalized!==persisted) writeDb(db,normalized)
  return db
 }
 function writeDb(db: Db, serialized=JSON.stringify(db,null,2)) {
+ const requestStore=dbRequestContext.getStore()
+ if(databaseUrl) {
+  if(!requestStore)throw new Error('Contexto do banco indisponível')
+  requestStore.db=db;requestStore.dirty=true;return
+ }
  fs.mkdirSync(path.dirname(dataFile),{recursive:true})
  const tmp=`${dataFile}.${process.pid}.${crypto.randomUUID()}.tmp`
  fs.writeFileSync(tmp,serialized,'utf8')
@@ -82,6 +101,18 @@ function writeDb(db: Db, serialized=JSON.stringify(db,null,2)) {
   fs.rmSync(tmp,{force:true})
   throw error
  }
+}
+async function loadPostgresDb():Promise<{db:Db;version:number}> {
+ const sql=neon(databaseUrl)
+ await sql`create table if not exists gomove_state (id text primary key, payload jsonb not null, version bigint not null default 1, updated_at timestamptz not null default now())`
+ let rows=await sql`select payload,version from gomove_state where id='production'`
+ if(!rows.length){const seeded=initialDatabase();await sql`insert into gomove_state(id,payload) values ('production',${JSON.stringify(seeded)}::jsonb) on conflict (id) do nothing`;rows=await sql`select payload,version from gomove_state where id='production'`}
+ return {db:normalizeDb(rows[0].payload),version:Number(rows[0].version)}
+}
+async function savePostgresDb(context:DbRequestContext) {
+ const sql=neon(databaseUrl),rows=await sql`update gomove_state set payload=${JSON.stringify(context.db)}::jsonb,version=version+1,updated_at=now() where id='production' and version=${context.version} returning version`
+ if(!rows.length)throw new Error('Os dados foram alterados por outra operação; tente novamente')
+ context.version=Number(rows[0].version);context.dirty=false
 }
 const audit=(db:Db, actorId:string, action:string, targetType:string, targetId:string, details:any={}) => db.auditLogs.unshift({id:crypto.randomUUID(),actorId,action,targetType,targetId,details,createdAt:now()})
 function confirmInvestmentInDb(db:Db, inv:any, actorId:string) {
@@ -112,8 +143,24 @@ function confirmInvestmentInDb(db:Db, inv:any, actorId:string) {
  audit(db,actorId,'INVESTMENT_CONFIRM','INVESTMENT',inv.id,{eventId:event.id,ruleId:rule.id,paymentProvider:inv.paymentProvider,membershipType:investor.membershipType,releasedBonusCents})
  return {event,bonuses:db.bonusEntries.filter(b=>b.eventId===event.id),idempotent:false}
 }
-const tokens=new Map<string,string>()
 const app=express(); app.use(cors())
+if(databaseUrl)app.use(async(_req,res,next)=>{
+ try {
+  const loaded=await loadPostgresDb()
+  dbRequestContext.run({...loaded,dirty:false},()=>{
+   const originalEnd=res.end.bind(res);let ending=false
+   res.end=((...args:any[])=>{
+    if(ending)return res
+    ending=true
+    const context=dbRequestContext.getStore()
+    if(!context?.dirty)return originalEnd(...args)
+    void savePostgresDb(context).then(()=>originalEnd(...args)).catch((error:any)=>{res.statusCode=/outra operação/.test(String(error?.message))?409:503;res.setHeader('content-type','application/json; charset=utf-8');originalEnd(JSON.stringify({error:String(error?.message??'Falha ao persistir dados')}))})
+    return res
+   }) as typeof res.end
+   next()
+  })
+ } catch(error){next(error)}
+})
 app.post('/api/webhooks/coinpayments',express.raw({type:'application/json',limit:'256kb'}),(req,res)=>{
  const rawBody=Buffer.isBuffer(req.body)?req.body.toString('utf8'):''
  try {
@@ -142,10 +189,10 @@ app.post('/api/webhooks/coinpayments',express.raw({type:'application/json',limit
  return res.json({received:true,idempotent:false})
 })
 app.use(express.json())
-function auth(req:Request,res:Response,next:NextFunction) { const token=req.header('authorization')?.replace(/^Bearer\s+/i,''); const id=token&&tokens.get(token); const user=id&&readDb().users.find(u=>u.id===id); if(!user||user.status!=='ACTIVE') { if(token)tokens.delete(token); return res.status(401).json({error:'Sessão inválida ou conta inativa'}); } (req as any).user=user; next() }
+function auth(req:Request,res:Response,next:NextFunction) { const token=req.header('authorization')?.replace(/^Bearer\s+/i,''),db=readDb(),session=token?db.sessions[token]:undefined,id=session&&Date.parse(session.expiresAt)>Date.now()?session.userId:undefined,user=id&&db.users.find(u=>u.id===id); if(!user||user.status!=='ACTIVE') { if(token&&db.sessions[token]){delete db.sessions[token];writeDb(db)} return res.status(401).json({error:'Sessão inválida ou conta inativa'}); } (req as any).user=user; next() }
 function admin(req:Request,res:Response,next:NextFunction) { if((req as any).user.role!=='ADMIN_MASTER') return res.status(403).json({error:'Acesso administrativo obrigatório'}); next() }
 function page<T>(items:T[], req:Request) { const p=Math.max(1,Number(req.query.page)||1), size=Math.min(100,Math.max(1,Number(req.query.pageSize)||20)); return {items:items.slice((p-1)*size,p*size),page:p,pageSize:size,total:items.length} }
-app.post(['/api/auth/login','/api/login'],(req,res)=>{ const {username,password}=req.body??{}, login=String(username).toLowerCase()==='master'?'admin':String(username).toLowerCase(); const u=readDb().users.find(x=>x.username.toLowerCase()===login||x.email.toLowerCase()===login); if(!u||!verify(String(password??''),String(u.passwordHash))||u.status!=='ACTIVE') return res.status(401).json({error:'Usuário ou senha inválidos'}); const token=crypto.randomBytes(32).toString('base64url'); tokens.set(token,u.id); res.json({token,user:publicUser(u)}) })
+app.post(['/api/auth/login','/api/login'],(req,res)=>{ const {username,password}=req.body??{},login=String(username).toLowerCase()==='master'?'admin':String(username).toLowerCase(),db=readDb(),u=db.users.find(x=>x.username.toLowerCase()===login||x.email.toLowerCase()===login); if(!u||!verify(String(password??''),String(u.passwordHash))||u.status!=='ACTIVE') return res.status(401).json({error:'Usuário ou senha inválidos'}); const token=crypto.randomBytes(32).toString('base64url');db.sessions[token]={userId:u.id,expiresAt:new Date(Date.now()+12*60*60*1000).toISOString()};for(const [key,session] of Object.entries(db.sessions))if(Date.parse(session.expiresAt)<=Date.now())delete db.sessions[key];writeDb(db);res.json({token,user:publicUser(u)}) })
 app.get('/api/auth/me',auth,(req,res)=>res.json({user:publicUser((req as any).user)}))
 app.get('/api/public/invites/:inviteCode',(req,res)=>{const u=readDb().users.find(x=>x.inviteCode.toLowerCase()===req.params.inviteCode.toLowerCase()); if(!u||u.status!=='ACTIVE') return res.status(404).json({error:'Convite indisponível'}); res.json({sponsor:{name:(u as any).name,inviteCode:u.inviteCode}})})
 app.post('/api/public/register',(req,res)=>{ const b=req.body??{}; if(!b.username||!b.email||!b.password||!b.inviteCode||!b.name) return res.status(422).json({error:'Campos obrigatórios ausentes'}); const db=readDb(); try { const u=createRegistration(db.users,{username:b.username,email:b.email,passwordHash:hash(b.password),inviteCode:b.inviteCode,name:b.name}); db.users.push(u); audit(db,u.id,'REGISTER','USER',u.id,{sponsorId:u.sponsorId});writeDb(db);res.status(201).json({user:publicUser(u)}) } catch(e:any) { res.status(/already exists/.test(e.message)?409:422).json({error:e.message}) } })
@@ -241,7 +288,7 @@ for(const key of ['cart','orders','tickets','invoices','withdrawals'] as const) 
 app.get('/api/state',auth,(req,res)=>{const d=readDb(),u=(req as any).user,owned=(rows:any[])=>rows.filter(item=>!item.userId||item.userId===u.id);res.json({vehicles:owned(d.vehicles),investments:owned(d.investments),orders:owned(d.orders),invoices:owned(d.invoices),transactions:owned(d.transactions),withdrawals:owned(d.withdrawals),tickets:owned(d.tickets),cart:owned(d.cart),profile:d.profiles[u.id]??{name:u.name,email:u.email},business:businessSummary(d,u)})})
 app.get('/api/health',(_req,res)=>res.json({ok:true,service:'GoMove API'}))
 const dist=path.join(root,'dist');if(fs.existsSync(dist)){app.use(express.static(dist));app.get(/.*/,(_req,res)=>res.sendFile(path.join(dist,'index.html')))}
-if (process.env.NODE_ENV!=='test') {
+if (process.env.NODE_ENV!=='test'&&!process.env.VERCEL) {
  const target=process.env.PASSENGER_APP_ENV?'passenger':Number(process.env.PORT||4010)
  app.listen(target,()=>console.log('GoMove API disponível'))
 }

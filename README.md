@@ -5,15 +5,6 @@ Plataforma fullstack para a operação GoMove, com dois ambientes independentes 
 - Portal do usuário para mobilidade, investimentos, compras, financeiro, rede, suporte e perfil.
 - Central MASTER para administrar usuários, frota, investimentos, pedidos, financeiro, rede multinível, comissões, tickets, auditoria e configurações.
 
-## Acessos de demonstração
-
-| Perfil | Usuário | Senha | Entrada |
-| --- | --- | --- | --- |
-| Administrador MASTER | `admin` | `gomove2026` | `/admin` |
-| Usuário | `matheus` | `gomove2026` | `/dashboard` |
-
-O login `master` também é aceito como alias do administrador no modo de demonstração.
-
 ## Executar localmente
 
 ```bash
@@ -73,20 +64,20 @@ A senha de login da conta CoinPayments não é uma credencial de API e nunca dev
 - Regras unilevel, créditos, aprovações e estornos de bônus
 - Fila administrativa de suporte
 - Trilha de auditoria de operações sensíveis
-- Configurações e restauração segura do ambiente demo
+- Configurações operacionais e trilha de auditoria
 
 ## Arquitetura
 
 - `src/App.tsx` — portais responsivos e roteamento com proteção por função
 - `src/api.ts` — cliente único da API com tratamento de sessão
-- `src/demoBackend.ts` — backend local persistente no navegador para o preview da Vercel
 - `server/index.ts` — API Express, autenticação, persistência JSON e operações administrativas
+- `api/[...path].ts` — entrada serverless da API na Vercel
 - `server/mlm.ts` — regras puras de rede, ciclos, comissões e estornos
 - `tests/` — testes automatizados da API cliente e do motor multinível
 - `public/brand/` — identidade visual e logo oficial GoMove
 
 ## Persistência e produção
 
-No desenvolvimento local, a API persiste dados em `.data/db.json`. No preview estático da Vercel, a aplicação usa uma base de demonstração isolada no `localStorage` do navegador; assim, todos os fluxos podem ser apresentados sem depender de um banco externo.
+No desenvolvimento local, a API persiste dados em `.data/db.json`. Na Vercel, a aplicação exige `DATABASE_URL` e persiste o estado real em PostgreSQL/Neon. O primeiro acesso cria somente a conta MASTER definida pelas variáveis `GOMOVE_ADMIN_*`; nenhuma conta de demonstração é publicada.
 
 Antes de uso comercial com dados reais, configure um banco gerenciado, segredo de sessão, gateway de pagamento/PIX, e-mail/SMS, telemetria veicular e provedor de 2FA. As credenciais do sistema de referência não estão armazenadas neste projeto.
