@@ -241,5 +241,8 @@ for(const key of ['cart','orders','tickets','invoices','withdrawals'] as const) 
 app.get('/api/state',auth,(req,res)=>{const d=readDb(),u=(req as any).user,owned=(rows:any[])=>rows.filter(item=>!item.userId||item.userId===u.id);res.json({vehicles:owned(d.vehicles),investments:owned(d.investments),orders:owned(d.orders),invoices:owned(d.invoices),transactions:owned(d.transactions),withdrawals:owned(d.withdrawals),tickets:owned(d.tickets),cart:owned(d.cart),profile:d.profiles[u.id]??{name:u.name,email:u.email},business:businessSummary(d,u)})})
 app.get('/api/health',(_req,res)=>res.json({ok:true,service:'GoMove API'}))
 const dist=path.join(root,'dist');if(fs.existsSync(dist)){app.use(express.static(dist));app.get(/.*/,(_req,res)=>res.sendFile(path.join(dist,'index.html')))}
-if (process.env.NODE_ENV!=='test') app.listen(Number(process.env.PORT||4010),()=>console.log(`GoMove API disponível em http://localhost:${process.env.PORT||4010}`))
+if (process.env.NODE_ENV!=='test') {
+ const target=process.env.PASSENGER_APP_ENV?'passenger':Number(process.env.PORT||4010)
+ app.listen(target,()=>console.log('GoMove API disponível'))
+}
 export { app, readDb, writeDb }
