@@ -1,8 +1,5 @@
 ---
 deployment:
   tasks:
-    - export DEPLOYPATH=/home3/roniel22/gomoveinfra.com.br/
-    - /bin/cp -R dist/assets "$DEPLOYPATH"
-    - /bin/cp -R dist/brand "$DEPLOYPATH"
-    - /bin/cp dist/index.html "$DEPLOYPATH"
-    - /bin/cp dist/.htaccess "$DEPLOYPATH"
+    - /bin/mkdir -p /home3/roniel22/gomove-deploy-repo/tmp
+    - /usr/bin/touch /home3/roniel22/gomove-deploy-repo/tmp/restart.txt
