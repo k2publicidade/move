@@ -26612,7 +26612,10 @@ if (import_node_fs.default.existsSync(dist)) {
   app.use(import_express.default.static(dist));
   app.get(/.*/, (_req, res) => res.sendFile(import_node_path.default.join(dist, "index.html")));
 }
-if (process.env.NODE_ENV !== "test") app.listen(Number(process.env.PORT || 4010), () => console.log(`GoMove API dispon\xEDvel em http://localhost:${process.env.PORT || 4010}`));
+if (process.env.NODE_ENV !== "test") {
+  const target = process.env.PASSENGER_APP_ENV ? "passenger" : Number(process.env.PORT || 4010);
+  app.listen(target, () => console.log("GoMove API dispon\xEDvel"));
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   app,
