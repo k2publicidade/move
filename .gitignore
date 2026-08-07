@@ -1,5 +1,6 @@
 node_modules/
 dist/
+build/
 .data/
 .server.log
 .server.err.log
