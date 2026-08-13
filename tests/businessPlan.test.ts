@@ -7,6 +7,7 @@ import {
   SHAREHOLDER_MIN_QUOTA_CENTS,
   UNILEVEL_LEVELS,
   allocateBonusByBusinessPlan,
+  allocateEarningByBusinessPlan,
   canUpgradeToShareholder,
   isBonusEligibleParticipant,
   releaseBlockedBonuses,
@@ -38,6 +39,14 @@ test('associate bonus is split at the accumulated R$ 500 cap', () => {
   assert.deepEqual(allocateBonusByBusinessPlan(associate, entries, 10_000), { availableCents: 5_000, blockedCents: 5_000 })
 })
 
+test('shareholder earnings are limited to 200% of confirmed quotas and renewal expands the cap', () => {
+  const shareholder = { ...associate, membershipType: 'SHAREHOLDER' as const }
+  const bonuses = [{ userId: shareholder.id, amountCents: 95_000, status: 'APPROVED' }]
+  const dailyEarnings = [{ userId: shareholder.id, creditedAmountCents: 4_000 }]
+  assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 50_000, 2_000), { availableCents: 1_000, cappedCents: 1_000, capCents: 100_000, consumedCents: 99_000 })
+  assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 100_000, 2_000), { availableCents: 2_000, cappedCents: 0, capCents: 200_000, consumedCents: 99_000 })
+})
+
 test('shareholder upgrade requires an active associate plan and at least R$ 500 in quotas', () => {
   assert.equal(canUpgradeToShareholder(associate, 49_999), false)
   assert.equal(canUpgradeToShareholder(associate, 50_000), true)
@@ -52,6 +61,16 @@ test('upgrade releases every blocked bonus for the participant', () => {
   assert.equal(releaseBlockedBonuses(entries, associate.id), 12_000)
   assert.equal(entries[0].status, 'PENDING')
   assert.equal(entries[1].status, 'BLOCKED_UPGRADE')
+})
+
+test('shareholder upgrade releases blocked bonuses only within the 200% earning capacity', () => {
+  const entries = [{ id: 'blocked-1', userId: associate.id, amountCents: 80_000, status: 'BLOCKED_UPGRADE', type: 'UNILEVEL' }]
+  const released = releaseBlockedBonuses(entries, associate.id, 50_000, () => 'capped-1')
+  assert.equal(released, 50_000)
+  assert.deepEqual(entries.map(entry => ({ id: entry.id, amountCents: entry.amountCents, status: entry.status })), [
+    { id: 'blocked-1', amountCents: 50_000, status: 'PENDING' },
+    { id: 'capped-1', amountCents: 30_000, status: 'CAPPED_200_PERCENT' },
+  ])
 })
 
 test('only active participants with an active associate plan earn network bonuses', () => {

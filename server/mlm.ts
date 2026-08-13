@@ -91,3 +91,21 @@ export function calculateBonuses(users: MlmUser[], investorId: string, eventId: 
   }
   return out
 }
+
+export function calculateProfitabilityBonuses(users: MlmUser[], participantId: string, eventId: string, amountCents: number, levels: RuleLevel[]) {
+  if (!Number.isInteger(amountCents) || amountCents <= 0 || !eventId.trim()) throw new Error('Daily profitability event is invalid')
+  const participant = users.find(user => user.id === participantId)
+  if (!participant) throw new Error('Participant not found')
+  const rules = validateCommissionLevels(levels), byId = new Map(users.map(user => [user.id, user])), byLevel = new Map(rules.map(rule => [rule.level, rule]))
+  const out: { userId: string; level: number; amountCents: number; type: 'UNILEVEL_PROFITABILITY'; idempotencyKey: string }[] = []
+  let current: MlmUser | undefined = participant
+  for (let level = 1; level <= rules[rules.length - 1].level; level += 1) {
+    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
+    if (!current) break
+    const rule = byLevel.get(level)
+    if (!rule || !isBonusEligibleParticipant(current)) continue
+    const bonusCents = Math.floor(amountCents * rule.bps / 10_000)
+    if (bonusCents > 0) out.push({ userId: current.id, level, amountCents: bonusCents, type: 'UNILEVEL_PROFITABILITY', idempotencyKey: `${eventId}:${current.id}:UNILEVEL_PROFITABILITY:${level}` })
+  }
+  return out
+}

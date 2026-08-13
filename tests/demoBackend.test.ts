@@ -112,6 +112,37 @@ test('approved bonuses fund withdrawals and paid withdrawals debit the user ledg
   assert.equal(state.transactions.find(item => item.withdrawalId === withdrawal.id)?.amount, -100)
 })
 
+test('MASTER daily rate credits shareholders by quota value and approved unilevel earnings once', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const users = await demoRequest<Page<User>>('/admin/associates', 'GET', undefined, master.token)
+  const camila = users.items.find(item => item.username === 'camila')!
+  const ana = users.items.find(item => item.username === 'ana')!
+  const matheus = users.items.find(item => item.username === 'matheus')!
+  const quota = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Cotas GoMove', amount: 1000, status: 'Aguardando pagamento' }, master.token)
+  await demoRequest(`/admin/investments/${quota.id}/confirm`, 'POST', {}, master.token)
+  const scheduled = await demoRequest<{ run: Record<string, any> }>('/admin/daily-profitabilities', 'POST', { date: '2026-08-13', rateBps: 100 }, master.token)
+  assert.equal(scheduled.run.status, 'SCHEDULED')
+  await assert.rejects(() => demoRequest('/admin/daily-profitabilities', 'POST', { date: '2026-08-13', rateBps: 100 }, master.token), /já foi cadastrado/i)
+  const result = await demoRequest<{ run: Record<string, any>; earnings: Record<string, any>[]; bonuses: Record<string, any>[] }>(`/admin/daily-profitabilities/${scheduled.run.id}/process`, 'POST', {}, master.token)
+
+  const camilaEarning = result.earnings.find(item => item.userId === camila.id)!
+  assert.equal(camilaEarning.quotaAmountCents, 100_000)
+  assert.equal(camilaEarning.grossAmountCents, 1_000)
+  assert.equal(camilaEarning.creditedAmountCents, 1_000)
+  assert.deepEqual(result.bonuses.filter(item => item.sourceUserId === camila.id).map(item => [item.userId, item.level, item.amountCents, item.status]), [
+    [ana.id, 1, 60, 'APPROVED'],
+    [matheus.id, 2, 50, 'APPROVED'],
+  ])
+
+  const retry = await demoRequest<{ run: Record<string, any>; idempotent: boolean }>(`/admin/daily-profitabilities/${scheduled.run.id}/process`, 'POST', {}, master.token)
+  assert.equal(retry.idempotent, true)
+  const history = await demoRequest<Page<Record<string, any>>>('/admin/daily-profitabilities', 'GET', undefined, master.token)
+  assert.equal(history.items.filter(item => item.date === '2026-08-13').length, 1)
+  assert.equal(history.items[0].rateBps, 100)
+  assert.equal(history.items[0].status, 'PROCESSED')
+})
+
 test('migrates an existing demo database to the current commission plan', async () => {
   const legacy = createDemoDatabase()
   delete legacy.commissionPlanVersion
