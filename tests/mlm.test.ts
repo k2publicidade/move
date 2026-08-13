@@ -16,6 +16,13 @@ test('registers only through an active invite and rejects duplicate identity', (
   assert.throws(() => createRegistration(users, { username: 'alice', email: 'other@gomove.local', passwordHash: 'hash', inviteCode: 'alice01', name: 'X' }, () => 'x'), /already exists/)
 })
 
+test('registers through an affiliate invite with the production UUID generator', () => {
+  const registered = createRegistration(users, { username: 'affiliate', email: 'affiliate@gomove.local', passwordHash: 'hash', inviteCode: 'alice01', name: 'Affiliate User' })
+  assert.match(registered.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  assert.equal(registered.sponsorId, 'a')
+  assert.equal(registered.status, 'PENDING')
+})
+
 test('prevents direct and indirect sponsor cycles', () => {
   assert.equal(wouldCreateSponsorCycle(users, 'a', 'b'), true)
   assert.equal(wouldCreateSponsorCycle(users, 'b', 'a'), false)
