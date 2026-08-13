@@ -53,7 +53,7 @@ export function createBonusReversal(entries: BonusLedgerEntry[], originalId: str
   return { id: id(), userId: original.userId, amountCents: -original.amountCents, status: 'APPROVED', type: 'REVERSAL', reversalOfId: original.id, reason: reason.trim(), createdAt: timestamp() }
 }
 
-export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode: string; name: string }, id = crypto.randomUUID): MlmUser {
+export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode: string; name: string }, id = () => crypto.randomUUID()): MlmUser {
   const username = input.username.trim().toLowerCase(), email = input.email.trim().toLowerCase(), name = input.name.trim()
   if (username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || !name || !input.passwordHash) throw new Error('registration data is invalid')
   if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
