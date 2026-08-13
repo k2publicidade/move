@@ -103,16 +103,15 @@ function Invite() {
   const api = useApi(null)
   const [invite, setInvite] = useState<any>()
   const [error, setError] = useState('')
-  const [done, setDone] = useState(false)
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({ name: '', email: '', username: '', password: '' })
   useEffect(() => { api.get(`/public/invites/${code}`).then(setInvite).catch(reason => setError(reason.message)) }, [code])
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     setBusy(true); setError('')
-    try { await api.post('/public/register', { ...form, inviteCode: code }); setDone(true) } catch (reason: any) { setError(reason.message) } finally { setBusy(false) }
+    try { await api.post('/public/register', { ...form, inviteCode: code }); location.replace('/') } catch (reason: any) { setError(reason.message) } finally { setBusy(false) }
   }
-  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" />{done ? <><h1>Cadastro recebido.</h1><p>Para ingressar como Associado, sua conta aguarda a confirmação do Plano de Associado no valor de {cents(ASSOCIATE_PLAN_PRICE_CENTS)} e a ativação pelo MASTER.</p><button type="button" className="primary-btn" onClick={() => go('/')}>Ir para o login</button></> : <><h1>Seja um Associado.</h1><p>{invite ? `Indicado por ${invite.sponsor.name}. Plano de Associado: ${cents(ASSOCIATE_PLAN_PRICE_CENTS)}.` : 'Verificando convite…'}</p><form onSubmit={submit} aria-busy={busy}><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-btn" disabled={!invite || busy}>{busy ? 'Criando conta…' : 'Solicitar adesão'}</button></form></>}</div></section></main>
+  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><h1>Seja um Associado.</h1><p>{invite ? `Indicado por ${invite.sponsor.name}. Plano de Associado: ${cents(ASSOCIATE_PLAN_PRICE_CENTS)}.` : 'Verificando convite…'}</p><form onSubmit={submit} aria-busy={busy}><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /></label><ErrorBox error={error} /><button className="primary-btn" disabled={!invite || busy}>{busy ? 'Criando conta…' : 'Solicitar adesão'}</button></form></div></section></main>
 }
 
 const userLinks = [
