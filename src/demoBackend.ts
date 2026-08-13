@@ -1,5 +1,5 @@
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
-import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateBonusByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
 
 type Row = Record<string, any> & { id: string }
 
@@ -17,6 +17,8 @@ export interface DemoDatabase {
   profiles: Record<string, Record<string, any>>
   commissionRules: CommissionRule[]
   commissionEvents: Row[]
+  dailyProfitabilityRuns: Row[]
+  dailyProfitabilities: Row[]
   bonusEntries: Bonus[]
   auditLogs: Row[]
 }
@@ -83,6 +85,8 @@ export function createDemoDatabase(): DemoDatabase {
     commissionPlanVersion: COMMISSION_PLAN_VERSION,
     commissionRules: [{ id: 'rule-default-v2', name: 'Indicação direta + Unilevel GoMove', eventType: 'INVESTMENT_CONFIRMED', active: true, directReferralBps: DIRECT_REFERRAL_BPS, levels: UNILEVEL_LEVELS.map(level => ({ ...level })), createdAt: today() }],
     commissionEvents: [],
+    dailyProfitabilityRuns: [],
+    dailyProfitabilities: [],
     bonusEntries: [
       { id: 'BON-001', userId: 'usr-matheus', amountCents: 9250, status: 'APPROVED', type: 'UNILEVEL', reason: 'Bônus de indicação', level: 1, createdAt: today() },
       { id: 'BON-002', userId: 'usr-ana', amountCents: 25000, status: 'PENDING', type: 'UNILEVEL', reason: 'Investimento confirmado', level: 1, createdAt: today() },
@@ -204,13 +208,81 @@ function requireUser(db: DemoDatabase, token: string | null) {
   return user
 }
 
+function calculateDemoProfitabilityBonuses(db: DemoDatabase, participantId: string, eventId: string, amountCents: number, levelsInput: unknown) {
+  const levels = validatedLevels(levelsInput), byLevel = new Map(levels.map(rule => [rule.level, rule])), byId = new Map(db.users.map(item => [item.id, item]))
+  let current = byId.get(participantId)
+  const rows: Array<{ userId: string; level: number; amountCents: number; type: 'UNILEVEL_PROFITABILITY'; idempotencyKey: string }> = []
+  for (let level = 1; level <= levels[levels.length - 1].level; level += 1) {
+    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
+    if (!current) break
+    const rule = byLevel.get(level)
+    if (!rule || !isBonusEligibleParticipant(current)) continue
+    const bonusCents = Math.floor(amountCents * rule.bps / 10_000)
+    if (bonusCents > 0) rows.push({ userId: current.id, level, amountCents: bonusCents, type: 'UNILEVEL_PROFITABILITY', idempotencyKey: `${eventId}:${current.id}:UNILEVEL_PROFITABILITY:${level}` })
+  }
+  return rows
+}
+
+function confirmedQuotaCents(db: DemoDatabase, userId: string) {
+  return db.investments
+    .filter(investment => investment.userId === userId && (investment.status === 'Ativo' || investment.paymentStatus === 'CONFIRMED'))
+    .reduce((sum, investment) => sum + Number(investment.amountCents || 0), 0)
+}
+
+function allocateEarning(db: DemoDatabase, participant: User, amountCents: number) {
+  return allocateEarningByBusinessPlan(participant, db.bonusEntries, db.dailyProfitabilities as Array<Row & { userId: string; creditedAmountCents: number }>, confirmedQuotaCents(db, participant.id), amountCents)
+}
+
+function processDailyProfitabilityRun(db: DemoDatabase, run: Row, actorId: string) {
+  if (run.status === 'PROCESSED') return { run, earnings: db.dailyProfitabilities.filter(item => item.runId === run.id), bonuses: db.bonusEntries.filter(item => item.dailyProfitabilityRunId === run.id), idempotent: true }
+  if (run.status !== 'SCHEDULED') throw new Error('O Diário não está disponível para processamento')
+  const rule = db.commissionRules.find(item => item.active)
+  if (!rule) throw new Error('Ative uma regra de Unilevel antes de processar o Diário')
+  const levels = validatedLevels(rule.levels), earnings: Row[] = [], bonuses: Bonus[] = []
+  Object.assign(run, { status: 'PROCESSING', participantCount: 0, grossAmountCents: 0, creditedAmountCents: 0, cappedAmountCents: 0, unilevelAmountCents: 0 })
+  for (const participant of db.users.filter(item => item.role === 'ASSOCIATE' && item.status === 'ACTIVE' && item.associatePlanStatus === 'ACTIVE' && item.membershipType === 'SHAREHOLDER')) {
+    const quotaAmountCents = confirmedQuotaCents(db, participant.id)
+    if (quotaAmountCents <= 0) continue
+    const grossAmountCents = Math.floor(quotaAmountCents * run.rateBps / 10_000)
+    if (grossAmountCents <= 0) continue
+    const allocation = allocateEarning(db, participant, grossAmountCents)
+    const earning: Row = { id: id('REN'), runId: run.id, userId: participant.id, date: run.date, rateBps: run.rateBps, quotaAmountCents, grossAmountCents, creditedAmountCents: allocation.availableCents, cappedAmountCents: allocation.cappedCents, capCents: allocation.capCents, createdAt: today() }
+    db.dailyProfitabilities.unshift(earning); earnings.push(earning)
+    run.participantCount += 1; run.grossAmountCents += grossAmountCents; run.creditedAmountCents += allocation.availableCents; run.cappedAmountCents += allocation.cappedCents
+    if (allocation.availableCents > 0) db.transactions.unshift({ id: id('MOV'), userId: participant.id, dailyProfitabilityId: earning.id, dailyProfitabilityRunId: run.id, date: run.date, description: `Diário de ${run.rateBps / 100}% sobre as cotas`, amount: allocation.availableCents / 100, status: 'Crédito', createdAt: today() })
+    if (allocation.availableCents <= 0) continue
+    for (const calculated of calculateDemoProfitabilityBonuses(db, participant.id, earning.id, allocation.availableCents, levels)) {
+      const recipient = db.users.find(item => item.id === calculated.userId)!
+      const bonusAllocation = allocateEarning(db, recipient, calculated.amountCents)
+      const base = { userId: recipient.id, sourceUserId: participant.id, level: calculated.level, eventId: earning.id, dailyProfitabilityId: earning.id, dailyProfitabilityRunId: run.id, type: calculated.type, reason: `Unilevel N${calculated.level} sobre o Diário de ${participant.name}`, createdAt: today() }
+      if (bonusAllocation.availableCents > 0) {
+        const bonus: Bonus = { id: id('BON'), ...base, amountCents: bonusAllocation.availableCents, status: 'APPROVED', idempotencyKey: bonusAllocation.cappedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey }
+        db.bonusEntries.unshift(bonus); bonuses.push(bonus); run.unilevelAmountCents += bonus.amountCents
+        db.transactions.unshift({ id: id('MOV'), userId: recipient.id, bonusEntryId: bonus.id, dailyProfitabilityId: earning.id, dailyProfitabilityRunId: run.id, date: run.date, description: `Unilevel N${calculated.level} sobre o Diário de ${participant.name}`, amount: bonus.amountCents / 100, status: 'Crédito', createdAt: today() })
+      }
+      if (bonusAllocation.cappedCents > 0) {
+        const capped: Bonus = { id: id('BON'), ...base, amountCents: bonusAllocation.cappedCents, status: 'CAPPED_200_PERCENT', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: 'Teto de ganhos atingido; renove suas cotas para ampliar o limite' }
+        db.bonusEntries.unshift(capped); bonuses.push(capped)
+      }
+    }
+  }
+  Object.assign(run, { status: 'PROCESSED', processedAt: today() })
+  audit(db, actorId, 'DAILY_PROFITABILITY_PROCESS', 'DAILY_PROFITABILITY', run.id, { date: run.date, rateBps: run.rateBps, participantCount: run.participantCount, creditedAmountCents: run.creditedAmountCents, cappedAmountCents: run.cappedAmountCents, unilevelAmountCents: run.unilevelAmountCents })
+  return { run, earnings, bonuses, idempotent: false }
+}
+
 function businessSummary(db: DemoDatabase, user: User) {
   const bonuses = db.bonusEntries.filter(entry => entry.userId === user.id && entry.amountCents > 0)
   const approvedBonusCents = bonuses.filter(entry => entry.status === 'APPROVED').reduce((sum, entry) => sum + entry.amountCents, 0)
   const pendingBonusCents = bonuses.filter(entry => entry.status === 'PENDING').reduce((sum, entry) => sum + entry.amountCents, 0)
   const blockedBonusCents = bonuses.filter(entry => entry.status === 'BLOCKED_UPGRADE').reduce((sum, entry) => sum + entry.amountCents, 0)
   const quotaAmountCents = db.investments.filter(investment => investment.userId === user.id && (investment.status === 'Ativo' || investment.paymentStatus === 'CONFIRMED')).reduce((sum, investment) => sum + Number(investment.amountCents || 0), 0)
-  return { ...publicUser(user), approvedBonusCents, pendingBonusCents, blockedBonusCents, bonusCapRemainingCents: user.membershipType === 'SHAREHOLDER' ? null : Math.max(0, Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS) - approvedBonusCents - pendingBonusCents), quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
+  const dailyEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.creditedAmountCents || 0), 0)
+  const cappedEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.cappedAmountCents || 0), 0) + bonuses.filter(entry => entry.status === 'CAPPED_200_PERCENT').reduce((sum, entry) => sum + entry.amountCents, 0)
+  const earningCapCents = user.membershipType === 'SHAREHOLDER' ? quotaAmountCents * 2 : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
+  const earningCapConsumedCents = approvedBonusCents + pendingBonusCents + dailyEarningCents
+  const earningCapRemainingCents = Math.max(0, earningCapCents - earningCapConsumedCents)
+  return { ...publicUser(user), approvedBonusCents, pendingBonusCents, blockedBonusCents, dailyEarningCents, cappedEarningCents, earningCapCents, earningCapConsumedCents, earningCapRemainingCents, bonusCapRemainingCents: earningCapRemainingCents, quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
 }
 
 export async function demoRequest<T>(path: string, method = 'GET', body?: any, token: string | null = null): Promise<T> {
@@ -335,6 +407,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'GET' && route === '/admin/network/tree') return tree(db, url.searchParams.get('rootUserId') || 'usr-admin', Number(url.searchParams.get('depth') ?? 5)) as T
   if (method === 'GET' && route === '/admin/commission-rules') return paged(db.commissionRules) as T
   if (method === 'GET' && route === '/admin/bonus-entries') return paged(db.bonusEntries) as T
+  if (method === 'GET' && route === '/admin/daily-profitabilities') return paged(db.dailyProfitabilityRuns) as T
   if (method === 'GET' && route === '/admin/audit-logs') return paged(db.auditLogs) as T
 
   const adminCollection = route.match(/^\/admin\/(vehicles|investments|orders|invoices|withdrawals|tickets)$/)?.[1] as keyof DemoDatabase | undefined
@@ -421,16 +494,37 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     return { id: rule.id } as T
   }
 
+  if (method === 'POST' && route === '/admin/daily-profitabilities') {
+    const date = String(body?.date ?? '').trim()
+    const rateBps = Number(body?.rateBps)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isInteger(rateBps) || rateBps < 1 || rateBps > 10_000) throw new Error('Informe uma data e um percentual diário válido')
+    if (db.dailyProfitabilityRuns.some(run => run.date === date)) throw new Error('O Diário desta data já foi cadastrado')
+    const run: Row = { id: id('DIA'), date, rateBps, description: String(body?.description ?? '').trim(), status: 'SCHEDULED', createdBy: user.id, createdAt: today() }
+    db.dailyProfitabilityRuns.unshift(run)
+    audit(db, user.id, 'DAILY_PROFITABILITY_SCHEDULE', 'DAILY_PROFITABILITY', run.id, { date, rateBps })
+    save(db)
+    return { run } as T
+  }
+
+  const dailyProcess = route.match(/^\/admin\/daily-profitabilities\/([^/]+)\/process$/)
+  if (method === 'POST' && dailyProcess) {
+    const run = db.dailyProfitabilityRuns.find(item => item.id === dailyProcess[1])
+    if (!run) throw new Error('Diário não encontrado')
+    const result = processDailyProfitabilityRun(db, run, user.id)
+    if (!result.idempotent) save(db)
+    return result as T
+  }
+
   if (method === 'POST' && route === '/admin/bonus-entries/manual-credit') {
     const recipient = db.users.find(item => item.id === body?.userId && item.status === 'ACTIVE')
     if (!recipient || !Number.isInteger(body?.amountCents) || body.amountCents <= 0 || !String(body?.reason ?? '').trim()) throw new Error('Selecione uma conta ativa, valor e justificativa válidos')
-    const allocation = allocateBonusByBusinessPlan(recipient, db.bonusEntries, body.amountCents)
+    const allocation = allocateEarning(db, recipient, body.amountCents)
     const created: Bonus[] = []
     if (allocation.availableCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.availableCents, status: 'PENDING', type: 'MANUAL', reason: String(body.reason).trim(), createdAt: today() })
-    if (allocation.blockedCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.blockedCents, status: 'BLOCKED_UPGRADE', type: 'MANUAL', reason: 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista', createdAt: today() })
+    if (allocation.cappedCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_200_PERCENT' : 'BLOCKED_UPGRADE', type: 'MANUAL', reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista', createdAt: today() })
     db.bonusEntries.unshift(...created)
     const entry = created[0]
-    audit(db, user.id, 'BONUS_MANUAL', 'BONUS', entry.id, { blockedCents: allocation.blockedCents })
+    audit(db, user.id, 'BONUS_MANUAL', 'BONUS', entry.id, { cappedCents: allocation.cappedCents, capCents: allocation.capCents })
     save(db)
     return entry as T
   }
@@ -476,10 +570,10 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     for (const calculated of calculateDemoBonuses(db, investor.id, event.id, investment.amountCents, plan.levels, plan.directReferralBps)) {
       if (db.bonusEntries.some(item => item.idempotencyKey === calculated.idempotencyKey || item.idempotencyKey === `${calculated.idempotencyKey}:available` || item.idempotencyKey === `${calculated.idempotencyKey}:blocked`)) continue
       const recipient = db.users.find(account => account.id === calculated.userId)!
-      const allocation = allocateBonusByBusinessPlan(recipient, db.bonusEntries, calculated.amountCents)
+      const allocation = allocateEarning(db, recipient, calculated.amountCents)
       const base = { userId: calculated.userId, level: calculated.level, eventId: event.id, investmentId: investment.id, type: calculated.type, reason: calculated.type === 'DIRECT_REFERRAL' ? `Indicação direta de 5% sobre as cotas ${investment.id}` : `Unilevel N${calculated.level} sobre as cotas ${investment.id}`, createdAt: today() }
-      if (allocation.availableCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.availableCents, status: 'PENDING', idempotencyKey: allocation.blockedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey })
-      if (allocation.blockedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.blockedCents, status: 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:blocked`, reason: 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
+      if (allocation.availableCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.availableCents, status: 'PENDING', idempotencyKey: allocation.cappedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey })
+      if (allocation.cappedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_200_PERCENT' : 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
     }
     investment.paymentStatus = 'CONFIRMED'
     investment.status = 'Ativo'
@@ -487,7 +581,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     let releasedBonusCents = 0
     if (canUpgradeToShareholder(investor, investment.amountCents)) {
       if (investor.membershipType !== 'SHAREHOLDER') { investor.membershipType = 'SHAREHOLDER'; investor.shareholderSince = today() }
-      releasedBonusCents = releaseBlockedBonuses(db.bonusEntries, investor.id)
+      const capacity = allocateEarning(db, investor, 1)
+      releasedBonusCents = releaseBlockedBonuses(db.bonusEntries, investor.id, Math.max(0, capacity.capCents - capacity.consumedCents), () => id('BON'))
     }
     audit(db, user.id, 'INVESTMENT_CONFIRM', 'INVESTMENT', investment.id, { eventId: event.id, ruleId: rule.id, membershipType: investor.membershipType, releasedBonusCents })
     save(db)

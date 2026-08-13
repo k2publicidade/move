@@ -66,6 +66,14 @@ A senha de login da conta CoinPayments não é uma credencial de API e nunca dev
 - Trilha de auditoria de operações sensíveis
 - Configurações operacionais e trilha de auditoria
 
+### Diário e teto de ganhos
+
+- O MASTER cadastra uma data e um percentual do Diário em **Comissões**.
+- Às 09:00 no horário de São Paulo, o cron aplica o percentual somente às cotas financeiras confirmadas; o Plano de Associado de R$ 55,00 não recebe Diário nem gera Unilevel.
+- O Unilevel incide sobre o Diário efetivamente creditado ao cotista, usando os níveis configurados no sistema.
+- Diário, indicação direta, Unilevel e créditos financeiros compartilham um teto de 200% do total de cotas confirmadas. Novas cotas ampliam essa capacidade; valores acima do teto não são creditados retroativamente.
+- Na Vercel, configure `CRON_SECRET` com pelo menos 16 caracteres. O agendamento `0 12 * * *` usa UTC e corresponde a 09:00 em `America/Sao_Paulo`.
+
 ## Arquitetura
 
 - `src/App.tsx` — portais responsivos e roteamento com proteção por função

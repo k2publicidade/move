@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import { strict as assert } from 'node:assert'
-import { buildNetworkTree, calculateBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionLevels, validateCommissionPlan, wouldCreateSponsorCycle } from '../server/mlm.ts'
+import { buildNetworkTree, calculateBonuses, calculateProfitabilityBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionLevels, validateCommissionPlan, wouldCreateSponsorCycle } from '../server/mlm.ts'
 
 const users = [
   { id: 'admin', username: 'admin', email: 'admin@gomove.local', role: 'ADMIN_MASTER', status: 'ACTIVE', inviteCode: 'admin01', sponsorId: null },
@@ -14,6 +14,13 @@ test('registers only through an active invite and rejects duplicate identity', (
   assert.equal(registered.sponsorId, 'a')
   assert.equal(registered.status, 'PENDING')
   assert.throws(() => createRegistration(users, { username: 'alice', email: 'other@gomove.local', passwordHash: 'hash', inviteCode: 'alice01', name: 'X' }, () => 'x'), /already exists/)
+})
+
+test('registers through an affiliate invite using the production UUID generator', () => {
+  const registered = createRegistration(users, { username: 'affiliate', email: 'affiliate@gomove.local', passwordHash: 'hash', inviteCode: 'alice01', name: 'Affiliate User' })
+  assert.match(registered.id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+  assert.equal(registered.sponsorId, 'a')
+  assert.equal(registered.status, 'PENDING')
 })
 
 test('prevents direct and indirect sponsor cycles', () => {
@@ -37,6 +44,14 @@ test('bonus calculation idempotency key is stable per event recipient and level'
 test('honors explicit level numbers without compressing gaps', () => {
   const bonuses = calculateBonuses(users, 'c', 'event-gap', 100_00, [{ level: 2, bps: 500 }, { level: 3, bps: 300 }])
   assert.deepEqual(bonuses.map(item => [item.userId, item.level, item.type, item.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 500], ['a', 2, 'UNILEVEL', 500]])
+})
+
+test('daily profitability generates only unilevel bonuses over the participant earning', () => {
+  const bonuses = calculateProfitabilityBonuses(users, 'c', 'profitability-2026-08-13-c', 10_000, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
+  assert.deepEqual(bonuses.map((item: Record<string, any>) => [item.userId, item.level, item.amountCents, item.type]), [
+    ['b', 1, 600, 'UNILEVEL_PROFITABILITY'],
+    ['a', 2, 500, 'UNILEVEL_PROFITABILITY'],
+  ])
 })
 
 test('validates direct referral together with the unilevel percentages', () => {

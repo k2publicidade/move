@@ -53,7 +53,7 @@ export function createBonusReversal(entries: BonusLedgerEntry[], originalId: str
   return { id: id(), userId: original.userId, amountCents: -original.amountCents, status: 'APPROVED', type: 'REVERSAL', reversalOfId: original.id, reason: reason.trim(), createdAt: timestamp() }
 }
 
-export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode: string; name: string }, id = crypto.randomUUID): MlmUser {
+export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode: string; name: string }, id = () => crypto.randomUUID()): MlmUser {
   const username = input.username.trim().toLowerCase(), email = input.email.trim().toLowerCase(), name = input.name.trim()
   if (username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || !name || !input.passwordHash) throw new Error('registration data is invalid')
   if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
@@ -88,6 +88,24 @@ export function calculateBonuses(users: MlmUser[], investorId: string, eventId: 
     if (!isBonusEligibleParticipant(current)) continue
     if (level === 1) out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * plan.directReferralBps / 10000), type: 'DIRECT_REFERRAL', idempotencyKey: `${eventId}:${current.id}:DIRECT_REFERRAL` })
     if (rule) out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), type: 'UNILEVEL', idempotencyKey: `${eventId}:${current.id}:UNILEVEL:${level}` })
+  }
+  return out
+}
+
+export function calculateProfitabilityBonuses(users: MlmUser[], participantId: string, eventId: string, amountCents: number, levels: RuleLevel[]) {
+  if (!Number.isInteger(amountCents) || amountCents <= 0 || !eventId.trim()) throw new Error('Daily profitability event is invalid')
+  const participant = users.find(user => user.id === participantId)
+  if (!participant) throw new Error('Participant not found')
+  const rules = validateCommissionLevels(levels), byId = new Map(users.map(user => [user.id, user])), byLevel = new Map(rules.map(rule => [rule.level, rule]))
+  const out: { userId: string; level: number; amountCents: number; type: 'UNILEVEL_PROFITABILITY'; idempotencyKey: string }[] = []
+  let current: MlmUser | undefined = participant
+  for (let level = 1; level <= rules[rules.length - 1].level; level += 1) {
+    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
+    if (!current) break
+    const rule = byLevel.get(level)
+    if (!rule || !isBonusEligibleParticipant(current)) continue
+    const bonusCents = Math.floor(amountCents * rule.bps / 10_000)
+    if (bonusCents > 0) out.push({ userId: current.id, level, amountCents: bonusCents, type: 'UNILEVEL_PROFITABILITY', idempotencyKey: `${eventId}:${current.id}:UNILEVEL_PROFITABILITY:${level}` })
   }
   return out
 }
