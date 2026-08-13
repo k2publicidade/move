@@ -49,3 +49,42 @@ test('parallel authenticated administrative reads do not contend for the databas
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
 })
+
+test('MASTER can manually confirm a pending CoinPayments quota acquisition once', async () => {
+  const server = app.listen(0)
+  try {
+    const address = server.address()
+    assert.ok(address && typeof address === 'object')
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'gomove2026' }),
+    })
+    assert.equal(login.status, 200)
+    const { token } = await login.json() as { token: string }
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
+    const associatesResponse = await fetch(`${baseUrl}/api/admin/associates?pageSize=100`, { headers })
+    const associates = await associatesResponse.json() as { items: Array<{ id: string; username: string }> }
+    const participant = associates.items.find(item => item.username === 'matheus')
+    assert.ok(participant)
+    const creation = await fetch(`${baseUrl}/api/admin/investments`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ userId: participant.id, amount: 500, paymentProvider: 'COINPAYMENTS', paymentMethod: 'CoinPayments', paymentStatus: 'PENDING', status: 'Aguardando pagamento' }),
+    })
+    assert.equal(creation.status, 201)
+    const investment = await creation.json() as { id: string }
+
+    const confirmation = await fetch(`${baseUrl}/api/admin/investments/${investment.id}/confirm`, { method: 'POST', headers, body: '{}' })
+    assert.equal(confirmation.status, 200)
+    const confirmed = await confirmation.json() as { idempotent: boolean; bonuses: unknown[] }
+    assert.equal(confirmed.idempotent, false)
+
+    const retry = await fetch(`${baseUrl}/api/admin/investments/${investment.id}/confirm`, { method: 'POST', headers, body: '{}' })
+    assert.equal(retry.status, 200)
+    assert.equal(((await retry.json()) as { idempotent: boolean }).idempotent, true)
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+})
