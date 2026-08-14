@@ -50,11 +50,12 @@ test('investment creates an idempotent CoinPayments checkout', async () => {
   assert.equal(state.investments.filter(item => item.idempotencyKey === payload.idempotencyKey).length, 1)
 })
 
-test('investment confirmation generates separate direct and unilevel bonuses idempotently', async () => {
+test('each investment confirmation generates only a 5% direct bonus and remains idempotent', async () => {
   localStorage.clear()
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
   const camila = users.items.find(item => item.username === 'camila')!
+  const ana = users.items.find(item => item.username === 'ana')!
   const matheus = users.items.find(item => item.username === 'matheus')!
   const investment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Cotas GoMove', amount: 2500, status: 'Aguardando pagamento' }, master.token)
   const confirmation = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
@@ -64,21 +65,29 @@ test('investment confirmation generates separate direct and unilevel bonuses ide
     result[key] = (result[key] || 0) + item.amountCents
     return result
   }, {})
-  assert.deepEqual(totals, { 'DIRECT_REFERRAL:N1': 12500, 'UNILEVEL:N1': 15000, 'UNILEVEL:N2': 12500 })
+  assert.deepEqual(totals, { 'DIRECT_REFERRAL:N1': 12500 })
   const retry = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
   assert.equal(retry.idempotent, true)
   assert.equal(retry.event.id, confirmation.event.id)
 
-  const matheusBonus = confirmation.bonuses.find(item => item.userId === matheus.id)!
+  const nextInvestment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Cotas GoMove', amount: 510, status: 'Aguardando pagamento' }, master.token)
+  const nextConfirmation = await demoRequest<{ bonuses: Record<string, any>[] }>(`/admin/investments/${nextInvestment.id}/confirm`, 'POST', {}, master.token)
+  assert.equal(nextConfirmation.bonuses.length, 1)
+  assert.equal(nextConfirmation.bonuses[0].type, 'DIRECT_REFERRAL')
+  assert.equal(nextConfirmation.bonuses[0].amountCents, 2550)
+
+  const matheusInvestment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: ana.id, pack: 'Cotas GoMove', amount: 500, status: 'Aguardando pagamento' }, master.token)
+  const matheusConfirmation = await demoRequest<{ bonuses: Record<string, any>[] }>(`/admin/investments/${matheusInvestment.id}/confirm`, 'POST', {}, master.token)
+  const matheusBonus = matheusConfirmation.bonuses.find(item => item.userId === matheus.id)!
   await demoRequest(`/admin/bonus-entries/${matheusBonus.id}/approve`, 'POST', {}, master.token)
   const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
   let state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
   assert.equal(state.transactions.filter(item => item.bonusEntryId === matheusBonus.id).length, 1)
-  assert.equal(state.transactions.find(item => item.bonusEntryId === matheusBonus.id)?.amount, 125)
+  assert.equal(state.transactions.find(item => item.bonusEntryId === matheusBonus.id)?.amount, 25)
 
   const reversal = await demoRequest<Record<string, any>>(`/admin/bonus-entries/${matheusBonus.id}/reverse`, 'POST', { reason: 'Teste de estorno auditável' }, master.token)
   state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
-  assert.equal(state.transactions.find(item => item.bonusEntryId === reversal.id)?.amount, -125)
+  assert.equal(state.transactions.find(item => item.bonusEntryId === reversal.id)?.amount, -25)
   await assert.rejects(() => demoRequest(`/admin/bonus-entries/${matheusBonus.id}/reverse`, 'POST', { reason: 'Duplicado' }, master.token), /já estornado/)
 })
 

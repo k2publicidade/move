@@ -187,19 +187,13 @@ function validatedPlan(levelsInput: unknown, directReferralBpsInput: unknown = D
   return { directReferralBps, levels }
 }
 
-function calculateDemoBonuses(db: DemoDatabase, investorId: string, eventId: string, amountCents: number, levelsInput: unknown, directReferralBps = DIRECT_REFERRAL_BPS) {
-  const plan = validatedPlan(levelsInput, directReferralBps), levels = plan.levels, byLevel = new Map(levels.map(rule => [rule.level, rule])), byId = new Map(db.users.map(item => [item.id, item]))
-  let current = byId.get(investorId)
-  const rows: Array<{ userId: string; level: number; amountCents: number; type: 'DIRECT_REFERRAL' | 'UNILEVEL'; idempotencyKey: string }> = []
-  for (let level = 1; level <= levels[levels.length - 1].level; level += 1) {
-    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
-    if (!current) break
-    if (!isBonusEligibleParticipant(current)) continue
-    const rule = byLevel.get(level)
-    if (level === 1) rows.push({ userId: current.id, level, amountCents: Math.floor(amountCents * plan.directReferralBps / 10000), type: 'DIRECT_REFERRAL', idempotencyKey: `${eventId}:${current.id}:DIRECT_REFERRAL` })
-    if (rule) rows.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), type: 'UNILEVEL', idempotencyKey: `${eventId}:${current.id}:UNILEVEL:${level}` })
-  }
-  return rows
+function calculateDemoDirectReferralBonus(db: DemoDatabase, investorId: string, eventId: string, amountCents: number, directReferralBps = DIRECT_REFERRAL_BPS) {
+  const investor = db.users.find(item => item.id === investorId)
+  if (!investor) throw new Error('Investidor não encontrado')
+  const sponsor = db.users.find(item => item.id === investor.sponsorId)
+  if (!sponsor || !isBonusEligibleParticipant(sponsor)) return []
+  const bonusCents = Math.floor(amountCents * directReferralBps / 10_000)
+  return bonusCents > 0 ? [{ userId: sponsor.id, level: 1, amountCents: bonusCents, type: 'DIRECT_REFERRAL' as const, idempotencyKey: `${eventId}:${sponsor.id}:DIRECT_REFERRAL` }] : []
 }
 
 function tree(db: DemoDatabase, userId: string, depth: number): TreeUser {
@@ -608,11 +602,11 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const plan = validatedPlan(rule.levels, rule.directReferralBps)
     const event: Row = { id: id('EVT'), investmentId: investment.id, investorId: investor.id, amountCents: investment.amountCents, ruleSnapshot: { id: rule.id, name: rule.name, ...plan }, createdAt: today() }
     db.commissionEvents.push(event)
-    for (const calculated of calculateDemoBonuses(db, investor.id, event.id, investment.amountCents, plan.levels, plan.directReferralBps)) {
+    for (const calculated of calculateDemoDirectReferralBonus(db, investor.id, event.id, investment.amountCents, plan.directReferralBps)) {
       if (db.bonusEntries.some(item => item.idempotencyKey === calculated.idempotencyKey || item.idempotencyKey === `${calculated.idempotencyKey}:available` || item.idempotencyKey === `${calculated.idempotencyKey}:blocked`)) continue
       const recipient = db.users.find(account => account.id === calculated.userId)!
       const allocation = allocateEarning(db, recipient, calculated.amountCents)
-      const base = { userId: calculated.userId, level: calculated.level, eventId: event.id, investmentId: investment.id, type: calculated.type, reason: calculated.type === 'DIRECT_REFERRAL' ? `Indicação direta de 5% sobre as cotas ${investment.id}` : `Unilevel N${calculated.level} sobre as cotas ${investment.id}`, createdAt: today() }
+      const base = { userId: calculated.userId, level: calculated.level, eventId: event.id, investmentId: investment.id, type: calculated.type, reason: `Indicação direta de ${plan.directReferralBps / 100}% sobre as cotas ${investment.id}`, createdAt: today() }
       if (allocation.availableCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.availableCents, status: 'PENDING', idempotencyKey: allocation.cappedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey })
       if (allocation.cappedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_200_PERCENT' : 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
     }

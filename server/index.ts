@@ -6,7 +6,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { neon } from '@neondatabase/serverless'
-import { buildNetworkTree, calculateBonuses, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
+import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
 import { CoinPaymentsConfigurationError, createCoinPaymentsInvoice, verifyCoinPaymentsWebhook } from './coinpayments.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
@@ -178,11 +178,11 @@ function confirmInvestmentInDb(db:Db, inv:any, actorId:string) {
  if(!rule)throw new Error('Ative uma regra de comissão antes da confirmação')
  const plan=validateCommissionPlan(rule.levels,rule.directReferralBps),event={id:crypto.randomUUID(),investmentId:inv.id,investorId:investor.id,amountCents:inv.amountCents,ruleSnapshot:{id:rule.id,name:rule.name,...plan},createdAt:now()}
  db.commissionEvents.push(event)
- for(const x of calculateBonuses(db.users,investor.id,event.id,inv.amountCents,plan.levels,plan.directReferralBps)) {
+ for(const x of calculateDirectReferralBonus(db.users,investor.id,event.id,inv.amountCents,plan.directReferralBps)) {
   if(db.bonusEntries.some(b=>b.idempotencyKey===x.idempotencyKey||b.idempotencyKey===`${x.idempotencyKey}:available`||b.idempotencyKey===`${x.idempotencyKey}:blocked`))continue
   const recipient=db.users.find(user=>user.id===x.userId)!
   const allocation=allocateEarning(db,recipient,x.amountCents)
-  const base={userId:x.userId,level:x.level,eventId:event.id,investmentId:inv.id,type:x.type,reason:x.type==='DIRECT_REFERRAL'?`Indicação direta de 5% sobre as cotas ${inv.id}`:`Unilevel N${x.level} sobre as cotas ${inv.id}`,ruleSnapshot:event.ruleSnapshot,createdAt:now()}
+  const base={userId:x.userId,level:x.level,eventId:event.id,investmentId:inv.id,type:x.type,reason:`Indicação direta de ${plan.directReferralBps/100}% sobre as cotas ${inv.id}`,ruleSnapshot:event.ruleSnapshot,createdAt:now()}
   if(allocation.availableCents>0)db.bonusEntries.push({id:crypto.randomUUID(),...base,amountCents:allocation.availableCents,status:'PENDING',idempotencyKey:allocation.cappedCents?`${x.idempotencyKey}:available`:x.idempotencyKey})
   if(allocation.cappedCents>0)db.bonusEntries.push({id:crypto.randomUUID(),...base,amountCents:allocation.cappedCents,status:recipient.membershipType==='SHAREHOLDER'?'CAPPED_200_PERCENT':'BLOCKED_UPGRADE',idempotencyKey:`${x.idempotencyKey}:capped`,reason:recipient.membershipType==='SHAREHOLDER'?'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite':'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista'})
  }

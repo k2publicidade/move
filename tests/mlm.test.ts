@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import { strict as assert } from 'node:assert'
-import { buildNetworkTree, calculateBonuses, calculateProfitabilityBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionLevels, validateCommissionPlan, wouldCreateSponsorCycle } from '../server/mlm.ts'
+import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, createBonusReversal, createRegistration, transitionBonus, validateCommissionLevels, validateCommissionPlan, wouldCreateSponsorCycle } from '../server/mlm.ts'
 import { isBonusEligibleParticipant } from '../src/businessPlan.ts'
 
 const users = [
@@ -55,29 +55,34 @@ test('prevents direct and indirect sponsor cycles', () => {
   assert.equal(wouldCreateSponsorCycle(users, 'a', 'a'), true)
 })
 
-test('calculates unilevel bonuses in cents without compression', () => {
-  const bonuses = calculateBonuses(users, 'c', 'investment-1', 100_00, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
-  // Cora is blocked and therefore earns nothing, but she remains level 0: levels are not compressed.
-  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.type, b.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 500], ['b', 1, 'UNILEVEL', 600], ['a', 2, 'UNILEVEL', 500]])
+test('quota purchases generate only the 5% direct referral bonus', () => {
+  const bonuses = calculateDirectReferralBonus(users, 'c', 'investment-1', 100_00, 500)
+  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.type, b.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 500]])
 })
 
 test('bonus calculation idempotency key is stable per event recipient and level', () => {
-  const one = calculateBonuses(users, 'b', 'event-1', 9999, [{ level: 1, bps: 1000 }])
-  const two = calculateBonuses(users, 'b', 'event-1', 9999, [{ level: 1, bps: 1000 }])
+  const one = calculateDirectReferralBonus(users, 'b', 'event-1', 9999, 500)
+  const two = calculateDirectReferralBonus(users, 'b', 'event-1', 9999, 500)
   assert.equal(one[0].idempotencyKey, two[0].idempotencyKey)
 })
 
-test('honors explicit level numbers without compressing gaps', () => {
-  const bonuses = calculateBonuses(users, 'c', 'event-gap', 100_00, [{ level: 2, bps: 500 }, { level: 3, bps: 300 }])
-  assert.deepEqual(bonuses.map(item => [item.userId, item.level, item.type, item.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 500], ['a', 2, 'UNILEVEL', 500]])
+test('each new quota purchase creates a new direct referral event', () => {
+  const first = calculateDirectReferralBonus(users, 'c', 'investment-1', 500_00, 500)
+  const second = calculateDirectReferralBonus(users, 'c', 'investment-2', 510_00, 500)
+  assert.equal(first[0].amountCents, 2_500)
+  assert.equal(second[0].amountCents, 2_550)
+  assert.notEqual(first[0].idempotencyKey, second[0].idempotencyKey)
 })
 
-test('daily profitability generates only unilevel bonuses over the participant earning', () => {
-  const bonuses = calculateProfitabilityBonuses(users, 'c', 'profitability-2026-08-13-c', 10_000, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
-  assert.deepEqual(bonuses.map((item: Record<string, any>) => [item.userId, item.level, item.amountCents, item.type]), [
-    ['b', 1, 600, 'UNILEVEL_PROFITABILITY'],
-    ['a', 2, 500, 'UNILEVEL_PROFITABILITY'],
+test('daily profitability distributes 6% to N1 and 5% to N2 over the daily earning only', () => {
+  const joseBonuses = calculateProfitabilityBonuses(users, 'c', 'profitability-jose', 1_000, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
+  assert.deepEqual(joseBonuses.map((item: Record<string, any>) => [item.userId, item.level, item.amountCents, item.type]), [
+    ['b', 1, 60, 'UNILEVEL_PROFITABILITY'],
+    ['a', 2, 50, 'UNILEVEL_PROFITABILITY'],
   ])
+
+  const cassioBonuses = calculateProfitabilityBonuses(users, 'b', 'profitability-cassio', 1_000, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
+  assert.deepEqual(cassioBonuses.map((item: Record<string, any>) => [item.userId, item.level, item.amountCents]), [['a', 1, 60]])
 })
 
 test('validates direct referral together with the unilevel percentages', () => {
