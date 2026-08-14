@@ -5,6 +5,10 @@ export type RuleLevel = { level: number; bps: number }
 export type BonusLedgerEntry = { id: string; userId: string; amountCents: number; status: string; type: string; reversalOfId?: string; reason?: string; createdAt?: string; [key: string]: unknown }
 export type NetworkTree = MlmUser & { children: NetworkTree[] }
 
+export function canSponsorRegistrations(user: MlmUser): boolean {
+  return user.status === 'ACTIVE' && (user.role === 'ADMIN_MASTER' || isBonusEligibleParticipant(user))
+}
+
 export function validateCommissionLevels(input: unknown): RuleLevel[] {
   if (!Array.isArray(input) || input.length === 0 || input.length > 20) throw new Error('Commission rule must have between 1 and 20 levels')
   const levels = input.map((item: any) => ({ level: Number(item?.level), bps: Number(item?.bps) }))
@@ -53,16 +57,20 @@ export function createBonusReversal(entries: BonusLedgerEntry[], originalId: str
   return { id: id(), userId: original.userId, amountCents: -original.amountCents, status: 'APPROVED', type: 'REVERSAL', reversalOfId: original.id, reason: reason.trim(), createdAt: timestamp() }
 }
 
-export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode: string; name: string }, id = () => crypto.randomUUID()): MlmUser {
+export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode?: string; name: string }, id = () => crypto.randomUUID()): MlmUser {
   const username = input.username.trim().toLowerCase(), email = input.email.trim().toLowerCase(), name = input.name.trim()
+  if (username === 'master') throw new Error('username is reserved')
   if (username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || !name || !input.passwordHash) throw new Error('registration data is invalid')
   if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
-  const sponsor = users.find(u => u.inviteCode.toLowerCase() === input.inviteCode.trim().toLowerCase())
-  if (!sponsor || sponsor.status !== 'ACTIVE') throw new Error('active sponsor not found')
+  const inviteCodeInput = input.inviteCode?.trim().toLowerCase()
+  const sponsor = inviteCodeInput
+    ? users.find(u => u.inviteCode.toLowerCase() === inviteCodeInput && canSponsorRegistrations(u))
+    : users.find(u => u.role === 'ADMIN_MASTER' && canSponsorRegistrations(u))
+  if (!sponsor) throw new Error('active sponsor not found')
   const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'
   let inviteCode = ''
   do inviteCode = `${prefix}${Math.random().toString(36).slice(2, 8)}`; while (users.some(user => user.inviteCode.toLowerCase() === inviteCode.toLowerCase()))
-  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'PENDING', sponsorId: sponsor.id, inviteCode, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
+  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
 }
 
 export function wouldCreateSponsorCycle(users: Pick<MlmUser, 'id' | 'sponsorId'>[], userId: string, sponsorId: string | null): boolean {

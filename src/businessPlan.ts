@@ -51,7 +51,9 @@ export function withBusinessPlanDefaults<T extends BusinessParticipant>(particip
 
 export function isBonusEligibleParticipant(participant: BusinessParticipant): boolean {
   const normalized = withBusinessPlanDefaults(participant)
-  return normalized.role === 'ASSOCIATE' && normalized.status === 'ACTIVE' && normalized.associatePlanStatus === 'ACTIVE'
+  return normalized.role === 'ASSOCIATE'
+    && normalized.status === 'ACTIVE'
+    && (normalized.membershipType === 'SHAREHOLDER' || normalized.associatePlanStatus === 'ACTIVE')
 }
 
 export function allocateBonusByBusinessPlan(participant: BusinessParticipant, entries: BonusLike[], amountCents: number) {
@@ -87,7 +89,7 @@ export function allocateEarningByBusinessPlan(participant: BusinessParticipant, 
 
 export function canUpgradeToShareholder(participant: BusinessParticipant, quotaAmountCents: number): boolean {
   const normalized = withBusinessPlanDefaults(participant)
-  return normalized.role === 'ASSOCIATE' && normalized.associatePlanStatus === 'ACTIVE' && Number.isInteger(quotaAmountCents) && quotaAmountCents >= SHAREHOLDER_MIN_QUOTA_CENTS
+  return normalized.role === 'ASSOCIATE' && normalized.status === 'ACTIVE' && Number.isInteger(quotaAmountCents) && quotaAmountCents >= SHAREHOLDER_MIN_QUOTA_CENTS
 }
 
 export function releaseBlockedBonuses<T extends BonusLike & { id?: string; reason?: string }>(entries: T[], userId: string, maxReleaseCents = Number.POSITIVE_INFINITY, idFactory?: () => string): number {

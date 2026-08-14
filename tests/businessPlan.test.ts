@@ -47,10 +47,12 @@ test('shareholder earnings are limited to 200% of confirmed quotas and renewal e
   assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 100_000, 2_000), { availableCents: 2_000, cappedCents: 0, capCents: 200_000, consumedCents: 99_000 })
 })
 
-test('shareholder upgrade requires an active associate plan and at least R$ 500 in quotas', () => {
+test('shareholder upgrade requires at least R$ 500 in quotas but not an associate plan', () => {
   assert.equal(canUpgradeToShareholder(associate, 49_999), false)
   assert.equal(canUpgradeToShareholder(associate, 50_000), true)
-  assert.equal(canUpgradeToShareholder({ ...associate, associatePlanStatus: 'INACTIVE' }, 50_000), false)
+  assert.equal(canUpgradeToShareholder({ ...associate, associatePlanStatus: 'INACTIVE' }, 50_000), true)
+  assert.equal(canUpgradeToShareholder({ ...associate, associatePlanStatus: 'PENDING' }, 50_000), true)
+  assert.equal(canUpgradeToShareholder({ ...associate, status: 'BLOCKED' }, 50_000), false)
 })
 
 test('upgrade releases every blocked bonus for the participant', () => {
@@ -73,8 +75,10 @@ test('shareholder upgrade releases blocked bonuses only within the 200% earning 
   ])
 })
 
-test('only active participants with an active associate plan earn network bonuses', () => {
+test('active associates need an active plan while active shareholders remain bonus eligible without it', () => {
   assert.equal(isBonusEligibleParticipant(associate), true)
   assert.equal(isBonusEligibleParticipant({ ...associate, associatePlanStatus: 'PENDING' }), false)
+  assert.equal(isBonusEligibleParticipant({ ...associate, membershipType: 'SHAREHOLDER', associatePlanStatus: 'PENDING' }), true)
+  assert.equal(isBonusEligibleParticipant({ ...associate, membershipType: 'SHAREHOLDER', associatePlanStatus: 'INACTIVE' }), true)
   assert.equal(isBonusEligibleParticipant({ ...associate, role: 'ADMIN_MASTER' }), false)
 })

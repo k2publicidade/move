@@ -14,14 +14,22 @@ function required(name: string) {
   return value
 }
 
-export function coinPaymentsConfig() {
+function validatedPublicUrl() {
+  const value = required('APP_PUBLIC_URL').replace(/\/$/, '')
+  let parsed: URL
+  try { parsed = new URL(value) } catch { throw new CoinPaymentsConfigurationError('APP_PUBLIC_URL inválida') }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new CoinPaymentsConfigurationError('APP_PUBLIC_URL precisa ser uma URL HTTP(S) válida')
+  return value
+}
+
+export function coinPaymentsConfig(requirePublicUrl = true) {
   return {
     clientId: required('COINPAYMENTS_CLIENT_ID'),
     clientSecret: required('COINPAYMENTS_CLIENT_SECRET'),
     baseUrl: process.env.COINPAYMENTS_BASE_URL?.trim() || 'https://a-api.coinpayments.net',
     webhookUrl: required('COINPAYMENTS_WEBHOOK_URL'),
     invoiceCurrency: process.env.COINPAYMENTS_INVOICE_CURRENCY?.trim() || '5203',
-    publicUrl: process.env.APP_PUBLIC_URL?.trim().replace(/\/$/, ''),
+    publicUrl: requirePublicUrl ? validatedPublicUrl() : undefined,
   }
 }
 
@@ -36,6 +44,8 @@ export async function createCoinPaymentsInvoice(input: {
   amount: number
   buyerName: string
   buyerEmail: string
+  successPath?: string
+  cancelPath?: string
 }): Promise<CoinPaymentsInvoice> {
   const config = coinPaymentsConfig()
   const amount = input.amount.toFixed(2)
@@ -69,8 +79,8 @@ export async function createCoinPaymentsInvoice(input: {
           notifications: ['invoicePending', 'invoicePaid', 'invoiceCompleted', 'invoiceCancelled', 'invoiceTimedOut'],
         }],
         ...(config.publicUrl ? {
-          successUrl: `${config.publicUrl}/investments?payment=success`,
-          cancelUrl: `${config.publicUrl}/investments?payment=cancelled`,
+          successUrl: `${config.publicUrl}${input.successPath || '/investments?payment=success'}`,
+          cancelUrl: `${config.publicUrl}${input.cancelPath || '/investments?payment=cancelled'}`,
         } : {}),
       },
     }) as { invoices?: CoinPaymentsInvoice[] }
@@ -89,7 +99,7 @@ export async function createCoinPaymentsInvoice(input: {
 }
 
 export function verifyCoinPaymentsWebhook(rawBody: string, headers: Record<string, string | string[] | undefined>) {
-  const config = coinPaymentsConfig()
+  const config = coinPaymentsConfig(false)
   return verifyWebhook({
     method: 'POST',
     url: config.webhookUrl,
