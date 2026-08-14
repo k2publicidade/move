@@ -20,6 +20,7 @@ const emptyState: PortalState = { vehicles: [], investments: [], orders: [], inv
 const vehicleFeatureEnabled = false
 const brl = (value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0)
 const cents = (value: number) => brl((value || 0) / 100)
+const dateTime = (value?: string) => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }).format(new Date(value)) : '—'
 const defaultUnilevelText = UNILEVEL_LEVELS.map(item => `${item.level}:${item.bps / 100}`).join(', ')
 const initials = (name: string) => name.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase()
 const statusLabels: Record<string, string> = {
@@ -136,7 +137,7 @@ function Registration({ setSession }: { setSession: (session: Session) => void }
 
 const userLinks = [
   ['/dashboard', 'Visão geral', LayoutDashboard], ['/investments', 'Cotas GoMove', BarChart3],
-  ['/store', 'Loja e pedidos', ShoppingBag], ['/finance', 'Financeiro', Wallet], ['/network', 'Minha rede', Network],
+  ['/store', 'Loja e pedidos', ShoppingBag], ['/finance', 'Financeiro', Wallet], ['/bonuses', 'Bonificações', CircleDollarSign], ['/network', 'Minha rede', Network],
   ['/support', 'Atendimento', Headphones], ['/profile', 'Meu perfil', UserRound],
 ] as const
 const activationLinks = [
@@ -187,7 +188,8 @@ function Router({ session, path }: { session: Session; path: string }) {
   if (path === '/investments' || path === '/my-investments') return <UserInvestments session={session} />
   if (path === '/store' || path === '/orders') return <Store session={session} />
   if (['/finance', '/invoices', '/statement', '/withdraw', '/withdrawals', '/pay'].includes(path)) return <UserFinance session={session} />
-  if (['/network', '/referrals', '/unilevel', '/genealogy', '/bonuses'].includes(path)) return <NetworkPage session={session} />
+  if (path === '/bonuses') return <BonusesPage session={session} />
+  if (['/network', '/referrals', '/unilevel', '/genealogy'].includes(path)) return <NetworkPage session={session} />
   if (path === '/support' || path === '/tickets') return <Support session={session} />
   if (path === '/profile') return <Profile session={session} />
   return <UserDashboard session={session} />
@@ -363,6 +365,20 @@ function UserFinance({ session }: { session: Session }) {
   return <Page title="Financeiro" subtitle="Faturas, extrato e saques em um só lugar."><ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}<section className="metric-grid"><Metric label="CRÉDITOS" value={brl(state.transactions.filter(item => item.amount > 0).reduce((sum, item) => sum + item.amount, 0))} icon={CircleDollarSign} /><Metric label="FATURAS PENDENTES" value={String(state.invoices.filter(item => item.status === 'Pendente').length)} icon={FileText} /><Metric label="SAQUES" value={brl(state.withdrawals.reduce((sum, item) => sum + item.amount, 0))} icon={WalletCards} /></section><section className="dashboard-split"><div><h2 className="section-title">Faturas</h2><DataTable rows={state.invoices} columns={[["id", "FATURA"], ["due", "VENCIMENTO"], ["description", "DESCRIÇÃO"], ["remaining", "SALDO", row => brl(row.remaining)], ["status", "STATUS", row => status(row.status)]]} /></div><form className="form-panel withdrawal-form" onSubmit={withdraw} aria-busy={busy}><h2>Solicitar saque</h2><label>Valor disponível para saque<input required min="50" step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} placeholder="R$ 0,00" /></label><p>O pedido será revisado pelo financeiro MASTER.</p><button className="primary-btn" disabled={busy}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button></form></section><h2 className="section-title">Extrato</h2><DataTable rows={state.transactions} columns={[["date", "DATA"], ["description", "DESCRIÇÃO"], ["status", "TIPO"], ["amount", "VALOR", row => <strong className={row.amount >= 0 ? 'positive-text' : ''}>{brl(row.amount)}</strong>]]} /></Page>
 }
 
+function BonusesPage({ session }: { session: Session }) {
+  const api = useApi(session)
+  const [summary, setSummary] = useState<any>()
+  const [bonuses, setBonuses] = useState<Bonus[]>([])
+  const [error, setError] = useState('')
+  useEffect(() => {
+    Promise.all([api.get<any>('/network/summary'), api.get<ApiPage<Bonus>>('/bonuses/me?pageSize=100')])
+      .then(([bonusSummary, bonusEntries]) => { setSummary(bonusSummary); setBonuses([...bonusEntries.items].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))) })
+      .catch(reason => setError(reason.message))
+  }, [])
+  if (!summary && !error) return <Loader />
+  return <Page title="Bonificações" subtitle="Acompanhe seus créditos de indicação e Unilevel com transparência."><ErrorBox error={error} /><BonusPeriodSummary periods={summary?.bonusPeriods || { todayCents: 0, weekCents: 0, monthCents: 0 }} /><section className="metric-grid bonus-status-grid"><Metric label="TOTAL APROVADO" value={cents(summary?.approvedBonusCents)} icon={Check} note="Bonificações confirmadas" /><Metric label="AGUARDANDO APROVAÇÃO" value={cents(summary?.pendingBonusCents)} icon={Activity} note="Em análise pelo financeiro" /><Metric label="VALOR BLOQUEADO" value={cents(summary?.blockedBonusCents)} icon={AlertCircle} note={summary?.blockedBonusCents ? 'Aguardando ampliação do limite' : 'Nenhum valor bloqueado'} /><Metric label="LIMITE DISPONÍVEL" value={cents(summary?.earningCapRemainingCents ?? summary?.bonusCapRemainingCents)} icon={ShieldCheck} note={summary?.membershipType === 'SHAREHOLDER' ? 'Dentro do teto de 200% das cotas' : 'Dentro do teto da modalidade'} /></section>{summary?.blockedBonusCents > 0 && <div className="business-plan-alert warning bonus-page-alert"><AlertCircle aria-hidden="true" /><span><b>{cents(summary.blockedBonusCents)} aguardando liberação</b><small>{summary.membershipType === 'SHAREHOLDER' ? 'Renove suas cotas para ampliar o teto de ganhos.' : 'Evolua para Cotista para ampliar sua capacidade de bonificação.'}</small></span><button className="primary-btn" onClick={() => go('/investments')}>{summary.membershipType === 'SHAREHOLDER' ? 'Renovar cotas' : 'Evoluir para Cotista'}</button></div>}<section className="bonus-history" aria-labelledby="bonus-history-title"><div className="store-section-heading"><div><span className="eyebrow">HISTÓRICO COMPLETO</span><h2 id="bonus-history-title">Detalhes das bonificações</h2></div><span>{bonuses.length} {bonuses.length === 1 ? 'lançamento' : 'lançamentos'}</span></div><BonusTable rows={bonuses} detailed /></section></Page>
+}
+
 function NetworkPage({ session }: { session: Session }) {
   const api = useApi(session)
   const [summary, setSummary] = useState<any>()
@@ -413,8 +429,12 @@ function Profile({ session }: { session: Session }) {
 function UserTable({ users, onSelect }: { users: User[]; onSelect?: (user: User) => void }) {
   return <DataTable rows={users} columns={[["name", "PARTICIPANTE"], ["membershipType", "MODALIDADE", row => row.membershipType === 'SHAREHOLDER' ? 'Cotista' : 'Associado'], ["associatePlanStatus", "PLANO R$ 55", row => status(row.associatePlanStatus || 'PENDING')], ["username", "USUÁRIO", row => `@${row.username}`], ["status", "STATUS", row => status(row.status)]]} action={onSelect ? row => <button className="outline-btn" onClick={() => onSelect(row as User)}>Gerenciar</button> : undefined} />
 }
-function BonusTable({ rows }: { rows: Bonus[] }) {
-  return <DataTable rows={rows as Row[]} columns={[["type", "TIPO", row => row.type === 'DIRECT_REFERRAL' ? 'Indicação direta' : row.type === 'UNILEVEL' ? 'Unilevel' : row.type], ["amountCents", "VALOR", row => cents(row.amountCents)], ["level", "NÍVEL", row => row.level ? `N${row.level}` : '—'], ["status", "STATUS", row => status(row.status)], ["reason", "MOTIVO"]]} />
+function BonusTable({ rows, detailed = false }: { rows: Bonus[]; detailed?: boolean }) {
+  const typeLabel = (type: string) => ({ DIRECT_REFERRAL: 'Indicação direta', UNILEVEL: 'Unilevel', UNILEVEL_PROFITABILITY: 'Unilevel diário', MANUAL: 'Crédito manual', REVERSAL: 'Estorno' }[type] || type)
+  const columns: TableColumn[] = [["type", "TIPO", row => typeLabel(row.type)], ["amountCents", "VALOR", row => <strong className={row.amountCents >= 0 ? 'positive-text' : ''}>{cents(row.amountCents)}</strong>], ["level", "NÍVEL", row => row.level ? `N${row.level}` : '—'], ["status", "STATUS", row => status(row.status)]]
+  if (detailed) columns.unshift(["createdAt", "DATA", row => dateTime(row.createdAt)])
+  if (detailed) columns.push(["reason", "ORIGEM / MOTIVO", row => row.reason || 'Bonificação de rede'])
+  return <DataTable rows={rows as Row[]} columns={columns} empty="Você ainda não recebeu bonificações." />
 }
 
 function AdminDashboard({ session }: { session: Session }) {
