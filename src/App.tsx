@@ -434,7 +434,9 @@ function BonusTable({ rows, detailed = false }: { rows: Bonus[]; detailed?: bool
   const columns: TableColumn[] = [["type", "TIPO", row => typeLabel(row.type)], ["amountCents", "VALOR", row => <strong className={row.amountCents >= 0 ? 'positive-text' : ''}>{cents(row.amountCents)}</strong>], ["level", "NÍVEL", row => row.level ? `N${row.level}` : '—'], ["status", "STATUS", row => status(row.status)]]
   if (detailed) columns.unshift(["createdAt", "DATA", row => dateTime(row.createdAt)])
   if (detailed) columns.push(["reason", "ORIGEM / MOTIVO", row => row.reason || 'Bonificação de rede'])
-  return <DataTable rows={rows as Row[]} columns={columns} empty="Você ainda não recebeu bonificações." />
+  const table = <DataTable rows={rows as Row[]} columns={columns} empty="Você ainda não recebeu bonificações." />
+  if (!detailed) return table
+  return <><div className="bonus-desktop-table">{table}</div><div className="bonus-mobile-list">{rows.length ? rows.map(row => <article className="bonus-mobile-card" key={row.id}><header><div><span>{typeLabel(row.type)}</span><small>{row.level ? `Nível ${row.level}` : 'Crédito de rede'}</small></div>{status(row.status)}</header><strong className={`bonus-mobile-value ${row.amountCents >= 0 ? 'positive-text' : 'negative-text'}`}>{cents(row.amountCents)}</strong><dl><div><dt>Recebido em</dt><dd>{dateTime(row.createdAt)}</dd></div><div><dt>Origem</dt><dd>{row.reason || 'Bonificação de rede'}</dd></div></dl></article>) : <div className="bonus-mobile-empty"><WalletCards aria-hidden="true" /><strong>Nenhuma bonificação ainda</strong><span>Seus próximos lançamentos aparecerão aqui.</span></div>}</div></>
 }
 
 function AdminDashboard({ session }: { session: Session }) {
