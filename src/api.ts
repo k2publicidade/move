@@ -22,7 +22,7 @@ export class ApiClient {
       throw new Error('Serviço temporariamente indisponível. Tente novamente em instantes.')
     }
   }
-  get<T>(path:string){ return this.request<T>(path) }
+  get<T>(path:string){ return this.request<T>(path,{cache:'no-store'}) }
   post<T>(path:string, body:unknown){ return this.request<T>(path,{method:'POST',body:JSON.stringify(body)}) }
   patch<T>(path:string, body:unknown){ return this.request<T>(path,{method:'PATCH',body:JSON.stringify(body)}) }
   put<T>(path:string, body:unknown){ return this.request<T>(path,{method:'PUT',body:JSON.stringify(body)}) }
