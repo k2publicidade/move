@@ -18,3 +18,9 @@ test('bonuses page shows period totals, statuses and detailed history', () => {
   assert.match(page, /Detalhes das bonificações/)
   assert.match(page, /<BonusTable rows=\{bonuses\} detailed \/>/)
 })
+
+test('detailed bonuses use dedicated mobile cards without horizontal table scrolling', () => {
+  assert.match(source, /className="bonus-desktop-table"/)
+  assert.match(source, /className="bonus-mobile-list"/)
+  assert.match(source, /className="bonus-mobile-card"/)
+})
