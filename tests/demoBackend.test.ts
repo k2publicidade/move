@@ -112,6 +112,37 @@ test('approved bonuses fund withdrawals and paid withdrawals debit the user ledg
   assert.equal(state.transactions.find(item => item.withdrawalId === withdrawal.id)?.amount, -100)
 })
 
+test('MASTER daily rate credits shareholders by quota value and approved unilevel earnings once', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const users = await demoRequest<Page<User>>('/admin/associates', 'GET', undefined, master.token)
+  const camila = users.items.find(item => item.username === 'camila')!
+  const ana = users.items.find(item => item.username === 'ana')!
+  const matheus = users.items.find(item => item.username === 'matheus')!
+  const quota = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: camila.id, pack: 'Cotas GoMove', amount: 1000, status: 'Aguardando pagamento' }, master.token)
+  await demoRequest(`/admin/investments/${quota.id}/confirm`, 'POST', {}, master.token)
+  const scheduled = await demoRequest<{ run: Record<string, any> }>('/admin/daily-profitabilities', 'POST', { date: '2026-08-13', rateBps: 100 }, master.token)
+  assert.equal(scheduled.run.status, 'SCHEDULED')
+  await assert.rejects(() => demoRequest('/admin/daily-profitabilities', 'POST', { date: '2026-08-13', rateBps: 100 }, master.token), /já foi cadastrado/i)
+  const result = await demoRequest<{ run: Record<string, any>; earnings: Record<string, any>[]; bonuses: Record<string, any>[] }>(`/admin/daily-profitabilities/${scheduled.run.id}/process`, 'POST', {}, master.token)
+
+  const camilaEarning = result.earnings.find(item => item.userId === camila.id)!
+  assert.equal(camilaEarning.quotaAmountCents, 100_000)
+  assert.equal(camilaEarning.grossAmountCents, 1_000)
+  assert.equal(camilaEarning.creditedAmountCents, 1_000)
+  assert.deepEqual(result.bonuses.filter(item => item.sourceUserId === camila.id).map(item => [item.userId, item.level, item.amountCents, item.status]), [
+    [ana.id, 1, 60, 'APPROVED'],
+    [matheus.id, 2, 50, 'APPROVED'],
+  ])
+
+  const retry = await demoRequest<{ run: Record<string, any>; idempotent: boolean }>(`/admin/daily-profitabilities/${scheduled.run.id}/process`, 'POST', {}, master.token)
+  assert.equal(retry.idempotent, true)
+  const history = await demoRequest<Page<Record<string, any>>>('/admin/daily-profitabilities', 'GET', undefined, master.token)
+  assert.equal(history.items.filter(item => item.date === '2026-08-13').length, 1)
+  assert.equal(history.items[0].rateBps, 100)
+  assert.equal(history.items[0].status, 'PROCESSED')
+})
+
 test('migrates an existing demo database to the current commission plan', async () => {
   const legacy = createDemoDatabase()
   delete legacy.commissionPlanVersion
@@ -167,20 +198,120 @@ test('MASTER cannot assign a new account to an inactive sponsor', async () => {
   await assert.rejects(() => demoRequest('/admin/associates', 'POST', { name: 'Conta inválida', username: 'invalidsponsor', email: 'invalidsponsor@gomove.local', password: 'segura123', sponsorId: pendingSponsor.id, status: 'PENDING' }, master.token), /patrocinador/i)
 })
 
-test('invited account remains pending until MASTER activation', async () => {
+test('invited account enters immediately and keeps participation pending until choosing a product', async () => {
   localStorage.clear()
-  await demoRequest('/public/register', 'POST', { name: 'Nova Pessoa', email: 'nova@gomove.com.br', username: 'nova', password: 'segura123', inviteCode: 'matheus01' })
-  await assert.rejects(() => demoRequest('/auth/login', 'POST', { username: 'nova', password: 'segura123' }), /inválidos/)
-
-  const masterSession = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
-  const associates = await demoRequest<Page<User>>('/admin/associates', 'GET', undefined, masterSession.token)
-  const created = associates.items.find(user => user.username === 'nova')
-  assert.ok(created)
-  await assert.rejects(() => demoRequest(`/admin/associates/${created.id}/status`, 'PATCH', { status: 'ACTIVE', reason: 'Cadastro validado' }, masterSession.token), /Plano de Associado/)
-  await demoRequest(`/admin/associates/${created.id}`, 'PATCH', { ...created, associatePlanStatus: 'ACTIVE' }, masterSession.token)
-  await demoRequest(`/admin/associates/${created.id}/status`, 'PATCH', { status: 'ACTIVE', reason: 'Cadastro validado' }, masterSession.token)
+  const registration = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Nova Pessoa', email: 'nova@gomove.com.br', username: 'nova', password: 'segura123', inviteCode: 'matheus01' })
+  assert.ok(registration.token)
+  assert.equal(registration.user.status, 'ACTIVE')
+  assert.equal(registration.user.associatePlanStatus, 'PENDING')
   const session = await demoRequest<{ user: User }>('/auth/login', 'POST', { username: 'nova', password: 'segura123' })
-  assert.equal(session.user.status, 'ACTIVE')
+  assert.equal(session.user.id, registration.user.id)
+})
+
+test('direct registration uses MASTER sponsorship and can acquire quotas without the associate plan', async () => {
+  localStorage.clear()
+  const registration = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Cotista Direto', email: 'cotista.direto@gomove.com.br', username: 'cotistadireto', password: 'segura123' })
+  assert.equal(registration.user.status, 'ACTIVE')
+  assert.equal(registration.user.associatePlanStatus, 'PENDING')
+
+  const master = await demoRequest<{ token: string; user: User }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  assert.equal(registration.user.sponsorId, master.user.id)
+  const quota = await demoRequest<Record<string, any>>('/investments', 'POST', { amount: 500, preferredPaymentAsset: 'USDT', idempotencyKey: 'direct-quota-choice' }, registration.token)
+  assert.equal(quota.amountCents, 50_000)
+  await demoRequest(`/admin/investments/${quota.id}/confirm`, 'POST', {}, master.token)
+
+  const refreshed = await demoRequest<{ user: User }>('/auth/login', 'POST', { username: 'cotistadireto', password: 'segura123' })
+  assert.equal(refreshed.user.membershipType, 'SHAREHOLDER')
+  assert.equal(refreshed.user.associatePlanStatus, 'PENDING')
+  const daily = await demoRequest<{ run: Record<string, any> }>('/admin/daily-profitabilities', 'POST', { date: '2026-08-14', rateBps: 100 }, master.token)
+  const result = await demoRequest<{ earnings: Record<string, any>[] }>(`/admin/daily-profitabilities/${daily.run.id}/process`, 'POST', {}, master.token)
+  assert.equal(result.earnings.some(item => item.userId === registration.user.id), true)
+})
+
+test('associate choice creates one R$ 55 checkout per idempotency key', async () => {
+  localStorage.clear()
+  const registration = await demoRequest<{ token: string }>('/public/register', 'POST', { name: 'Associado Novo', email: 'associado.novo@gomove.com.br', username: 'associadonovo', password: 'segura123' })
+  const first = await demoRequest<Record<string, any>>('/associate-plan', 'POST', { preferredPaymentAsset: 'USDT', idempotencyKey: 'associate-choice' }, registration.token)
+  const retry = await demoRequest<Record<string, any>>('/associate-plan', 'POST', { preferredPaymentAsset: 'USDT', idempotencyKey: 'associate-choice' }, registration.token)
+  assert.equal(first.amount, 55)
+  assert.equal(first.id, retry.id)
+  assert.ok(first.paymentUrl)
+})
+
+test('demo invite rejects an active account that has not chosen a financial product', async () => {
+  const suffix = Math.random().toString(36).slice(2, 8)
+  const registration = await demoRequest<any>('/public/register', 'POST', {
+    name: 'Sem Produto',
+    email: `sem-produto-${suffix}@gomove.local`,
+    username: `sem-produto-${suffix}`,
+    password: 'senha-segura',
+  })
+
+  await assert.rejects(
+    () => demoRequest(`/public/invites/${registration.user.inviteCode}`),
+    /Convite indisponível/,
+  )
+})
+
+test('demo admin follows the same activation, sponsor and quota safety rules as production', async () => {
+  localStorage.clear()
+  const suffix = Math.random().toString(36).slice(2, 8)
+  const master = await demoRequest<{ token: string; user: User }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const unpaid = await demoRequest<User>('/admin/associates', 'POST', {
+    name: 'Ativo sem Produto', username: `unpaid-${suffix}`, email: `unpaid-${suffix}@gomove.local`,
+    password: 'senha-segura', sponsorId: master.user.id, status: 'ACTIVE', associatePlanStatus: 'PENDING',
+  }, master.token)
+  assert.equal(unpaid.status, 'ACTIVE')
+  assert.equal(unpaid.associatePlanStatus, 'PENDING')
+
+  await assert.rejects(
+    () => demoRequest('/admin/bonus-entries/manual-credit', 'POST', { userId: unpaid.id, amountCents: 100, reason: 'Não permitido' }, master.token),
+    /financeiramente elegível/i,
+  )
+  await assert.rejects(
+    () => demoRequest('/admin/associates', 'POST', { name: 'Filho', username: `child-${suffix}`, email: `child-${suffix}@gomove.local`, password: 'senha-segura', sponsorId: unpaid.id }, master.token),
+    /patrocinador/i,
+  )
+
+  const quota = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: unpaid.id, amount: 500, status: 'Aguardando pagamento' }, master.token)
+  assert.equal(quota.amountCents, 50_000)
+  await assert.rejects(
+    () => demoRequest(`/admin/investments/${quota.id}`, 'PATCH', { amount: 1e100 }, master.token),
+    /aquisição deve ficar entre/i,
+  )
+  await assert.rejects(
+    () => demoRequest(`/admin/associates/${master.user.id}/status`, 'PATCH', { status: 'BLOCKED', reason: 'Não pode' }, master.token),
+    /associado/i,
+  )
+})
+
+test('demo registration and quota inputs reject malformed credentials and unsafe money', async () => {
+  const suffix = Math.random().toString(36).slice(2, 8)
+  await assert.rejects(
+    () => demoRequest('/public/register', 'POST', { name: 'Inválido', username: `bad-${suffix}`, email: 'sem-arroba', password: '123' }),
+    /dados de cadastro inválidos/i,
+  )
+  const registration = await demoRequest<any>('/public/register', 'POST', { name: 'Cota Segura', username: `safe-${suffix}`, email: `safe-${suffix}@gomove.local`, password: 'senha-segura' })
+  await assert.rejects(
+    () => demoRequest('/investments', 'POST', { amount: 500.001, idempotencyKey: `unsafe-${suffix}` }, registration.token),
+    /aquisição deve ficar entre/i,
+  )
+})
+
+test('demo reserves the master alias and confirms the associate plan idempotently', async () => {
+  const suffix = Math.random().toString(36).slice(2, 8)
+  await assert.rejects(
+    () => demoRequest('/public/register', 'POST', { name: 'Nome Reservado', username: 'master', email: `master-${suffix}@gomove.local`, password: 'senha-segura' }),
+    /reservado/i,
+  )
+  const registration = await demoRequest<any>('/public/register', 'POST', { name: 'Plano Demo', username: `plan-demo-${suffix}`, email: `plan-demo-${suffix}@gomove.local`, password: 'senha-segura' })
+  const invoice = await demoRequest<any>('/associate-plan', 'POST', { idempotencyKey: `plan-demo-${suffix}` }, registration.token)
+  assert.equal(invoice.demo, true)
+  const first = await demoRequest<any>(`/associate-plan/${invoice.id}/confirm-demo`, 'POST', {}, registration.token)
+  const retry = await demoRequest<any>(`/associate-plan/${invoice.id}/confirm-demo`, 'POST', {}, registration.token)
+  assert.equal(first.user.associatePlanStatus, 'ACTIVE')
+  assert.equal(first.invoice.status, 'Pago')
+  assert.equal(retry.idempotent, true)
 })
 
 test('MASTER CRUD synchronizes fleet records with the linked user account', async () => {

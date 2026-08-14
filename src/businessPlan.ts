@@ -1,6 +1,7 @@
 export const ASSOCIATE_PLAN_PRICE_CENTS = 5_500
 export const ASSOCIATE_BONUS_CAP_CENTS = 50_000
 export const SHAREHOLDER_MIN_QUOTA_CENTS = 50_000
+export const SHAREHOLDER_EARNING_CAP_BPS = 20_000
 export const DIRECT_REFERRAL_BPS = 500
 export const UNILEVEL_LEVELS = [
   { level: 1, bps: 600 },
@@ -33,6 +34,11 @@ export type BonusLike = {
   type?: string
 }
 
+export type DailyEarningLike = {
+  userId: string
+  creditedAmountCents: number
+}
+
 export function withBusinessPlanDefaults<T extends BusinessParticipant>(participant: T): T & Required<Pick<BusinessParticipant, 'membershipType' | 'associatePlanStatus' | 'associatePlanAmountCents' | 'bonusCapCents'>> {
   return {
     ...participant,
@@ -45,7 +51,9 @@ export function withBusinessPlanDefaults<T extends BusinessParticipant>(particip
 
 export function isBonusEligibleParticipant(participant: BusinessParticipant): boolean {
   const normalized = withBusinessPlanDefaults(participant)
-  return normalized.role === 'ASSOCIATE' && normalized.status === 'ACTIVE' && normalized.associatePlanStatus === 'ACTIVE'
+  return normalized.role === 'ASSOCIATE'
+    && normalized.status === 'ACTIVE'
+    && (normalized.membershipType === 'SHAREHOLDER' || normalized.associatePlanStatus === 'ACTIVE')
 }
 
 export function allocateBonusByBusinessPlan(participant: BusinessParticipant, entries: BonusLike[], amountCents: number) {
@@ -61,17 +69,48 @@ export function allocateBonusByBusinessPlan(participant: BusinessParticipant, en
   return { availableCents, blockedCents: amountCents - availableCents }
 }
 
-export function canUpgradeToShareholder(participant: BusinessParticipant, quotaAmountCents: number): boolean {
+export function allocateEarningByBusinessPlan(participant: BusinessParticipant, entries: BonusLike[], dailyEarnings: DailyEarningLike[], quotaAmountCents: number, amountCents: number) {
+  if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error('O valor do ganho deve ser positivo e informado em centavos')
+  if (!Number.isInteger(quotaAmountCents) || quotaAmountCents < 0) throw new Error('O valor das cotas deve ser informado em centavos')
   const normalized = withBusinessPlanDefaults(participant)
-  return normalized.role === 'ASSOCIATE' && normalized.associatePlanStatus === 'ACTIVE' && Number.isInteger(quotaAmountCents) && quotaAmountCents >= SHAREHOLDER_MIN_QUOTA_CENTS
+  const bonusCents = entries
+    .filter(entry => entry.userId === normalized.id && entry.amountCents > 0 && ['PENDING', 'APPROVED'].includes(entry.status))
+    .reduce((sum, entry) => sum + entry.amountCents, 0)
+  const dailyCents = dailyEarnings
+    .filter(entry => entry.userId === normalized.id && entry.creditedAmountCents > 0)
+    .reduce((sum, entry) => sum + entry.creditedAmountCents, 0)
+  const consumedCents = bonusCents + dailyCents
+  const capCents = normalized.membershipType === 'SHAREHOLDER'
+    ? Math.floor(quotaAmountCents * SHAREHOLDER_EARNING_CAP_BPS / 10_000)
+    : normalized.bonusCapCents
+  const availableCents = Math.min(amountCents, Math.max(0, capCents - consumedCents))
+  return { availableCents, cappedCents: amountCents - availableCents, capCents, consumedCents }
 }
 
-export function releaseBlockedBonuses<T extends BonusLike>(entries: T[], userId: string): number {
+export function canUpgradeToShareholder(participant: BusinessParticipant, quotaAmountCents: number): boolean {
+  const normalized = withBusinessPlanDefaults(participant)
+  return normalized.role === 'ASSOCIATE' && normalized.status === 'ACTIVE' && Number.isInteger(quotaAmountCents) && quotaAmountCents >= SHAREHOLDER_MIN_QUOTA_CENTS
+}
+
+export function releaseBlockedBonuses<T extends BonusLike & { id?: string; reason?: string }>(entries: T[], userId: string, maxReleaseCents = Number.POSITIVE_INFINITY, idFactory?: () => string): number {
   let released = 0
-  for (const entry of entries) {
+  for (const entry of [...entries]) {
     if (entry.userId === userId && entry.status === 'BLOCKED_UPGRADE') {
-      entry.status = 'PENDING'
-      released += entry.amountCents
+      const availableCents = Math.max(0, maxReleaseCents - released)
+      if (entry.amountCents <= availableCents) {
+        entry.status = 'PENDING'
+        released += entry.amountCents
+      } else if (availableCents > 0) {
+        if (!idFactory) throw new Error('Um gerador de identificador é obrigatório para dividir ganhos no teto')
+        const cappedCents = entry.amountCents - availableCents
+        entry.amountCents = availableCents
+        entry.status = 'PENDING'
+        released += availableCents
+        entries.push({ ...entry, id: idFactory(), amountCents: cappedCents, status: 'CAPPED_200_PERCENT', reason: 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' } as T)
+      } else {
+        entry.status = 'CAPPED_200_PERCENT'
+        entry.reason = 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite'
+      }
     }
   }
   return released

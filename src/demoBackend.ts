@@ -1,5 +1,6 @@
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
-import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateBonusByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
+import { summarizeBonusPeriods } from './bonusPeriods'
 
 type Row = Record<string, any> & { id: string }
 
@@ -17,11 +18,22 @@ export interface DemoDatabase {
   profiles: Record<string, Record<string, any>>
   commissionRules: CommissionRule[]
   commissionEvents: Row[]
+  dailyProfitabilityRuns: Row[]
+  dailyProfitabilities: Row[]
   bonusEntries: Bonus[]
   auditLogs: Row[]
 }
 
 const databaseKey = 'gomove-demo-database-v4'
+const canSponsorDemoRegistration = (user: User) => user.status === 'ACTIVE'
+  && (user.role === 'ADMIN_MASTER' || isBonusEligibleParticipant(user))
+const parseDemoQuotaAmount = (input: unknown) => {
+  const amount = Number(input), rawCents = amount * 100, amountCents = Math.round(rawCents)
+  const configuredMax = Number((globalThis as any).process?.env?.GOMOVE_MAX_QUOTA_CENTS)
+  const maxCents = Number.isSafeInteger(configuredMax) && configuredMax >= SHAREHOLDER_MIN_QUOTA_CENTS ? configuredMax : 100_000_000
+  if (!Number.isFinite(amount) || !Number.isSafeInteger(amountCents) || Math.abs(rawCents - amountCents) > 0.000001 || amountCents < SHAREHOLDER_MIN_QUOTA_CENTS || amountCents > maxCents) throw new Error(`A aquisição deve ficar entre R$ 500,00 e R$ ${(maxCents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}, com no máximo duas casas decimais`)
+  return { amount, amountCents }
+}
 const credentials: Record<string, string> = {
   admin: 'gomove2026',
   master: 'gomove2026',
@@ -35,7 +47,7 @@ export function createDemoDatabase(): DemoDatabase {
   const users: User[] = [
     { id: 'usr-admin', name: 'Administrador GoMove', username: 'admin', email: 'admin@gomove.com.br', role: 'ADMIN_MASTER', status: 'ACTIVE', sponsorId: null, inviteCode: 'admin01' },
     { id: 'usr-matheus', name: 'Matheus Oliveira', username: 'matheus', email: 'matheus@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-admin', inviteCode: 'matheus01', membershipType: 'SHAREHOLDER', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today(), shareholderSince: today() },
-    { id: 'usr-ana', name: 'Ana Silva', username: 'ana', email: 'ana@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-matheus', inviteCode: 'ana01', membershipType: 'ASSOCIATE', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today() },
+    { id: 'usr-ana', name: 'Ana Silva', username: 'ana', email: 'ana@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-matheus', inviteCode: 'ana01', registrationSource: 'INVITE', membershipType: 'ASSOCIATE', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today() },
     { id: 'usr-bruno', name: 'Bruno Costa', username: 'bruno', email: 'bruno@gomove.com.br', role: 'ASSOCIATE', status: 'PENDING', sponsorId: 'usr-matheus', inviteCode: 'bruno01', membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS },
     { id: 'usr-camila', name: 'Camila Rocha', username: 'camila', email: 'camila@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-ana', inviteCode: 'camila01', membershipType: 'ASSOCIATE', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today() },
   ]
@@ -83,6 +95,8 @@ export function createDemoDatabase(): DemoDatabase {
     commissionPlanVersion: COMMISSION_PLAN_VERSION,
     commissionRules: [{ id: 'rule-default-v2', name: 'Indicação direta + Unilevel GoMove', eventType: 'INVESTMENT_CONFIRMED', active: true, directReferralBps: DIRECT_REFERRAL_BPS, levels: UNILEVEL_LEVELS.map(level => ({ ...level })), createdAt: today() }],
     commissionEvents: [],
+    dailyProfitabilityRuns: [],
+    dailyProfitabilities: [],
     bonusEntries: [
       { id: 'BON-001', userId: 'usr-matheus', amountCents: 9250, status: 'APPROVED', type: 'UNILEVEL', reason: 'Bônus de indicação', level: 1, createdAt: today() },
       { id: 'BON-002', userId: 'usr-ana', amountCents: 25000, status: 'PENDING', type: 'UNILEVEL', reason: 'Investimento confirmado', level: 1, createdAt: today() },
@@ -204,13 +218,84 @@ function requireUser(db: DemoDatabase, token: string | null) {
   return user
 }
 
+function calculateDemoProfitabilityBonuses(db: DemoDatabase, participantId: string, eventId: string, amountCents: number, levelsInput: unknown) {
+  const levels = validatedLevels(levelsInput), byLevel = new Map(levels.map(rule => [rule.level, rule])), byId = new Map(db.users.map(item => [item.id, item]))
+  let current = byId.get(participantId)
+  const rows: Array<{ userId: string; level: number; amountCents: number; type: 'UNILEVEL_PROFITABILITY'; idempotencyKey: string }> = []
+  for (let level = 1; level <= levels[levels.length - 1].level; level += 1) {
+    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
+    if (!current) break
+    const rule = byLevel.get(level)
+    if (!rule || !isBonusEligibleParticipant(current)) continue
+    const bonusCents = Math.floor(amountCents * rule.bps / 10_000)
+    if (bonusCents > 0) rows.push({ userId: current.id, level, amountCents: bonusCents, type: 'UNILEVEL_PROFITABILITY', idempotencyKey: `${eventId}:${current.id}:UNILEVEL_PROFITABILITY:${level}` })
+  }
+  return rows
+}
+
+function confirmedQuotaCents(db: DemoDatabase, userId: string) {
+  return db.investments
+    .filter(investment => investment.userId === userId && (investment.status === 'Ativo' || investment.paymentStatus === 'CONFIRMED'))
+    .reduce((sum, investment) => sum + Number(investment.amountCents || 0), 0)
+}
+
+function allocateEarning(db: DemoDatabase, participant: User, amountCents: number) {
+  return allocateEarningByBusinessPlan(participant, db.bonusEntries, db.dailyProfitabilities as Array<Row & { userId: string; creditedAmountCents: number }>, confirmedQuotaCents(db, participant.id), amountCents)
+}
+
+function processDailyProfitabilityRun(db: DemoDatabase, run: Row, actorId: string) {
+  if (run.status === 'PROCESSED') return { run, earnings: db.dailyProfitabilities.filter(item => item.runId === run.id), bonuses: db.bonusEntries.filter(item => item.dailyProfitabilityRunId === run.id), idempotent: true }
+  if (run.status !== 'SCHEDULED') throw new Error('O Diário não está disponível para processamento')
+  const rule = db.commissionRules.find(item => item.active)
+  if (!rule) throw new Error('Ative uma regra de Unilevel antes de processar o Diário')
+  const levels = validatedLevels(rule.levels), earnings: Row[] = [], bonuses: Bonus[] = []
+  Object.assign(run, { status: 'PROCESSING', participantCount: 0, grossAmountCents: 0, creditedAmountCents: 0, cappedAmountCents: 0, unilevelAmountCents: 0 })
+  for (const participant of db.users.filter(item => item.membershipType === 'SHAREHOLDER' && isBonusEligibleParticipant(item))) {
+    const quotaAmountCents = confirmedQuotaCents(db, participant.id)
+    if (quotaAmountCents <= 0) continue
+    const grossAmountCents = Math.floor(quotaAmountCents * run.rateBps / 10_000)
+    if (grossAmountCents <= 0) continue
+    const allocation = allocateEarning(db, participant, grossAmountCents)
+    const earning: Row = { id: id('REN'), runId: run.id, userId: participant.id, date: run.date, rateBps: run.rateBps, quotaAmountCents, grossAmountCents, creditedAmountCents: allocation.availableCents, cappedAmountCents: allocation.cappedCents, capCents: allocation.capCents, createdAt: today() }
+    db.dailyProfitabilities.unshift(earning); earnings.push(earning)
+    run.participantCount += 1; run.grossAmountCents += grossAmountCents; run.creditedAmountCents += allocation.availableCents; run.cappedAmountCents += allocation.cappedCents
+    if (allocation.availableCents > 0) db.transactions.unshift({ id: id('MOV'), userId: participant.id, dailyProfitabilityId: earning.id, dailyProfitabilityRunId: run.id, date: run.date, description: `Diário de ${run.rateBps / 100}% sobre as cotas`, amount: allocation.availableCents / 100, status: 'Crédito', createdAt: today() })
+    if (allocation.availableCents <= 0) continue
+    for (const calculated of calculateDemoProfitabilityBonuses(db, participant.id, earning.id, allocation.availableCents, levels)) {
+      const recipient = db.users.find(item => item.id === calculated.userId)!
+      const bonusAllocation = allocateEarning(db, recipient, calculated.amountCents)
+      const base = { userId: recipient.id, sourceUserId: participant.id, level: calculated.level, eventId: earning.id, dailyProfitabilityId: earning.id, dailyProfitabilityRunId: run.id, type: calculated.type, reason: `Unilevel N${calculated.level} sobre o Diário de ${participant.name}`, createdAt: today() }
+      if (bonusAllocation.availableCents > 0) {
+        const bonus: Bonus = { id: id('BON'), ...base, amountCents: bonusAllocation.availableCents, status: 'APPROVED', idempotencyKey: bonusAllocation.cappedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey }
+        db.bonusEntries.unshift(bonus); bonuses.push(bonus); run.unilevelAmountCents += bonus.amountCents
+        db.transactions.unshift({ id: id('MOV'), userId: recipient.id, bonusEntryId: bonus.id, dailyProfitabilityId: earning.id, dailyProfitabilityRunId: run.id, date: run.date, description: `Unilevel N${calculated.level} sobre o Diário de ${participant.name}`, amount: bonus.amountCents / 100, status: 'Crédito', createdAt: today() })
+      }
+      if (bonusAllocation.cappedCents > 0) {
+        const capped: Bonus = { id: id('BON'), ...base, amountCents: bonusAllocation.cappedCents, status: 'CAPPED_200_PERCENT', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: 'Teto de ganhos atingido; renove suas cotas para ampliar o limite' }
+        db.bonusEntries.unshift(capped); bonuses.push(capped)
+      }
+    }
+  }
+  Object.assign(run, { status: 'PROCESSED', processedAt: today() })
+  audit(db, actorId, 'DAILY_PROFITABILITY_PROCESS', 'DAILY_PROFITABILITY', run.id, { date: run.date, rateBps: run.rateBps, participantCount: run.participantCount, creditedAmountCents: run.creditedAmountCents, cappedAmountCents: run.cappedAmountCents, unilevelAmountCents: run.unilevelAmountCents })
+  return { run, earnings, bonuses, idempotent: false }
+}
+
 function businessSummary(db: DemoDatabase, user: User) {
   const bonuses = db.bonusEntries.filter(entry => entry.userId === user.id && entry.amountCents > 0)
   const approvedBonusCents = bonuses.filter(entry => entry.status === 'APPROVED').reduce((sum, entry) => sum + entry.amountCents, 0)
   const pendingBonusCents = bonuses.filter(entry => entry.status === 'PENDING').reduce((sum, entry) => sum + entry.amountCents, 0)
   const blockedBonusCents = bonuses.filter(entry => entry.status === 'BLOCKED_UPGRADE').reduce((sum, entry) => sum + entry.amountCents, 0)
   const quotaAmountCents = db.investments.filter(investment => investment.userId === user.id && (investment.status === 'Ativo' || investment.paymentStatus === 'CONFIRMED')).reduce((sum, investment) => sum + Number(investment.amountCents || 0), 0)
-  return { ...publicUser(user), approvedBonusCents, pendingBonusCents, blockedBonusCents, bonusCapRemainingCents: user.membershipType === 'SHAREHOLDER' ? null : Math.max(0, Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS) - approvedBonusCents - pendingBonusCents), quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
+  const dailyEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.creditedAmountCents || 0), 0)
+  const cappedEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.cappedAmountCents || 0), 0) + bonuses.filter(entry => entry.status === 'CAPPED_200_PERCENT').reduce((sum, entry) => sum + entry.amountCents, 0)
+  const earningCapCents = user.membershipType === 'SHAREHOLDER' ? quotaAmountCents * 2 : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
+  const earningCapConsumedCents = approvedBonusCents + pendingBonusCents + dailyEarningCents
+  const earningCapRemainingCents = Math.max(0, earningCapCents - earningCapConsumedCents)
+  const registrationAudit = db.auditLogs.find(entry => entry.action === 'REGISTER' && entry.targetId === user.id)
+  const createdViaInvite = Boolean(user.registrationSource === 'INVITE' || registrationAudit?.details?.source === 'INVITE')
+  const bonusPeriods = summarizeBonusPeriods(user.id, db.bonusEntries, db.transactions)
+  return { ...publicUser(user), createdViaInvite, bonusPeriods, approvedBonusCents, pendingBonusCents, blockedBonusCents, dailyEarningCents, cappedEarningCents, earningCapCents, earningCapConsumedCents, earningCapRemainingCents, bonusCapRemainingCents: earningCapRemainingCents, quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
 }
 
 export async function demoRequest<T>(path: string, method = 'GET', body?: any, token: string | null = null): Promise<T> {
@@ -230,27 +315,58 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   }
 
   if (method === 'GET' && route.startsWith('/public/invites/')) {
-    const code = route.split('/').pop()
-    const sponsor = db.users.find(item => item.inviteCode === code && item.status === 'ACTIVE')
+    const code = String(route.split('/').pop() ?? '').toLowerCase()
+    const sponsor = db.users.find(item => item.inviteCode.toLowerCase() === code && canSponsorDemoRegistration(item))
     if (!sponsor) throw new Error('Convite indisponível')
     return { sponsor: { name: sponsor.name, inviteCode: sponsor.inviteCode } } as T
   }
 
   if (method === 'POST' && route === '/public/register') {
-    const sponsor = db.users.find(item => item.inviteCode === body?.inviteCode && item.status === 'ACTIVE')
+    const name = String(body?.name ?? '').trim(), username = String(body?.username ?? '').trim().toLowerCase(), email = String(body?.email ?? '').trim().toLowerCase(), password = String(body?.password ?? '')
+    if (!name || username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || password.length < 6 || password.length > 128) throw new Error('Dados de cadastro inválidos')
+    if (username === 'master') throw new Error('O nome de usuário master é reservado')
+    const inviteCode = String(body?.inviteCode ?? '').trim().toLowerCase()
+    const sponsor = inviteCode
+      ? db.users.find(item => item.inviteCode.toLowerCase() === inviteCode && canSponsorDemoRegistration(item))
+      : db.users.find(item => item.role === 'ADMIN_MASTER' && canSponsorDemoRegistration(item))
     if (!sponsor) throw new Error('Convite indisponível')
-    if (db.users.some(item => item.username === body.username || item.email === body.email)) throw new Error('Usuário ou e-mail já cadastrado')
-    const user: User & { demoPassword: string } = { id: id('USR'), name: body.name, username: body.username, email: body.email, role: 'ASSOCIATE', status: 'PENDING', sponsorId: sponsor.id, inviteCode: `${body.username}01`, demoPassword: body.password, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
+    if (db.users.some(item => item.username.toLowerCase() === username || item.email?.toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
+    const user: User & { demoPassword: string } = { id: id('USR'), name, username, email, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode: `${username}01`, registrationSource: inviteCode ? 'INVITE' : 'DIRECT', demoPassword: password, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
     db.users.push(user)
-    audit(db, user.id, 'REGISTER', 'USER', user.id, { sponsorId: sponsor.id })
+    audit(db, user.id, 'REGISTER', 'USER', user.id, { sponsorId: sponsor.id, source: inviteCode ? 'INVITE' : 'DIRECT' })
     save(db)
-    return { user: publicUser(user) } as T
+    return { token: `demo:${user.username}`, user: publicUser(user) } as T
   }
 
   const user = requireUser(db, token)
   const isAdmin = user.role === 'ADMIN_MASTER'
   if (route.startsWith('/admin/') && !isAdmin) throw Object.assign(new Error('Acesso administrativo obrigatório'), { status: 403 })
   if (method === 'GET' && route === '/auth/me') return { user: publicUser(user) } as T
+
+  if (method === 'POST' && route === '/associate-plan') {
+    if (user.associatePlanStatus === 'ACTIVE') throw new Error('O Plano de Associado já está ativo')
+    if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
+    const existing = db.invoices.find(item => item.userId === user.id && item.type === 'ASSOCIATE_PLAN' && item.idempotencyKey === body.idempotencyKey)
+    if (existing) return existing as T
+    const paymentAsset = ['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER'
+    const invoice = { id: id('INV'), userId: user.id, type: 'ASSOCIATE_PLAN', description: 'Plano de Associado GoMove', amount: ASSOCIATE_PLAN_PRICE_CENTS / 100, remaining: ASSOCIATE_PLAN_PRICE_CENTS / 100, status: 'Pendente', paymentStatus: 'PENDING', paymentProvider: 'COINPAYMENTS', paymentMethod: 'CoinPayments', paymentAsset, paymentReference: id('CP'), coinPaymentsInvoiceId: id('CPI'), paymentUrl: '/activation?demo-associate-plan=pending', idempotencyKey: body.idempotencyKey, demo: true, createdAt: today() }
+    db.invoices.unshift(invoice)
+    audit(db, user.id, 'ASSOCIATE_PLAN_CHECKOUT', 'INVOICE', invoice.id, { paymentAsset })
+    save(db)
+    return invoice as T
+  }
+
+  const demoPlanConfirmation = route.match(/^\/associate-plan\/([^/]+)\/confirm-demo$/)
+  if (method === 'POST' && demoPlanConfirmation) {
+    const invoice = db.invoices.find(item => item.id === demoPlanConfirmation[1] && item.userId === user.id && item.type === 'ASSOCIATE_PLAN')
+    if (!invoice) throw new Error('Cobrança do Plano de Associado não encontrada')
+    if (invoice.paymentStatus === 'CONFIRMED') return { invoice, user: publicUser(user), idempotent: true } as T
+    Object.assign(invoice, { status: 'Pago', paymentStatus: 'CONFIRMED', remaining: 0, paidAt: today() })
+    Object.assign(user, { associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, associatePlanPaidAt: today() })
+    audit(db, user.id, 'ASSOCIATE_PLAN_CONFIRM_DEMO', 'INVOICE', invoice.id)
+    save(db)
+    return { invoice, user: publicUser(user), idempotent: false } as T
+  }
 
   if (method === 'GET' && route === '/state') {
     const owned = (rows: Row[]) => rows.filter(row => !row.userId || row.userId === user.id)
@@ -281,12 +397,13 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'POST' && route === '/admin/associates') {
     const username = String(body?.username ?? '').trim().toLowerCase()
     const email = String(body?.email ?? '').trim().toLowerCase()
-    const sponsor = body?.sponsorId ? db.users.find(item => item.id === body.sponsorId && item.status === 'ACTIVE') : db.users.find(item => item.role === 'ADMIN_MASTER' && item.status === 'ACTIVE')
-    if (!body?.name?.trim() || username.length < 3 || !email.includes('@') || String(body?.password ?? '').length < 6 || !sponsor) throw new Error('Preencha nome, usuário, e-mail, senha e patrocinador válidos')
+    const password = String(body?.password ?? '')
+    const sponsor = body?.sponsorId ? db.users.find(item => item.id === body.sponsorId && canSponsorDemoRegistration(item)) : db.users.find(item => item.role === 'ADMIN_MASTER' && canSponsorDemoRegistration(item))
+    if (username === 'master') throw new Error('O nome de usuário master é reservado')
+    if (!body?.name?.trim() || username.length < 3 || !email.includes('@') || password.length < 6 || password.length > 128 || !sponsor) throw new Error('Preencha nome, usuário, e-mail, senha e patrocinador válidos')
     if (db.users.some(item => item.username.toLowerCase() === username || item.email?.toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
     const associatePlanStatus = ['ACTIVE', 'PENDING', 'INACTIVE'].includes(body.associatePlanStatus) ? body.associatePlanStatus : 'PENDING'
     const requestedStatus = ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : 'PENDING'
-    if (requestedStatus === 'ACTIVE' && associatePlanStatus !== 'ACTIVE') throw new Error('O Plano de Associado de R$ 55,00 deve estar ativo antes da ativação da conta')
     const account: User & { demoPassword: string } = { id: id('USR'), name: body.name.trim(), username, email, role: 'ASSOCIATE', status: requestedStatus, sponsorId: sponsor.id, inviteCode: `${username}${Math.floor(10 + Math.random() * 90)}`, demoPassword: body.password, membershipType: 'ASSOCIATE', associatePlanStatus, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, ...(associatePlanStatus === 'ACTIVE' ? { associatePlanPaidAt: today() } : {}) }
     db.users.push(account)
     db.profiles[account.id] = { name: account.name, email: account.email, phone: body.phone ?? '', country: 'Brasil' }
@@ -302,16 +419,16 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const requestedSponsorId = body.sponsorId === null ? db.users.find(item => item.role === 'ADMIN_MASTER')?.id : body.sponsorId
     const username = String(body?.username ?? target.username).trim().toLowerCase()
     const email = String(body?.email ?? target.email ?? '').trim().toLowerCase()
+    if (username === 'master') throw new Error('O nome de usuário master é reservado')
     if (!body?.name?.trim() || username.length < 3 || !email.includes('@')) throw new Error('Nome, usuário e e-mail são obrigatórios')
     if (db.users.some(item => item.id !== target.id && (item.username.toLowerCase() === username || item.email?.toLowerCase() === email))) throw new Error('Usuário ou e-mail já cadastrado')
-    if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId && item.status === 'ACTIVE') || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador precisa estar ativo e não pode criar um ciclo')
+    if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId && canSponsorDemoRegistration(item)) || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador precisa estar financeiramente elegível e não pode criar um ciclo')
     const previousName = target.name
     const nextPlanStatus = ['ACTIVE', 'PENDING', 'INACTIVE'].includes(body.associatePlanStatus) ? body.associatePlanStatus : target.associatePlanStatus
     const nextStatus = ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : target.status
-    if (nextStatus === 'ACTIVE' && nextPlanStatus !== 'ACTIVE') throw new Error('O Plano de Associado de R$ 55,00 deve estar ativo antes da ativação da conta')
     Object.assign(target, { name: body.name.trim(), username, email, status: nextStatus, associatePlanStatus: nextPlanStatus, sponsorId: requestedSponsorId ?? target.sponsorId })
     if (nextPlanStatus === 'ACTIVE' && !target.associatePlanPaidAt) target.associatePlanPaidAt = today()
-    if (body.password) { if (String(body.password).length < 6) throw new Error('A senha deve ter ao menos 6 caracteres'); target.demoPassword = body.password }
+    if (body.password) { if (String(body.password).length < 6 || String(body.password).length > 128) throw new Error('A senha deve ter entre 6 e 128 caracteres'); target.demoPassword = body.password }
     db.profiles[target.id] = { ...(db.profiles[target.id] ?? {}), name: target.name, email: target.email, phone: body.phone ?? db.profiles[target.id]?.phone ?? '' }
     db.vehicles.filter(item => item.userId === target.id || item.driver === previousName).forEach(item => { item.userId = target.id; item.driver = target.name })
     audit(db, user.id, 'RECORD_UPDATE', 'USER', target.id, { name: target.name, username, email, status: target.status, sponsorId: target.sponsorId })
@@ -335,6 +452,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'GET' && route === '/admin/network/tree') return tree(db, url.searchParams.get('rootUserId') || 'usr-admin', Number(url.searchParams.get('depth') ?? 5)) as T
   if (method === 'GET' && route === '/admin/commission-rules') return paged(db.commissionRules) as T
   if (method === 'GET' && route === '/admin/bonus-entries') return paged(db.bonusEntries) as T
+  if (method === 'GET' && route === '/admin/daily-profitabilities') return paged(db.dailyProfitabilityRuns) as T
   if (method === 'GET' && route === '/admin/audit-logs') return paged(db.auditLogs) as T
 
   const adminCollection = route.match(/^\/admin\/(vehicles|investments|orders|invoices|withdrawals|tickets)$/)?.[1] as keyof DemoDatabase | undefined
@@ -349,9 +467,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (adminCollection === 'vehicles') item.driver = owner?.name ?? '—'
     if (adminCollection === 'investments') {
       item.pack = 'Cotas GoMove'
-      item.amountCents = Math.round(Number(item.amount || 0) * 100)
-      if (item.amountCents < SHAREHOLDER_MIN_QUOTA_CENTS) throw new Error('A aquisição mínima é de R$ 500,00 em cotas')
-      if (owner?.associatePlanStatus !== 'ACTIVE') throw new Error('O Plano de Associado de R$ 55,00 precisa estar ativo')
+      Object.assign(item, parseDemoQuotaAmount(item.amount))
     }
     ;(db[adminCollection] as Row[]).unshift(item)
     audit(db, user.id, 'RECORD_CREATE', String(adminCollection).toUpperCase(), item.id, item)
@@ -361,9 +477,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
 
   const associateStatus = route.match(/^\/admin\/associates\/([^/]+)\/status$/)
   if (method === 'PATCH' && associateStatus) {
-    const target = db.users.find(item => item.id === associateStatus[1])
-    if (!target || !['ACTIVE', 'PENDING', 'BLOCKED'].includes(body?.status)) throw new Error('Alteração inválida')
-    if (body.status === 'ACTIVE' && target.associatePlanStatus !== 'ACTIVE') throw new Error('Ative primeiro o Plano de Associado de R$ 55,00')
+    const target = db.users.find(item => item.id === associateStatus[1] && item.role === 'ASSOCIATE')
+    if (!target || !['ACTIVE', 'PENDING', 'BLOCKED'].includes(body?.status)) throw new Error('Associado ou alteração inválida')
     target.status = body.status
     audit(db, user.id, 'STATUS_CHANGE', 'USER', target.id, { status: body.status, reason: body.reason })
     save(db)
@@ -372,8 +487,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
 
   const associateSponsor = route.match(/^\/admin\/associates\/([^/]+)\/sponsor$/)
   if (method === 'PATCH' && associateSponsor) {
-    const target = db.users.find(item => item.id === associateSponsor[1])
-    if (!target || !db.users.some(item => item.id === body?.sponsorId && item.status === 'ACTIVE') || descendants(db, target.id).has(body.sponsorId) || !String(body?.reason ?? '').trim()) throw new Error('Patrocinador inválido, inativo, cíclico ou sem justificativa')
+    const target = db.users.find(item => item.id === associateSponsor[1] && item.role === 'ASSOCIATE')
+    if (!target || !db.users.some(item => item.id === body?.sponsorId && canSponsorDemoRegistration(item)) || descendants(db, target.id).has(body.sponsorId) || !String(body?.reason ?? '').trim()) throw new Error('Associado ou patrocinador inelegível, cíclico ou sem justificativa')
     target.sponsorId = body.sponsorId
     audit(db, user.id, 'SPONSOR_CHANGE', 'USER', target.id, { sponsorId: body.sponsorId, reason: body.reason })
     save(db)
@@ -421,16 +536,37 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     return { id: rule.id } as T
   }
 
+  if (method === 'POST' && route === '/admin/daily-profitabilities') {
+    const date = String(body?.date ?? '').trim()
+    const rateBps = Number(body?.rateBps)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isInteger(rateBps) || rateBps < 1 || rateBps > 10_000) throw new Error('Informe uma data e um percentual diário válido')
+    if (db.dailyProfitabilityRuns.some(run => run.date === date)) throw new Error('O Diário desta data já foi cadastrado')
+    const run: Row = { id: id('DIA'), date, rateBps, description: String(body?.description ?? '').trim(), status: 'SCHEDULED', createdBy: user.id, createdAt: today() }
+    db.dailyProfitabilityRuns.unshift(run)
+    audit(db, user.id, 'DAILY_PROFITABILITY_SCHEDULE', 'DAILY_PROFITABILITY', run.id, { date, rateBps })
+    save(db)
+    return { run } as T
+  }
+
+  const dailyProcess = route.match(/^\/admin\/daily-profitabilities\/([^/]+)\/process$/)
+  if (method === 'POST' && dailyProcess) {
+    const run = db.dailyProfitabilityRuns.find(item => item.id === dailyProcess[1])
+    if (!run) throw new Error('Diário não encontrado')
+    const result = processDailyProfitabilityRun(db, run, user.id)
+    if (!result.idempotent) save(db)
+    return result as T
+  }
+
   if (method === 'POST' && route === '/admin/bonus-entries/manual-credit') {
-    const recipient = db.users.find(item => item.id === body?.userId && item.status === 'ACTIVE')
-    if (!recipient || !Number.isInteger(body?.amountCents) || body.amountCents <= 0 || !String(body?.reason ?? '').trim()) throw new Error('Selecione uma conta ativa, valor e justificativa válidos')
-    const allocation = allocateBonusByBusinessPlan(recipient, db.bonusEntries, body.amountCents)
+    const recipient = db.users.find(item => item.id === body?.userId && isBonusEligibleParticipant(item))
+    if (!recipient || !Number.isInteger(body?.amountCents) || body.amountCents <= 0 || !String(body?.reason ?? '').trim()) throw new Error('Selecione uma conta financeiramente elegível, valor e justificativa válidos')
+    const allocation = allocateEarning(db, recipient, body.amountCents)
     const created: Bonus[] = []
     if (allocation.availableCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.availableCents, status: 'PENDING', type: 'MANUAL', reason: String(body.reason).trim(), createdAt: today() })
-    if (allocation.blockedCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.blockedCents, status: 'BLOCKED_UPGRADE', type: 'MANUAL', reason: 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista', createdAt: today() })
+    if (allocation.cappedCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_200_PERCENT' : 'BLOCKED_UPGRADE', type: 'MANUAL', reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista', createdAt: today() })
     db.bonusEntries.unshift(...created)
     const entry = created[0]
-    audit(db, user.id, 'BONUS_MANUAL', 'BONUS', entry.id, { blockedCents: allocation.blockedCents })
+    audit(db, user.id, 'BONUS_MANUAL', 'BONUS', entry.id, { cappedCents: allocation.cappedCents, capCents: allocation.capCents })
     save(db)
     return entry as T
   }
@@ -466,7 +602,6 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (existing) return { event: existing, bonuses: db.bonusEntries.filter(item => item.eventId === existing.id), idempotent: true } as T
     const investor = db.users.find(item => item.id === investment.userId && item.status === 'ACTIVE')
     if (!investor || !Number.isInteger(investment.amountCents) || investment.amountCents <= 0) throw new Error('Investimento precisa estar vinculado a uma conta ativa e possuir valor válido')
-    if (investor.associatePlanStatus !== 'ACTIVE') throw new Error('O Plano de Associado de R$ 55,00 precisa estar ativo antes da aquisição de cotas')
     if (investment.amountCents < SHAREHOLDER_MIN_QUOTA_CENTS) throw new Error('A aquisição mínima para o upgrade de Cotista é de R$ 500,00 em cotas')
     const rule = db.commissionRules.find(item => item.active && item.eventType === 'INVESTMENT_CONFIRMED')
     if (!rule) throw new Error('Ative uma regra de comissão antes da confirmação')
@@ -476,10 +611,10 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     for (const calculated of calculateDemoBonuses(db, investor.id, event.id, investment.amountCents, plan.levels, plan.directReferralBps)) {
       if (db.bonusEntries.some(item => item.idempotencyKey === calculated.idempotencyKey || item.idempotencyKey === `${calculated.idempotencyKey}:available` || item.idempotencyKey === `${calculated.idempotencyKey}:blocked`)) continue
       const recipient = db.users.find(account => account.id === calculated.userId)!
-      const allocation = allocateBonusByBusinessPlan(recipient, db.bonusEntries, calculated.amountCents)
+      const allocation = allocateEarning(db, recipient, calculated.amountCents)
       const base = { userId: calculated.userId, level: calculated.level, eventId: event.id, investmentId: investment.id, type: calculated.type, reason: calculated.type === 'DIRECT_REFERRAL' ? `Indicação direta de 5% sobre as cotas ${investment.id}` : `Unilevel N${calculated.level} sobre as cotas ${investment.id}`, createdAt: today() }
-      if (allocation.availableCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.availableCents, status: 'PENDING', idempotencyKey: allocation.blockedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey })
-      if (allocation.blockedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.blockedCents, status: 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:blocked`, reason: 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
+      if (allocation.availableCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.availableCents, status: 'PENDING', idempotencyKey: allocation.cappedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey })
+      if (allocation.cappedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_200_PERCENT' : 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
     }
     investment.paymentStatus = 'CONFIRMED'
     investment.status = 'Ativo'
@@ -487,7 +622,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     let releasedBonusCents = 0
     if (canUpgradeToShareholder(investor, investment.amountCents)) {
       if (investor.membershipType !== 'SHAREHOLDER') { investor.membershipType = 'SHAREHOLDER'; investor.shareholderSince = today() }
-      releasedBonusCents = releaseBlockedBonuses(db.bonusEntries, investor.id)
+      const capacity = allocateEarning(db, investor, 1)
+      releasedBonusCents = releaseBlockedBonuses(db.bonusEntries, investor.id, Math.max(0, capacity.capCents - capacity.consumedCents), () => id('BON'))
     }
     audit(db, user.id, 'INVESTMENT_CONFIRM', 'INVESTMENT', investment.id, { eventId: event.id, ruleId: rule.id, membershipType: investor.membershipType, releasedBonusCents })
     save(db)
@@ -500,10 +636,11 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const item = collection.find(row => row.id === adminPatch[2])
     if (!item) throw new Error('Registro não encontrado')
     if (body?.userId && !db.users.some(account => account.id === body.userId && account.role === 'ASSOCIATE')) throw new Error('Usuário inválido')
+    const quotaUpdate = adminPatch[1] === 'investments' && body?.amount !== undefined ? parseDemoQuotaAmount(body.amount) : undefined
     const previousStatus = item.status
     Object.assign(item, body, { id: item.id })
     if (adminPatch[1] === 'vehicles') item.driver = db.users.find(account => account.id === item.userId)?.name ?? '—'
-    if (adminPatch[1] === 'investments') item.amountCents = Math.round(Number(item.amount || 0) * 100)
+    if (quotaUpdate) Object.assign(item, quotaUpdate)
     if (adminPatch[1] === 'withdrawals' && item.status === 'Pago' && previousStatus !== 'Pago' && !db.transactions.some(transaction => transaction.withdrawalId === item.id)) {
       item.paidAt = new Date().toLocaleDateString('pt-BR')
       db.transactions.unshift({ id: id('MOV'), userId: item.userId, withdrawalId: item.id, date: item.paidAt, description: `Saque ${item.id}`, amount: -Math.abs(Number(item.amount)), status: 'Débito', createdAt: today() })
@@ -525,10 +662,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   const userCollection = route.match(/^\/(investments|orders|withdrawals|tickets)$/)?.[1] as 'investments' | 'orders' | 'withdrawals' | 'tickets' | undefined
   if (method === 'POST' && userCollection) {
     if (userCollection === 'investments') {
-      const amount = Number(body?.amount)
-      const amountCents = Math.round(amount * 100)
-      if (!Number.isFinite(amount) || amountCents < SHAREHOLDER_MIN_QUOTA_CENTS) throw new Error('A aquisição mínima para o upgrade de Cotista é de R$ 500,00 em cotas')
-      if (user.associatePlanStatus !== 'ACTIVE') throw new Error('O Plano de Associado de R$ 55,00 precisa estar ativo para adquirir cotas')
+      const { amount, amountCents } = parseDemoQuotaAmount(body?.amount)
       if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
       const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
       if (existing) return existing as T

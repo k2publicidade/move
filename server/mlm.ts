@@ -1,9 +1,13 @@
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, DIRECT_REFERRAL_BPS, isBonusEligibleParticipant, type AssociatePlanStatus, type MembershipType } from '../src/businessPlan.js'
 
-export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
+export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; registrationSource?: 'INVITE' | 'DIRECT'; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
 export type RuleLevel = { level: number; bps: number }
 export type BonusLedgerEntry = { id: string; userId: string; amountCents: number; status: string; type: string; reversalOfId?: string; reason?: string; createdAt?: string; [key: string]: unknown }
 export type NetworkTree = MlmUser & { children: NetworkTree[] }
+
+export function canSponsorRegistrations(user: MlmUser): boolean {
+  return user.status === 'ACTIVE' && (user.role === 'ADMIN_MASTER' || isBonusEligibleParticipant(user))
+}
 
 export function validateCommissionLevels(input: unknown): RuleLevel[] {
   if (!Array.isArray(input) || input.length === 0 || input.length > 20) throw new Error('Commission rule must have between 1 and 20 levels')
@@ -53,16 +57,20 @@ export function createBonusReversal(entries: BonusLedgerEntry[], originalId: str
   return { id: id(), userId: original.userId, amountCents: -original.amountCents, status: 'APPROVED', type: 'REVERSAL', reversalOfId: original.id, reason: reason.trim(), createdAt: timestamp() }
 }
 
-export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode: string; name: string }, id = crypto.randomUUID): MlmUser {
+export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode?: string; name: string }, id = () => crypto.randomUUID()): MlmUser {
   const username = input.username.trim().toLowerCase(), email = input.email.trim().toLowerCase(), name = input.name.trim()
+  if (username === 'master') throw new Error('username is reserved')
   if (username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || !name || !input.passwordHash) throw new Error('registration data is invalid')
   if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
-  const sponsor = users.find(u => u.inviteCode.toLowerCase() === input.inviteCode.trim().toLowerCase())
-  if (!sponsor || sponsor.status !== 'ACTIVE') throw new Error('active sponsor not found')
+  const inviteCodeInput = input.inviteCode?.trim().toLowerCase()
+  const sponsor = inviteCodeInput
+    ? users.find(u => u.inviteCode.toLowerCase() === inviteCodeInput && canSponsorRegistrations(u))
+    : users.find(u => u.role === 'ADMIN_MASTER' && canSponsorRegistrations(u))
+  if (!sponsor) throw new Error('active sponsor not found')
   const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'
   let inviteCode = ''
   do inviteCode = `${prefix}${Math.random().toString(36).slice(2, 8)}`; while (users.some(user => user.inviteCode.toLowerCase() === inviteCode.toLowerCase()))
-  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'PENDING', sponsorId: sponsor.id, inviteCode, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
+  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode, registrationSource: inviteCodeInput ? 'INVITE' : 'DIRECT', membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
 }
 
 export function wouldCreateSponsorCycle(users: Pick<MlmUser, 'id' | 'sponsorId'>[], userId: string, sponsorId: string | null): boolean {
@@ -88,6 +96,24 @@ export function calculateBonuses(users: MlmUser[], investorId: string, eventId: 
     if (!isBonusEligibleParticipant(current)) continue
     if (level === 1) out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * plan.directReferralBps / 10000), type: 'DIRECT_REFERRAL', idempotencyKey: `${eventId}:${current.id}:DIRECT_REFERRAL` })
     if (rule) out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), type: 'UNILEVEL', idempotencyKey: `${eventId}:${current.id}:UNILEVEL:${level}` })
+  }
+  return out
+}
+
+export function calculateProfitabilityBonuses(users: MlmUser[], participantId: string, eventId: string, amountCents: number, levels: RuleLevel[]) {
+  if (!Number.isInteger(amountCents) || amountCents <= 0 || !eventId.trim()) throw new Error('Daily profitability event is invalid')
+  const participant = users.find(user => user.id === participantId)
+  if (!participant) throw new Error('Participant not found')
+  const rules = validateCommissionLevels(levels), byId = new Map(users.map(user => [user.id, user])), byLevel = new Map(rules.map(rule => [rule.level, rule]))
+  const out: { userId: string; level: number; amountCents: number; type: 'UNILEVEL_PROFITABILITY'; idempotencyKey: string }[] = []
+  let current: MlmUser | undefined = participant
+  for (let level = 1; level <= rules[rules.length - 1].level; level += 1) {
+    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
+    if (!current) break
+    const rule = byLevel.get(level)
+    if (!rule || !isBonusEligibleParticipant(current)) continue
+    const bonusCents = Math.floor(amountCents * rule.bps / 10_000)
+    if (bonusCents > 0) out.push({ userId: current.id, level, amountCents: bonusCents, type: 'UNILEVEL_PROFITABILITY', idempotencyKey: `${eventId}:${current.id}:UNILEVEL_PROFITABILITY:${level}` })
   }
   return out
 }
