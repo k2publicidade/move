@@ -82,22 +82,16 @@ export function wouldCreateSponsorCycle(users: Pick<MlmUser, 'id' | 'sponsorId'>
   return false
 }
 
-export function calculateBonuses(users: MlmUser[], investorId: string, eventId: string, amountCents: number, levels: RuleLevel[], directReferralBps = DIRECT_REFERRAL_BPS) {
+export function calculateDirectReferralBonus(users: MlmUser[], investorId: string, eventId: string, amountCents: number, directReferralBps = DIRECT_REFERRAL_BPS) {
   if (!Number.isInteger(amountCents) || amountCents <= 0 || !eventId.trim()) throw new Error('Commission event is invalid')
   const byId = new Map(users.map(u => [u.id, u])), investor = byId.get(investorId)
   if (!investor) throw new Error('Investor not found')
-  const plan = validateCommissionPlan(levels, directReferralBps), rules = plan.levels, byLevel = new Map(rules.map(rule => [rule.level, rule]))
-  const out: { userId: string; level: number; amountCents: number; type: 'DIRECT_REFERRAL' | 'UNILEVEL'; idempotencyKey: string }[] = []
-  let current = byId.get(investorId)
-  for (let level = 1; level <= rules[rules.length - 1].level; level += 1) {
-    current = current?.sponsorId ? byId.get(current.sponsorId) : undefined
-    if (!current) break
-    const rule = byLevel.get(level)
-    if (!isBonusEligibleParticipant(current)) continue
-    if (level === 1) out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * plan.directReferralBps / 10000), type: 'DIRECT_REFERRAL', idempotencyKey: `${eventId}:${current.id}:DIRECT_REFERRAL` })
-    if (rule) out.push({ userId: current.id, level, amountCents: Math.floor(amountCents * rule.bps / 10000), type: 'UNILEVEL', idempotencyKey: `${eventId}:${current.id}:UNILEVEL:${level}` })
-  }
-  return out
+  const percentage = Number(directReferralBps)
+  if (!Number.isInteger(percentage) || percentage < 1 || percentage > 10_000) throw new Error('Direct referral basis points are invalid')
+  const sponsor = investor.sponsorId ? byId.get(investor.sponsorId) : undefined
+  if (!sponsor || !isBonusEligibleParticipant(sponsor)) return []
+  const bonusCents = Math.floor(amountCents * percentage / 10_000)
+  return bonusCents > 0 ? [{ userId: sponsor.id, level: 1, amountCents: bonusCents, type: 'DIRECT_REFERRAL' as const, idempotencyKey: `${eventId}:${sponsor.id}:DIRECT_REFERRAL` }] : []
 }
 
 export function calculateProfitabilityBonuses(users: MlmUser[], participantId: string, eventId: string, amountCents: number, levels: RuleLevel[]) {
