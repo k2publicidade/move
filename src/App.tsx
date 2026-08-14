@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react'
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, AlertCircle, BarChart3, Bitcoin, CalendarDays, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
   Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Pencil, Plus, Search,
@@ -18,6 +18,7 @@ type PortalState = {
 
 const emptyState: PortalState = { vehicles: [], investments: [], orders: [], invoices: [], transactions: [], withdrawals: [], tickets: [], cart: [], profile: {}, business: {} }
 const vehicleFeatureEnabled = false
+const AUTO_REFRESH_INTERVAL_MS = 5_000
 const brl = (value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0)
 const cents = (value: number) => brl((value || 0) / 100)
 const dateTime = (value?: string) => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }).format(new Date(value)) : '—'
@@ -48,12 +49,32 @@ function useApi(session: Session | null, logout?: () => void) {
   return useMemo(() => new ApiClient(session?.token || null, logout), [session?.token])
 }
 
+function useAutoRefresh(refresh: () => Promise<unknown> | void) {
+  const refreshRef = useRef(refresh)
+  const inFlightRef = useRef(false)
+  useEffect(() => { refreshRef.current = refresh }, [refresh])
+  useEffect(() => {
+    let disposed = false
+    const run = async () => {
+      if (disposed || inFlightRef.current || document.visibilityState === 'hidden') return
+      inFlightRef.current = true
+      try { await refreshRef.current() } finally { inFlightRef.current = false }
+    }
+    const refreshWhenVisible = () => { if (document.visibilityState === 'visible') void run() }
+    const interval = window.setInterval(() => { void run() }, AUTO_REFRESH_INTERVAL_MS)
+    addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => { disposed = true; clearInterval(interval); removeEventListener('focus', refreshWhenVisible); document.removeEventListener('visibilitychange', refreshWhenVisible) }
+  }, [])
+}
+
 function usePortalState(session: Session) {
   const api = useApi(session)
   const [data, setData] = useState<PortalState>()
   const [error, setError] = useState('')
-  const load = () => api.get<PortalState>('/state').then(value => setData({ ...emptyState, ...value })).catch(reason => setError(reason.message))
-  useEffect(() => { void load() }, [])
+  const load = useCallback(() => api.get<PortalState>('/state').then(value => { setData({ ...emptyState, ...value }); setError('') }).catch(reason => setError(reason.message)), [api])
+  useEffect(() => { void load() }, [load])
+  useAutoRefresh(load)
   return { api, data, error, load }
 }
 
@@ -370,11 +391,12 @@ function BonusesPage({ session }: { session: Session }) {
   const [summary, setSummary] = useState<any>()
   const [bonuses, setBonuses] = useState<Bonus[]>([])
   const [error, setError] = useState('')
-  useEffect(() => {
-    Promise.all([api.get<any>('/network/summary'), api.get<ApiPage<Bonus>>('/bonuses/me?pageSize=100')])
-      .then(([bonusSummary, bonusEntries]) => { setSummary(bonusSummary); setBonuses([...bonusEntries.items].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))) })
+  const load = useCallback(() => Promise.all([api.get<any>('/network/summary'), api.get<ApiPage<Bonus>>('/bonuses/me?pageSize=100')])
+      .then(([bonusSummary, bonusEntries]) => { setSummary(bonusSummary); setBonuses([...bonusEntries.items].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))); setError('') })
       .catch(reason => setError(reason.message))
-  }, [])
+  , [api])
+  useEffect(() => { void load() }, [load])
+  useAutoRefresh(load)
   if (!summary && !error) return <Loader />
   return <Page title="Bonificações" subtitle="Acompanhe seus créditos de indicação e Unilevel com transparência."><ErrorBox error={error} /><BonusPeriodSummary periods={summary?.bonusPeriods || { todayCents: 0, weekCents: 0, monthCents: 0 }} /><section className="metric-grid bonus-status-grid"><Metric label="TOTAL APROVADO" value={cents(summary?.approvedBonusCents)} icon={Check} note="Bonificações confirmadas" /><Metric label="AGUARDANDO APROVAÇÃO" value={cents(summary?.pendingBonusCents)} icon={Activity} note="Em análise pelo financeiro" /><Metric label="VALOR BLOQUEADO" value={cents(summary?.blockedBonusCents)} icon={AlertCircle} note={summary?.blockedBonusCents ? 'Aguardando ampliação do limite' : 'Nenhum valor bloqueado'} /><Metric label="LIMITE DISPONÍVEL" value={cents(summary?.earningCapRemainingCents ?? summary?.bonusCapRemainingCents)} icon={ShieldCheck} note={summary?.membershipType === 'SHAREHOLDER' ? 'Dentro do teto de 200% das cotas' : 'Dentro do teto da modalidade'} /></section>{summary?.blockedBonusCents > 0 && <div className="business-plan-alert warning bonus-page-alert"><AlertCircle aria-hidden="true" /><span><b>{cents(summary.blockedBonusCents)} aguardando liberação</b><small>{summary.membershipType === 'SHAREHOLDER' ? 'Renove suas cotas para ampliar o teto de ganhos.' : 'Evolua para Cotista para ampliar sua capacidade de bonificação.'}</small></span><button className="primary-btn" onClick={() => go('/investments')}>{summary.membershipType === 'SHAREHOLDER' ? 'Renovar cotas' : 'Evoluir para Cotista'}</button></div>}<section className="bonus-history" aria-labelledby="bonus-history-title"><div className="store-section-heading"><div><span className="eyebrow">HISTÓRICO COMPLETO</span><h2 id="bonus-history-title">Detalhes das bonificações</h2></div><span>{bonuses.length} {bonuses.length === 1 ? 'lançamento' : 'lançamentos'}</span></div><BonusTable rows={bonuses} detailed /></section></Page>
 }
@@ -387,7 +409,9 @@ function NetworkPage({ session }: { session: Session }) {
   const [bonuses, setBonuses] = useState<Bonus[]>([])
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
-  useEffect(() => { Promise.all([api.get<any>('/network/summary'), api.get<ApiPage<User>>('/network/directs?pageSize=100'), api.get<Array<User & { level: number }>>('/network/unilevel?depth=10'), api.get<ApiPage<Bonus>>('/bonuses/me?pageSize=100')]).then(([networkSummary, directUsers, networkUsers, bonusEntries]) => { setSummary(networkSummary); setDirects(directUsers.items); setUnilevel(networkUsers); setBonuses(bonusEntries.items) }).catch(reason => setError(reason.message)) }, [])
+  const load = useCallback(() => Promise.all([api.get<any>('/network/summary'), api.get<ApiPage<User>>('/network/directs?pageSize=100'), api.get<Array<User & { level: number }>>('/network/unilevel?depth=10'), api.get<ApiPage<Bonus>>('/bonuses/me?pageSize=100')]).then(([networkSummary, directUsers, networkUsers, bonusEntries]) => { setSummary(networkSummary); setDirects(directUsers.items); setUnilevel(networkUsers); setBonuses(bonusEntries.items); setError('') }).catch(reason => setError(reason.message)), [api])
+  useEffect(() => { void load() }, [load])
+  useAutoRefresh(load)
   if (!summary && !error) return <Loader />
   const referral = `${location.origin}/convite/${session.user.inviteCode}`
   const copyReferral = async () => { try { await navigator.clipboard.writeText(referral); setCopied(true); setTimeout(() => setCopied(false), 2500) } catch { setError('Não foi possível copiar o link. Selecione-o e copie manualmente.') } }
@@ -443,7 +467,9 @@ function AdminDashboard({ session }: { session: Session }) {
   const api = useApi(session)
   const [data, setData] = useState<any>()
   const [error, setError] = useState('')
-  useEffect(() => { api.get('/admin/dashboard').then(setData).catch(reason => setError(reason.message)) }, [])
+  const load = useCallback(() => api.get('/admin/dashboard').then(value => { setData(value); setError('') }).catch(reason => setError(reason.message)), [api])
+  useEffect(() => { void load() }, [load])
+  useAutoRefresh(load)
   return <Page title="Central MASTER" subtitle="Aderência operacional ao Plano de Negócios GoMove."><ErrorBox error={error} />{data ? <><section className="metric-grid admin-grid"><Metric label="ASSOCIADOS" value={String(data.associates || 0)} icon={UsersRound} note={`${data.active} contas ativas`} /><Metric label="COTISTAS" value={String(data.shareholders || 0)} icon={BarChart3} note="Com direito aos resultados" /><Metric label="PLANOS PENDENTES" value={String(data.pendingPlans || 0)} icon={ShieldCheck} note={`Plano de ${cents(ASSOCIATE_PLAN_PRICE_CENTS)}`} /><Metric label="BÔNUS BLOQUEADOS" value={cents(data.bonusBlockedCents)} icon={AlertCircle} note="Aguardando upgrade" /><Metric label="BÔNUS PENDENTES" value={cents(data.bonusPendingCents)} icon={Activity} note="Aguardando aprovação" /></section><section className="dashboard-split"><div className="panel"><h2>Prioridades do Plano de Negócios</h2><div className="admin-alert"><ShieldCheck /><span><b>{data.pendingPlans || 0} planos aguardando confirmação</b><small>Uma conta só pode ser ativada após o Plano de Associado de {cents(ASSOCIATE_PLAN_PRICE_CENTS)}.</small></span><button onClick={() => go('/admin/associates')}>Abrir</button></div><div className="admin-alert"><AlertCircle /><span><b>{cents(data.bonusBlockedCents)} em bônus bloqueados</b><small>Os valores serão liberados após a aquisição mínima de {cents(SHAREHOLDER_MIN_QUOTA_CENTS)} em cotas.</small></span><button onClick={() => go('/admin/commissions')}>Abrir</button></div><div className="admin-alert"><Wallet /><span><b>{data.pendingWithdrawals || 0} saques aguardando</b><small>Valide e processe as solicitações financeiras.</small></span><button onClick={() => go('/admin/finance')}>Abrir</button></div></div><div className="panel operation-health"><h2>Regras automatizadas</h2><div><span>Plano de Associado obrigatório</span><b>Ativa</b></div><div><span>Indicação direta sobre cotas</span><b>{DIRECT_REFERRAL_BPS / 100}%</b></div><div><span>Unilevel N1 a N6</span><b>6% · 5% · 4% · 3% · 2% · 1%</b></div><div><span>Teto de bônus do Associado</span><b>{cents(50_000)}</b></div><div><span>Upgrade mínimo para Cotista</span><b>{cents(SHAREHOLDER_MIN_QUOTA_CENTS)}</b></div><div><span>Liberação do bônus bloqueado</span><b>Automática</b></div></div></section></> : <Loader />}</Page>
 }
 
@@ -553,8 +579,9 @@ function Commissions({ session }: { session: Session }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const load = () => Promise.all([api.get<ApiPage<CommissionRule>>('/admin/commission-rules?pageSize=100'), api.get<ApiPage<Bonus>>('/admin/bonus-entries?pageSize=100'), api.get<ApiPage<User>>('/admin/associates?pageSize=100'), api.get<ApiPage<Row>>('/admin/daily-profitabilities?pageSize=100')]).then(([a, b, c, d]) => { setRules(a.items); setBonuses(b.items); setUsers(c.items); setDailyRuns(d.items) }).catch(reason => setError(reason.message))
-  useEffect(() => { void load() }, [])
+  const load = useCallback(() => Promise.all([api.get<ApiPage<CommissionRule>>('/admin/commission-rules?pageSize=100'), api.get<ApiPage<Bonus>>('/admin/bonus-entries?pageSize=100'), api.get<ApiPage<User>>('/admin/associates?pageSize=100'), api.get<ApiPage<Row>>('/admin/daily-profitabilities?pageSize=100')]).then(([a, b, c, d]) => { setRules(a.items); setBonuses(b.items); setUsers(c.items); setDailyRuns(d.items); setError('') }).catch(reason => setError(reason.message)), [api])
+  useEffect(() => { void load() }, [load])
+  useAutoRefresh(load)
   const manual = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); setNotice(''); try { await api.post('/admin/bonus-entries/manual-credit', { userId: form.userId, amountCents: Math.round(Number(form.amount) * 100), reason: form.reason }); setForm({ userId: '', amount: '', reason: '' }); setNotice('Crédito criado e enviado para aprovação.'); await load() } catch (reason: any) { setError(reason.message) } finally { setBusy(false) } }
   const scheduleDaily = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); setNotice(''); try { await api.post('/admin/daily-profitabilities', { date: dailyForm.date, rateBps: Math.round(Number(dailyForm.percent) * 100) }); setDailyForm({ ...dailyForm, percent: '' }); setNotice('Diário cadastrado. O processamento automático ocorrerá às 09:00, horário de São Paulo.'); await load() } catch (reason: any) { setError(reason.message) } finally { setBusy(false) } }
   const processDaily = async (run: Row) => { setBusy(true); setError(''); setNotice(''); try { const result = await api.post<{ run: Row; earnings: Row[]; bonuses: Row[]; idempotent: boolean }>(`/admin/daily-profitabilities/${run.id}/process`, {}); setNotice(result.idempotent ? 'Este Diário já havia sido processado.' : `Diário processado para ${result.earnings.length} cotistas e ${result.bonuses.filter(item => item.status === 'APPROVED').length} comissões Unilevel.`); await load() } catch (reason: any) { setError(reason.message) } finally { setBusy(false) } }
