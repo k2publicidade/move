@@ -9,5 +9,5 @@
     "strict": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "server", "src/businessPlan.ts"]
+  "include": ["vite.config.ts", "server", "src/businessPlan.ts", "src/bonusPeriods.ts"]
 }

@@ -1,6 +1,6 @@
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, DIRECT_REFERRAL_BPS, isBonusEligibleParticipant, type AssociatePlanStatus, type MembershipType } from '../src/businessPlan.js'
 
-export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
+export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; registrationSource?: 'INVITE' | 'DIRECT'; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
 export type RuleLevel = { level: number; bps: number }
 export type BonusLedgerEntry = { id: string; userId: string; amountCents: number; status: string; type: string; reversalOfId?: string; reason?: string; createdAt?: string; [key: string]: unknown }
 export type NetworkTree = MlmUser & { children: NetworkTree[] }
@@ -70,7 +70,7 @@ export function createRegistration(users: MlmUser[], input: { username: string; 
   const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'
   let inviteCode = ''
   do inviteCode = `${prefix}${Math.random().toString(36).slice(2, 8)}`; while (users.some(user => user.inviteCode.toLowerCase() === inviteCode.toLowerCase()))
-  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
+  return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode, registrationSource: inviteCodeInput ? 'INVITE' : 'DIRECT', membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
 }
 
 export function wouldCreateSponsorCycle(users: Pick<MlmUser, 'id' | 'sponsorId'>[], userId: string, sponsorId: string | null): boolean {

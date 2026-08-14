@@ -10,5 +10,5 @@
     "strict": true,
     "types": ["node"]
   },
-  "include": ["server/**/*.ts", "src/businessPlan.ts"]
+  "include": ["server/**/*.ts", "src/businessPlan.ts", "src/bonusPeriods.ts"]
 }

@@ -1,5 +1,6 @@
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
+import { summarizeBonusPeriods } from './bonusPeriods'
 
 type Row = Record<string, any> & { id: string }
 
@@ -46,7 +47,7 @@ export function createDemoDatabase(): DemoDatabase {
   const users: User[] = [
     { id: 'usr-admin', name: 'Administrador GoMove', username: 'admin', email: 'admin@gomove.com.br', role: 'ADMIN_MASTER', status: 'ACTIVE', sponsorId: null, inviteCode: 'admin01' },
     { id: 'usr-matheus', name: 'Matheus Oliveira', username: 'matheus', email: 'matheus@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-admin', inviteCode: 'matheus01', membershipType: 'SHAREHOLDER', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today(), shareholderSince: today() },
-    { id: 'usr-ana', name: 'Ana Silva', username: 'ana', email: 'ana@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-matheus', inviteCode: 'ana01', membershipType: 'ASSOCIATE', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today() },
+    { id: 'usr-ana', name: 'Ana Silva', username: 'ana', email: 'ana@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-matheus', inviteCode: 'ana01', registrationSource: 'INVITE', membershipType: 'ASSOCIATE', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today() },
     { id: 'usr-bruno', name: 'Bruno Costa', username: 'bruno', email: 'bruno@gomove.com.br', role: 'ASSOCIATE', status: 'PENDING', sponsorId: 'usr-matheus', inviteCode: 'bruno01', membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS },
     { id: 'usr-camila', name: 'Camila Rocha', username: 'camila', email: 'camila@gomove.com.br', role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: 'usr-ana', inviteCode: 'camila01', membershipType: 'ASSOCIATE', associatePlanStatus: 'ACTIVE', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: today() },
   ]
@@ -291,7 +292,10 @@ function businessSummary(db: DemoDatabase, user: User) {
   const earningCapCents = user.membershipType === 'SHAREHOLDER' ? quotaAmountCents * 2 : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
   const earningCapConsumedCents = approvedBonusCents + pendingBonusCents + dailyEarningCents
   const earningCapRemainingCents = Math.max(0, earningCapCents - earningCapConsumedCents)
-  return { ...publicUser(user), approvedBonusCents, pendingBonusCents, blockedBonusCents, dailyEarningCents, cappedEarningCents, earningCapCents, earningCapConsumedCents, earningCapRemainingCents, bonusCapRemainingCents: earningCapRemainingCents, quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
+  const registrationAudit = db.auditLogs.find(entry => entry.action === 'REGISTER' && entry.targetId === user.id)
+  const createdViaInvite = Boolean(user.registrationSource === 'INVITE' || registrationAudit?.details?.source === 'INVITE')
+  const bonusPeriods = summarizeBonusPeriods(user.id, db.bonusEntries, db.transactions)
+  return { ...publicUser(user), createdViaInvite, bonusPeriods, approvedBonusCents, pendingBonusCents, blockedBonusCents, dailyEarningCents, cappedEarningCents, earningCapCents, earningCapConsumedCents, earningCapRemainingCents, bonusCapRemainingCents: earningCapRemainingCents, quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
 }
 
 export async function demoRequest<T>(path: string, method = 'GET', body?: any, token: string | null = null): Promise<T> {
@@ -327,9 +331,9 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       : db.users.find(item => item.role === 'ADMIN_MASTER' && canSponsorDemoRegistration(item))
     if (!sponsor) throw new Error('Convite indisponível')
     if (db.users.some(item => item.username.toLowerCase() === username || item.email?.toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
-    const user: User & { demoPassword: string } = { id: id('USR'), name, username, email, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode: `${username}01`, demoPassword: password, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
+    const user: User & { demoPassword: string } = { id: id('USR'), name, username, email, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode: `${username}01`, registrationSource: inviteCode ? 'INVITE' : 'DIRECT', demoPassword: password, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
     db.users.push(user)
-    audit(db, user.id, 'REGISTER', 'USER', user.id, { sponsorId: sponsor.id })
+    audit(db, user.id, 'REGISTER', 'USER', user.id, { sponsorId: sponsor.id, source: inviteCode ? 'INVITE' : 'DIRECT' })
     save(db)
     return { token: `demo:${user.username}`, user: publicUser(user) } as T
   }
