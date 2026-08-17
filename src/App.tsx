@@ -115,17 +115,19 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
             <img
               src={qrImageUrl}
               alt="QR Code PIX gerado pela PIXPAY"
-              width={200}
-              height={200}
+              width={300}
+              height={300}
+              className="pix-qr-image"
             />
           ) : pixCode ? (
             <QRCodeSVG
               value={pixCode}
-              size={200}
+              size={300}
               level="M"
               includeMargin={true}
               bgColor="#ffffff"
               fgColor="#000000"
+              className="pix-qr-image"
             />
           ) : (
             <div className="pix-qr-placeholder">Carregando QR Code…</div>
