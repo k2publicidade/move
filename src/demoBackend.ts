@@ -342,8 +342,10 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
     const existing = db.invoices.find(item => item.userId === user.id && item.type === 'ASSOCIATE_PLAN' && item.idempotencyKey === body.idempotencyKey)
     if (existing) return existing as T
-    const paymentAsset = ['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER'
-    const invoice = { id: id('INV'), userId: user.id, type: 'ASSOCIATE_PLAN', description: 'Plano de Associado GoMove', amount: ASSOCIATE_PLAN_PRICE_CENTS / 100, remaining: ASSOCIATE_PLAN_PRICE_CENTS / 100, status: 'Pendente', paymentStatus: 'PENDING', paymentProvider: 'COINPAYMENTS', paymentMethod: 'CoinPayments', paymentAsset, paymentReference: id('CP'), coinPaymentsInvoiceId: id('CPI'), paymentUrl: '/activation?demo-associate-plan=pending', idempotencyKey: body.idempotencyKey, demo: true, createdAt: today() }
+    const isPix = String(body?.paymentMethod ?? body?.preferredPaymentAsset).toUpperCase() === 'PIX'
+    if (isPix && ![11, 14].includes(String(body?.customerDocument ?? '').replace(/\D/g, '').length)) throw new Error('Informe um CPF ou CNPJ válido para o pagamento PIX')
+    const paymentAsset = isPix ? 'PIX' : (['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER')
+    const invoice = { id: id('INV'), userId: user.id, type: 'ASSOCIATE_PLAN', description: 'Plano de Associado GoMove', amount: ASSOCIATE_PLAN_PRICE_CENTS / 100, remaining: ASSOCIATE_PLAN_PRICE_CENTS / 100, status: 'Pendente', paymentStatus: 'PENDING', paymentProvider: isPix ? 'PIXPAY' : 'COINPAYMENTS', paymentMethod: isPix ? 'PIX' : 'CoinPayments', paymentAsset, paymentReference: id(isPix ? 'PIX' : 'CP'), ...(isPix ? { pixPayTransactionId: id('PXT'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-pixpay', paymentUrl: null } : { coinPaymentsInvoiceId: id('CPI'), paymentUrl: '/activation?demo-associate-plan=pending' }), idempotencyKey: body.idempotencyKey, demo: true, createdAt: today() }
     db.invoices.unshift(invoice)
     audit(db, user.id, 'ASSOCIATE_PLAN_CHECKOUT', 'INVOICE', invoice.id, { paymentAsset })
     save(db)
@@ -660,8 +662,10 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
       const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
       if (existing) return existing as T
-      const paymentAsset = ['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER'
-      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: 'COINPAYMENTS', paymentMethod: 'CoinPayments', paymentAsset, paymentReference: id('CP'), coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }
+      const isPix = String(body?.paymentMethod ?? body?.preferredPaymentAsset).toUpperCase() === 'PIX'
+      if (isPix && ![11, 14].includes(String(body?.customerDocument ?? '').replace(/\D/g, '').length)) throw new Error('Informe um CPF ou CNPJ válido para o pagamento PIX')
+      const paymentAsset = isPix ? 'PIX' : (['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER')
+      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: isPix ? 'PIXPAY' : 'COINPAYMENTS', paymentMethod: isPix ? 'PIX' : 'CoinPayments', paymentAsset, paymentReference: id(isPix ? 'PIX' : 'CP'), ...(isPix ? { pixPayTransactionId: id('PXT'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-pixpay', paymentUrl: null } : { coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }) }
     }
     if (userCollection === 'withdrawals') {
       const amount = Number(body?.amount)
