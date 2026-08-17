@@ -41,6 +41,10 @@ O fluxo de investimentos cria uma invoice em BRL no checkout hospedado do CoinPa
 
 A senha de login da conta CoinPayments não é uma credencial de API e nunca deve ser adicionada ao projeto.
 
+## Pagamentos via PIXPAY
+
+O checkout também aceita PIX e cria uma cobrança com QR Code copia e cola no PIXPAY. Configure `PIXPAY_API_KEY`, `PIXPAY_API_SECRET`, `PIXPAY_WEBHOOK_TOKEN` (segredo aleatório com pelo menos 32 caracteres) e `APP_PUBLIC_URL`. Cada cobrança informa ao gateway o webhook HTTPS `/api/webhooks/pixpay`; o pagamento só é confirmado quando o PIXPAY notifica o mesmo identificador e valor da transação.
+
 ## Funcionalidades
 
 ### Portal do usuário

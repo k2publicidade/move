@@ -8,13 +8,14 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { neon } from '@neondatabase/serverless'
 import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
 import { CoinPaymentsConfigurationError, createCoinPaymentsInvoice, verifyCoinPaymentsWebhook } from './coinpayments.js'
+import { PixPayConfigurationError, createPixPayTransaction, normalizeCustomerDocument, verifyPixPayWebhookToken } from './pixpay.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
 
 const root = path.resolve(process.env.GOMOVE_ROOT || process.cwd())
 const dataFile = process.env.GOMOVE_DATA_FILE ? path.resolve(process.env.GOMOVE_DATA_FILE) : path.join(root, '.data', 'db.json')
 type Item = Record<string, any> & { id: string }
-type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; dailyProfitabilityRuns: Item[]; dailyProfitabilities: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; coinPaymentsWebhookEvents: Item[]; sessions: Record<string,{userId:string;expiresAt:string}> }
+type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; dailyProfitabilityRuns: Item[]; dailyProfitabilities: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; coinPaymentsWebhookEvents: Item[]; pixPayWebhookEvents: Item[]; sessions: Record<string,{userId:string;expiresAt:string}> }
 type DbRequestContext = { db: Db; dirty: boolean; version: number }
 const ACCOUNT_ONBOARDING_VERSION=1
 const databaseUrl=String(process.env.DATABASE_URL??'').trim()
@@ -28,7 +29,7 @@ function demoSeeded(): Db {
  const matheus = { id: crypto.randomUUID(), username: 'matheus', email: 'matheus@gomove.com.br', name: 'Matheus Oliveira', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: admin.id, inviteCode: 'matheus01', membershipType: 'SHAREHOLDER' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now(), shareholderSince: now() }
  const ana = { id: crypto.randomUUID(), username: 'ana', email: 'ana@gomove.local', name: 'Ana Silva', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: matheus.id, inviteCode: 'ana01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now() }
  const bruno = { id: crypto.randomUUID(), username: 'bruno', email: 'bruno@gomove.local', name: 'Bruno Costa', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: ana.id, inviteCode: 'bruno01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now() }
- return { accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION, commissionPlanVersion:COMMISSION_PLAN_VERSION, users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Indicação direta + Unilevel GoMove', eventType:'INVESTMENT_CONFIRMED', active:true, directReferralBps:DIRECT_REFERRAL_BPS, levels:UNILEVEL_LEVELS.map(level=>({...level})), createdAt:now() }], commissionEvents:[], dailyProfitabilityRuns:[], dailyProfitabilities:[], bonusEntries:[], auditLogs:[], coinPaymentsWebhookEvents:[], sessions:{}, invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profiles:{} }
+ return { accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION, commissionPlanVersion:COMMISSION_PLAN_VERSION, users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Indicação direta + Unilevel GoMove', eventType:'INVESTMENT_CONFIRMED', active:true, directReferralBps:DIRECT_REFERRAL_BPS, levels:UNILEVEL_LEVELS.map(level=>({...level})), createdAt:now() }], commissionEvents:[], dailyProfitabilityRuns:[], dailyProfitabilities:[], bonusEntries:[], auditLogs:[], coinPaymentsWebhookEvents:[], pixPayWebhookEvents:[], sessions:{}, invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profiles:{} }
 }
 function ensureDemoContent(db: Db) {
  const matheus=db.users.find(user=>user.username==='matheus'), ana=db.users.find(user=>user.username==='ana')
@@ -51,7 +52,7 @@ function productionSeeded(): Db {
  const email=String(process.env.GOMOVE_ADMIN_EMAIL??'admin@gomoveinfra.com.br').trim().toLowerCase()
  const name=String(process.env.GOMOVE_ADMIN_NAME??'Administrador GoMove').trim()
  const admin={id:crypto.randomUUID(),username,email,name,passwordHash:hash(password),role:'ADMIN_MASTER' as const,status:'ACTIVE' as const,sponsorId:null,inviteCode:String(process.env.GOMOVE_ADMIN_INVITE_CODE??'gomove').trim().toLowerCase()}
- return {accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION,commissionPlanVersion:COMMISSION_PLAN_VERSION,users:[admin],commissionRules:[{id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()}],commissionEvents:[],dailyProfitabilityRuns:[],dailyProfitabilities:[],bonusEntries:[],auditLogs:[{id:crypto.randomUUID(),actorId:admin.id,action:'PRODUCTION_INITIALIZED',targetType:'SYSTEM',targetId:'gomove',details:{mode:'production'},createdAt:now()}],coinPaymentsWebhookEvents:[],sessions:{},vehicles:[],invoices:[],orders:[],investments:[],transactions:[],withdrawals:[],tickets:[],cart:[],profiles:{[admin.id]:{name,email,country:'Brasil'}}}
+ return {accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION,commissionPlanVersion:COMMISSION_PLAN_VERSION,users:[admin],commissionRules:[{id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()}],commissionEvents:[],dailyProfitabilityRuns:[],dailyProfitabilities:[],bonusEntries:[],auditLogs:[{id:crypto.randomUUID(),actorId:admin.id,action:'PRODUCTION_INITIALIZED',targetType:'SYSTEM',targetId:'gomove',details:{mode:'production'},createdAt:now()}],coinPaymentsWebhookEvents:[],pixPayWebhookEvents:[],sessions:{},vehicles:[],invoices:[],orders:[],investments:[],transactions:[],withdrawals:[],tickets:[],cart:[],profiles:{[admin.id]:{name,email,country:'Brasil'}}}
 }
 const initialDatabase=()=>process.env.NODE_ENV==='test'?demoSeeded():productionSeeded()
 function readDb(): Db {
@@ -66,7 +67,7 @@ function readDb(): Db {
  return normalizeDb(db,persisted)
 }
 function normalizeDb(db:any,persisted?:string): Db {
- for (const k of ['users','vehicles','commissionRules','commissionEvents','dailyProfitabilityRuns','dailyProfitabilities','bonusEntries','auditLogs','coinPaymentsWebhookEvents','invoices','orders','investments','transactions','withdrawals','tickets','cart']) if (!Array.isArray(db[k])) db[k]=[]
+ for (const k of ['users','vehicles','commissionRules','commissionEvents','dailyProfitabilityRuns','dailyProfitabilities','bonusEntries','auditLogs','coinPaymentsWebhookEvents','pixPayWebhookEvents','invoices','orders','investments','transactions','withdrawals','tickets','cart']) if (!Array.isArray(db[k])) db[k]=[]
  if (!db.profiles) db.profiles={}
  if (!db.sessions) db.sessions={}
  if (!db.users.length) Object.assign(db, initialDatabase(), db)
@@ -135,6 +136,17 @@ async function mergeProviderInvoice(collection:'invoices'|'investments',localId:
   if(!item)return null
   Object.assign(item,{coinPaymentsInvoiceId:providerInvoice.id,paymentReference:providerInvoice.id,paymentUrl:providerInvoice.checkoutLink,invoiceUrl:providerInvoice.link})
   if(item.paymentStatus==='INVOICE_CREATING')Object.assign(item,{paymentStatus:'PENDING',paymentProviderStatus:'Unpaid'})
+  onMerge(db,item);writeDb(db)
+  try{await flushDb();return item}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message))||attempt===2)throw error}
+ }
+ return null
+}
+async function mergePixPayTransaction(collection:'invoices'|'investments',localId:string,transaction:{id:string;qrCode:string;status:string;paymentUrl:string|null},onMerge:(db:Db,item:any)=>void) {
+ for(let attempt=0;attempt<3;attempt++) {
+  const db=await refreshDb(),item=db[collection].find((candidate:any)=>candidate.id===localId)
+  if(!item)return null
+  Object.assign(item,{pixPayTransactionId:transaction.id,paymentReference:transaction.id,paymentUrl:transaction.paymentUrl,pixQrCode:transaction.qrCode,paymentProviderStatus:transaction.status})
+  if(item.paymentStatus==='INVOICE_CREATING')item.paymentStatus='PENDING'
   onMerge(db,item);writeDb(db)
   try{await flushDb();return item}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message))||attempt===2)throw error}
  }
@@ -268,6 +280,36 @@ app.post('/api/webhooks/coinpayments',express.raw({type:'application/json',limit
  writeDb(db)
  return res.json({received:true,idempotent:false})
 })
+app.post('/api/webhooks/pixpay',express.raw({type:'application/json',limit:'256kb'}),(req,res)=>{
+ try { if(!verifyPixPayWebhookToken(req.query.token))return res.status(401).json({error:'Webhook PIXPAY não autorizado'}) }
+ catch(error) { return res.status(error instanceof PixPayConfigurationError?503:401).json({error:'Webhook PIXPAY indisponível'}) }
+ const rawBody=Buffer.isBuffer(req.body)?req.body.toString('utf8'):''
+ let payload:any
+ try { payload=JSON.parse(rawBody) } catch { return res.status(400).json({error:'JSON inválido'}) }
+ const data=payload?.data??payload,transactionId=String(data?.transactionId??'').trim(),providerStatus=String(data?.status??'').trim().toUpperCase(),paymentMethod=String(data?.paymentMethod??'pix').trim().toLowerCase()
+ if(!transactionId||!providerStatus||paymentMethod!=='pix')return res.status(422).json({error:'Notificação PIXPAY inválida'})
+ const db=readDb(),matches=(item:any)=>item.paymentProvider==='PIXPAY'&&item.pixPayTransactionId===transactionId,inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>item.productType==='ASSOCIATE_PLAN'&&matches(item))
+ if(!inv&&!planInvoice)return res.status(404).json({error:'Cobrança PIX não encontrada'})
+ const target=inv??planInvoice,amountCents=parseWebhookAmountCents(data?.amount)
+ if(amountCents===null||amountCents!==Number(target.amountCents))return res.status(422).json({error:'Valor da cobrança PIX não confere'})
+ const eventKey=crypto.createHash('sha256').update(`${transactionId}:${providerStatus}:${rawBody}`).digest('hex')
+ if(db.pixPayWebhookEvents.some(event=>event.id===eventKey))return res.json({received:true,idempotent:true})
+ target.paymentProviderStatus=providerStatus
+ if(providerStatus==='COMPLETED') {
+  if(inv&&inv.paymentStatus!=='CONFIRMED')confirmInvestmentInDb(db,inv,'pixpay-webhook')
+  if(planInvoice&&planInvoice.paymentStatus!=='CONFIRMED') {
+   Object.assign(planInvoice,{paymentStatus:'CONFIRMED',status:'Pago',remaining:0,paidAt:now(),reconciliationRequired:false});delete planInvoice.paymentError
+   const participant=db.users.find(user=>user.id===planInvoice.userId&&user.role==='ASSOCIATE')
+   if(participant){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'pixpay-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,pixPayTransactionId:transactionId})}
+  }
+ } else if(providerStatus==='FAILED') {
+  if(target.paymentStatus!=='CONFIRMED')Object.assign(target,{paymentStatus:'FAILED',status:'Cancelado',reconciliationRequired:false})
+ } else if(target.paymentStatus!=='CONFIRMED') target.paymentStatus='PENDING'
+ db.pixPayWebhookEvents.unshift({id:eventKey,transactionId,status:providerStatus,investmentId:inv?.id??null,associatePlanInvoiceId:planInvoice?.id??null,createdAt:now()})
+ if(db.pixPayWebhookEvents.length>10000)db.pixPayWebhookEvents.length=10000
+ writeDb(db)
+ return res.json({received:true,idempotent:false})
+})
 app.use(express.json())
 app.get('/api/cron/daily-profitability',(req,res)=>{const secret=String(process.env.CRON_SECRET??'');if(secret.length<16)return res.status(503).json({error:'CRON_SECRET não configurado'});if(req.header('authorization')!==`Bearer ${secret}`)return res.status(401).json({error:'Cron não autorizado'});const d=readDb(),date=saoPauloDate(),run=d.dailyProfitabilityRuns.find(item=>item.date===date);if(!run)return res.json({processed:false,date,reason:'Nenhum Diário cadastrado para hoje'});try{const result=processDailyProfitabilityRun(d,run,'SYSTEM_CRON');if(!result.idempotent)writeDb(d);res.json({processed:true,...result})}catch(error:any){res.status(422).json({error:error.message})}})
 function auth(req:Request,res:Response,next:NextFunction) { const token=req.header('authorization')?.replace(/^Bearer\s+/i,''),db=readDb(),session=token?db.sessions[token]:undefined,id=session&&Date.parse(session.expiresAt)>Date.now()?session.userId:undefined,user=id&&db.users.find(u=>u.id===id); if(!user||user.status!=='ACTIVE') { if(token&&db.sessions[token]){delete db.sessions[token];writeDb(db)} return res.status(401).json({error:'Sessão inválida ou conta inativa'}); } (req as any).user=user; next() }
@@ -349,20 +391,23 @@ app.post('/api/associate-plan',auth,async(req,res)=>{
  if(invoice?.paymentUrl)return res.json(invoice)
  if(invoice)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
  if(user.associatePlanStatus==='ACTIVE')return res.status(409).json({error:'O Plano de Associado já está ativo'})
- const paymentAsset=['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER';invoice={id:crypto.randomUUID(),userId:user.id,createdAt:now(),due:new Date().toLocaleDateString('pt-BR'),description:'Plano de Associado GoMove',productType:'ASSOCIATE_PLAN',amount:ASSOCIATE_PLAN_PRICE_CENTS/100,amountCents:ASSOCIATE_PLAN_PRICE_CENTS,remaining:ASSOCIATE_PLAN_PRICE_CENTS/100,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:'COINPAYMENTS',paymentMethod:'CoinPayments',paymentAsset,idempotencyKey};d.invoices.unshift(invoice)
+ const isPix=String(b.paymentMethod??b.preferredPaymentAsset??'').toUpperCase()==='PIX';let customerDocument:string|undefined
+ if(isPix){try{customerDocument=normalizeCustomerDocument(b.customerDocument)}catch(error:any){return res.status(422).json({error:error.message})}}
+ const paymentAsset=isPix?'PIX':(['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER');invoice={id:crypto.randomUUID(),userId:user.id,createdAt:now(),due:new Date().toLocaleDateString('pt-BR'),description:'Plano de Associado GoMove',productType:'ASSOCIATE_PLAN',amount:ASSOCIATE_PLAN_PRICE_CENTS/100,amountCents:ASSOCIATE_PLAN_PRICE_CENTS,remaining:ASSOCIATE_PLAN_PRICE_CENTS/100,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:isPix?'PIXPAY':'COINPAYMENTS',paymentMethod:isPix?'PIX':'CoinPayments',paymentAsset,idempotencyKey};d.invoices.unshift(invoice)
  const targetInvoiceId=invoice.id
  writeDb(d)
  try{await flushDb()}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message)))throw error;d=await refreshDb();invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType==='ASSOCIATE_PLAN'&&openStatuses.has(item.paymentStatus));if(invoice?.paymentUrl)return res.json(invoice);return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})}
  try {
-  const providerInvoice=await createCoinPaymentsInvoice({investmentId:targetInvoiceId,pack:invoice.description,amount:invoice.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email),successPath:'/activation?payment=success',cancelPath:'/activation?payment=cancelled'})
-  invoice=await mergeProviderInvoice('invoices',targetInvoiceId,providerInvoice,(currentDb,currentInvoice)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{coinPaymentsInvoiceId:providerInvoice.id}))
+  if(isPix){const transaction=await createPixPayTransaction({amount:invoice.amount,customerName:String(user.name??user.username),customerEmail:String(user.email),customerDocument:customerDocument!});invoice=await mergePixPayTransaction('invoices',targetInvoiceId,transaction,(currentDb,currentInvoice)=>audit(currentDb,user.id,'PIXPAY_TRANSACTION_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{pixPayTransactionId:transaction.id}))}
+  else {const providerInvoice=await createCoinPaymentsInvoice({investmentId:targetInvoiceId,pack:invoice.description,amount:invoice.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email),successPath:'/activation?payment=success',cancelPath:'/activation?payment=cancelled'});invoice=await mergeProviderInvoice('invoices',targetInvoiceId,providerInvoice,(currentDb,currentInvoice)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{coinPaymentsInvoiceId:providerInvoice.id}))}
   if(!invoice)return res.status(409).json({error:'A fatura foi removida durante a criação da cobrança'})
   return res.status(201).json(invoice)
  } catch(error:any) {
   d=await refreshDb();invoice=d.invoices.find((item:any)=>item.id===targetInvoiceId)
-  if(invoice&&['INVOICE_CREATING','PENDING','PAID'].includes(invoice.paymentStatus)){const configured=error instanceof CoinPaymentsConfigurationError;if(invoice.paymentStatus!=='PAID')invoice.paymentStatus=configured?'ERROR':'PROVIDER_UNKNOWN';invoice.reconciliationRequired=!configured;invoice.paymentError=configured?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
-  const status=error instanceof CoinPaymentsConfigurationError?503:502
-  return res.status(status).json({error:status===503?'CoinPayments ainda não foi configurado pelo administrador':'Não foi possível iniciar o pagamento no CoinPayments'})
+  const configurationError=isPix?error instanceof PixPayConfigurationError:error instanceof CoinPaymentsConfigurationError
+  if(invoice&&['INVOICE_CREATING','PENDING','PAID'].includes(invoice.paymentStatus)){if(invoice.paymentStatus!=='PAID')invoice.paymentStatus=configurationError?'ERROR':'PROVIDER_UNKNOWN';invoice.reconciliationRequired=!configurationError;invoice.paymentError=configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
+  const status=configurationError?503:502,provider=isPix?'PIXPAY':'CoinPayments'
+  return res.status(status).json({error:status===503?`${provider} ainda não foi configurado pelo administrador`:`Não foi possível iniciar o pagamento no ${provider}`})
  }
 })
 app.post('/api/investments',auth,async(req,res)=>{
@@ -376,20 +421,23 @@ app.post('/api/investments',auth,async(req,res)=>{
  if(investment)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
  investment=d.investments.find((item:any)=>item.userId===user.id&&(item.paymentStatus==='PROVIDER_UNKNOWN'||(item.paymentStatus==='PAID'&&item.reconciliationRequired)))
  if(investment)return res.status(409).json({error:'Existe um pagamento aguardando conciliação com o provedor'})
- const paymentAsset=['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER';investment={id:crypto.randomUUID(),userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),pack,amount,amountCents,profit:0,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:'COINPAYMENTS',paymentMethod:'CoinPayments',paymentAsset,idempotencyKey};d.investments.unshift(investment)
+ const isPix=String(b.paymentMethod??b.preferredPaymentAsset??'').toUpperCase()==='PIX';let customerDocument:string|undefined
+ if(isPix){try{customerDocument=normalizeCustomerDocument(b.customerDocument)}catch(error:any){return res.status(422).json({error:error.message})}}
+ const paymentAsset=isPix?'PIX':(['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER');investment={id:crypto.randomUUID(),userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),pack,amount,amountCents,profit:0,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:isPix?'PIXPAY':'COINPAYMENTS',paymentMethod:isPix?'PIX':'CoinPayments',paymentAsset,idempotencyKey};d.investments.unshift(investment)
  const targetInvestmentId=investment.id
  writeDb(d)
  try{await flushDb()}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message)))throw error;d=await refreshDb();investment=d.investments.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey);if(investment?.paymentUrl)return res.json(investment);return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})}
  try {
-  const invoice=await createCoinPaymentsInvoice({investmentId:targetInvestmentId,pack:investment.pack,amount:investment.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email)})
-  investment=await mergeProviderInvoice('investments',targetInvestmentId,invoice,(currentDb,currentInvestment)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','INVESTMENT',currentInvestment.id,{coinPaymentsInvoiceId:invoice.id}))
+  if(isPix){const transaction=await createPixPayTransaction({amount:investment.amount,customerName:String(user.name??user.username),customerEmail:String(user.email),customerDocument:customerDocument!});investment=await mergePixPayTransaction('investments',targetInvestmentId,transaction,(currentDb,currentInvestment)=>audit(currentDb,user.id,'PIXPAY_TRANSACTION_CREATE','INVESTMENT',currentInvestment.id,{pixPayTransactionId:transaction.id}))}
+  else {const invoice=await createCoinPaymentsInvoice({investmentId:targetInvestmentId,pack:investment.pack,amount:investment.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email)});investment=await mergeProviderInvoice('investments',targetInvestmentId,invoice,(currentDb,currentInvestment)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','INVESTMENT',currentInvestment.id,{coinPaymentsInvoiceId:invoice.id}))}
   if(!investment)return res.status(409).json({error:'O investimento foi removido durante a criação da cobrança'})
   return res.status(201).json(investment)
  } catch(error:any) {
   d=await refreshDb();investment=d.investments.find((item:any)=>item.id===targetInvestmentId)
-  if(investment&&['INVOICE_CREATING','PENDING','PAID'].includes(investment.paymentStatus)){const configured=error instanceof CoinPaymentsConfigurationError;if(investment.paymentStatus!=='PAID')investment.paymentStatus=configured?'ERROR':'PROVIDER_UNKNOWN';investment.reconciliationRequired=!configured;investment.paymentError=configured?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
-  const status=error instanceof CoinPaymentsConfigurationError?503:502
-  return res.status(status).json({error:status===503?'CoinPayments ainda não foi configurado pelo administrador':'Não foi possível iniciar o pagamento no CoinPayments'})
+  const configurationError=isPix?error instanceof PixPayConfigurationError:error instanceof CoinPaymentsConfigurationError
+  if(investment&&['INVOICE_CREATING','PENDING','PAID'].includes(investment.paymentStatus)){if(investment.paymentStatus!=='PAID')investment.paymentStatus=configurationError?'ERROR':'PROVIDER_UNKNOWN';investment.reconciliationRequired=!configurationError;investment.paymentError=configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
+  const status=configurationError?503:502,provider=isPix?'PIXPAY':'CoinPayments'
+  return res.status(status).json({error:status===503?`${provider} ainda não foi configurado pelo administrador`:`Não foi possível iniciar o pagamento no ${provider}`})
  }
 })
 for(const key of ['cart','orders','tickets','invoices','withdrawals'] as const) {
