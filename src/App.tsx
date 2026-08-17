@@ -89,7 +89,8 @@ function ErrorBox({ error }: { error: string }) { return error ? <div className=
 function PixPaymentDetails({ payment }: { payment: Row }) {
   const [copied, setCopied] = useState(false)
   const pixCode = String(payment.pixQrCode || '')
-  const qrImage = payment.pixQrCodeBase64 ? String(payment.pixQrCodeBase64) : null
+  const qrImage = (payment.pixQrCodeBase64 || payment.qrCodeBase64 || payment.pixQrCodeUrl || payment.qrCodeUrl) ? String(payment.pixQrCodeBase64 || payment.qrCodeBase64 || payment.pixQrCodeUrl || payment.qrCodeUrl) : null
+  const paymentUrl = payment.paymentUrl ? String(payment.paymentUrl) : null
 
   const copy = async () => {
     if (!pixCode) return
@@ -97,6 +98,10 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
     setCopied(true)
     window.setTimeout(() => setCopied(false), 2500)
   }
+
+  const qrImageUrl = qrImage
+    ? (qrImage.startsWith('data:') || qrImage.startsWith('http') ? qrImage : `data:image/png;base64,${qrImage}`)
+    : null
 
   return (
     <div className="pix-payment-details" role="status">
@@ -106,10 +111,10 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
           <span>Pague escaneando o QR Code abaixo</span>
         </div>
         <div className="pix-qr-card">
-          {qrImage ? (
+          {qrImageUrl ? (
             <img
-              src={qrImage.startsWith('data:') || qrImage.startsWith('http') ? qrImage : `data:image/png;base64,${qrImage}`}
-              alt="QR Code PIX"
+              src={qrImageUrl}
+              alt="QR Code PIX gerado pela PIXPAY"
               width={200}
               height={200}
             />
@@ -123,10 +128,15 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
               fgColor="#000000"
             />
           ) : (
-            <div className="pix-qr-placeholder">Carregando QR Code...</div>
+            <div className="pix-qr-placeholder">Carregando QR Code…</div>
           )}
         </div>
-        <small className="pix-qr-hint">Abra o app do seu banco, escolha <b>Pagar com PIX &gt; Ler QR Code</b> e aponte a câmera.</small>
+        <small className="pix-qr-hint">Abra o app do seu banco, escolha <b>Pagar com PIX &gt; Ler QR Code</b> e aponte a câmera para a imagem acima.</small>
+        {paymentUrl && (
+          <a href={paymentUrl} target="_blank" rel="noreferrer" className="outline-btn" style={{ fontSize: '11px', padding: '6px 12px', marginTop: '6px' }}>
+            Abrir página de pagamento da PixPay
+          </a>
+        )}
       </div>
 
       <div className="pix-copy-section">
