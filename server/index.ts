@@ -141,11 +141,11 @@ async function mergeProviderInvoice(collection:'invoices'|'investments',localId:
  }
  return null
 }
-async function mergePixPayTransaction(collection:'invoices'|'investments',localId:string,transaction:{id:string;qrCode:string;status:string;paymentUrl:string|null},onMerge:(db:Db,item:any)=>void) {
+async function mergePixPayTransaction(collection:'invoices'|'investments',localId:string,transaction:{id:string;qrCode:string;qrCodeBase64?:string|null;status:string;paymentUrl:string|null},onMerge:(db:Db,item:any)=>void) {
  for(let attempt=0;attempt<3;attempt++) {
   const db=await refreshDb(),item=db[collection].find((candidate:any)=>candidate.id===localId)
   if(!item)return null
-  Object.assign(item,{pixPayTransactionId:transaction.id,paymentReference:transaction.id,paymentUrl:transaction.paymentUrl,pixQrCode:transaction.qrCode,paymentProviderStatus:transaction.status})
+  Object.assign(item,{pixPayTransactionId:transaction.id,paymentReference:transaction.id,paymentUrl:transaction.paymentUrl,pixQrCode:transaction.qrCode,pixQrCodeBase64:transaction.qrCodeBase64||null,paymentProviderStatus:transaction.status})
   if(item.paymentStatus==='INVOICE_CREATING')item.paymentStatus='PENDING'
   onMerge(db,item);writeDb(db)
   try{await flushDb();return item}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message))||attempt===2)throw error}

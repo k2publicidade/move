@@ -1,4 +1,5 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { QRCodeSVG } from 'qrcode.react'
 import {
   Activity, AlertCircle, BarChart3, Bitcoin, CalendarDays, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
   Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Pencil, Plus, QrCode, Search,
@@ -87,8 +88,71 @@ function Loader() { return <div className="loading-screen" role="status" aria-li
 function ErrorBox({ error }: { error: string }) { return error ? <div className="form-error" role="alert"><AlertCircle aria-hidden="true" />{error}</div> : null }
 function PixPaymentDetails({ payment }: { payment: Row }) {
   const [copied, setCopied] = useState(false)
-  const copy = async () => { await navigator.clipboard.writeText(String(payment.pixQrCode)); setCopied(true); window.setTimeout(() => setCopied(false), 2000) }
-  return <div className="pix-payment-details" role="status"><div><QrCode aria-hidden="true" /><span><b>PIX Copia e Cola</b><small>Abra o app do seu banco, escolha PIX Copia e Cola e confirme o valor.</small></span></div><textarea readOnly aria-label="Código PIX Copia e Cola" value={String(payment.pixQrCode)} /><button type="button" className="primary-btn" onClick={() => void copy()}><Copy aria-hidden="true" />{copied ? 'Código copiado' : 'Copiar código PIX'}</button><small>Referência: {payment.paymentReference || payment.id}. A confirmação ocorre automaticamente após o pagamento.</small></div>
+  const pixCode = String(payment.pixQrCode || '')
+  const qrImage = payment.pixQrCodeBase64 ? String(payment.pixQrCodeBase64) : null
+
+  const copy = async () => {
+    if (!pixCode) return
+    await navigator.clipboard.writeText(pixCode)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 2500)
+  }
+
+  return (
+    <div className="pix-payment-details" role="status">
+      <div className="pix-qr-container">
+        <div className="pix-qr-instructions">
+          <QrCode aria-hidden="true" />
+          <span>Pague escaneando o QR Code abaixo</span>
+        </div>
+        <div className="pix-qr-card">
+          {qrImage ? (
+            <img
+              src={qrImage.startsWith('data:') || qrImage.startsWith('http') ? qrImage : `data:image/png;base64,${qrImage}`}
+              alt="QR Code PIX"
+              width={200}
+              height={200}
+            />
+          ) : pixCode ? (
+            <QRCodeSVG
+              value={pixCode}
+              size={200}
+              level="M"
+              includeMargin={true}
+              bgColor="#ffffff"
+              fgColor="#000000"
+            />
+          ) : (
+            <div className="pix-qr-placeholder">Carregando QR Code...</div>
+          )}
+        </div>
+        <small className="pix-qr-hint">Abra o app do seu banco, escolha <b>Pagar com PIX &gt; Ler QR Code</b> e aponte a câmera.</small>
+      </div>
+
+      <div className="pix-copy-section">
+        <div className="pix-copy-header">
+          <Copy aria-hidden="true" />
+          <span>
+            <b>Ou use o PIX Copia e Cola</b>
+            <small>Copie o código abaixo e cole no campo PIX Copia e Cola do seu banco:</small>
+          </span>
+        </div>
+        <textarea readOnly aria-label="Código PIX Copia e Cola" value={pixCode} onClick={e => (e.target as HTMLTextAreaElement).select()} />
+        <button type="button" className="primary-btn" onClick={() => void copy()}>
+          {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+          {copied ? 'Código PIX copiado!' : 'Copiar código PIX'}
+        </button>
+      </div>
+
+      <div className="pix-status-badge">
+        <span>Referência: <b>{payment.paymentReference || payment.id}</b></span>
+        <span className="pix-live-indicator">
+          <span className="pix-pulse-dot" aria-hidden="true" />
+          Aguardando confirmação automática
+        </span>
+      </div>
+    </div>
+  )
 }
 function Page({ title, subtitle, action, children }: { title: string; subtitle?: string; action?: ReactNode; children: ReactNode }) {
   return <><header className="page-heading"><div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>{action}</header>{children}</>

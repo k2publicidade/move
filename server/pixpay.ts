@@ -1,6 +1,7 @@
 export type PixPayTransaction = {
   id: string
   qrCode: string
+  qrCodeBase64?: string | null
   status: string
   paymentUrl: string | null
 }
@@ -66,10 +67,12 @@ export async function createPixPayTransaction(input: {
   try { payload = await response.json() } catch { throw new Error('PIXPAY retornou uma resposta inválida') }
   if (!response.ok) throw new Error(String(payload?.message ?? payload?.error ?? 'Falha ao criar a cobrança PIX'))
   const data = payload?.data ?? payload
-  const id = String(data?.transactionId ?? '').trim()
-  const qrCode = String(data?.qrCode ?? '').trim()
+  const id = String(data?.transactionId ?? data?.id ?? '').trim()
+  const qrCode = String(data?.qrCode ?? data?.qrCodeText ?? data?.pixQrCode ?? data?.emv ?? data?.payload ?? '').trim()
+  const qrCodeBase64 = data?.qrCodeBase64 ? String(data.qrCodeBase64).trim() : (data?.qrCodeImage ? String(data.qrCodeImage).trim() : (data?.base64 ? String(data.base64).trim() : null))
+  const paymentUrl = data?.paymentUrl ? String(data.paymentUrl).trim() : (data?.url ? String(data.url).trim() : null)
   if (!id || !qrCode) throw new Error('PIXPAY não retornou uma cobrança PIX válida')
-  return { id, qrCode, status: String(data?.status ?? 'PENDING'), paymentUrl: data?.paymentUrl ? String(data.paymentUrl) : null }
+  return { id, qrCode, qrCodeBase64, status: String(data?.status ?? 'PENDING'), paymentUrl }
 }
 
 export function verifyPixPayWebhookToken(received: unknown) {
