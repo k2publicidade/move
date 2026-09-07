@@ -93,3 +93,31 @@ O checkout também aceita PIX e cria uma cobrança com QR Code copia e cola no P
 No desenvolvimento local, a API persiste dados em `.data/db.json`. Na Vercel, a aplicação exige `DATABASE_URL` e persiste o estado real em PostgreSQL/Neon. O primeiro acesso cria somente a conta MASTER definida pelas variáveis `GOMOVE_ADMIN_*`; nenhuma conta de demonstração é publicada.
 
 Antes de uso comercial com dados reais, configure um banco gerenciado, segredo de sessão, gateway de pagamento/PIX, e-mail/SMS, telemetria veicular e provedor de 2FA. As credenciais do sistema de referência não estão armazenadas neste projeto.
+
+
+### Atendimento MASTER por conta (API Node/Express)
+
+Em **Central MASTER → Usuários**, cada conta oferece:
+
+- **Editar cadastro / senha**: atualiza o cadastro e permite definir nova senha; a troca revoga as sessões da conta e gera auditoria sem gravar a senha no histórico.
+- **Entrar na conta**: abre o portal sem pedir a senha do participante, inclusive para atendimento de contas bloqueadas ou pendentes. A faixa de suporte identifica o administrador e permite voltar ao MASTER. A sessão dura até uma hora e depende da sessão original do administrador.
+- **Saldo e pagamentos**: reúne extrato, faturas, cotas, saques e histórico administrativo. Ajustes positivos ou negativos alteram diretamente a carteira, sem passar pelas regras de bônus. Informe motivo e referência única do atendimento; repetir a mesma operação não credita duas vezes. Débitos respeitam valores reservados para saque.
+- **Conciliar pagamento**: após conferir manualmente o identificador e valor no gateway, informe a evidência e referência e confirme a fatura de plano ou aquisição de cotas. A operação ativa o produto e reutiliza as regras de confirmação existentes, sem creditar o principal na carteira. Confirmações repetidas não geram nova ativação ou comissão.
+
+As novas rotas são implementadas em `server/index.ts`, usado pelo servidor Node e por `api/index.ts` na Vercel. O arquivo PHP legado em `public/api/index.php` não oferece estes novos controles; instalações que utilizam somente PHP precisam migrar para a API Node para usar esta interface.
+
+## Carteira de Saldo e Carteira de Rendimentos
+
+- Depósitos confirmados entram na **Carteira de Saldo** e servem exclusivamente para comprar produtos, Plano de Associado e cotas. Não podem ser sacados.
+- Bônus aprovados, indicações e rendimentos creditados entram na **Carteira de Rendimentos**. Estornos de ganhos e saques pagos são debitados dessa mesma carteira.
+- Saques exigem conta ativa e Plano de Associado ativo ou cotas com pagamento confirmado e status Ativo (sem expiração vencida, quando informada). Apenas a classificação Cotista não basta.
+- O mínimo de saque continua em R$ 50. Solicitações Pendente/Em análise reservam rendimentos; Recusado libera a reserva; Pago debita uma única vez. A elegibilidade é revalidada ao solicitar, editar e pagar, inclusive pelo MASTER.
+- O financeiro oferece depósito PIX. A API `/api/deposits` também suporta CoinPayments. Apenas confirmação autenticada do gateway ou conciliação MASTER credita o depósito, com deduplicação por fatura.
+- Compras pela carteira usam `/api/wallet/purchases`, chave idempotente e preços conferidos no servidor. Não usam rendimentos nem valores reservados para saques.
+- Ajustes MASTER exigem carteira explícita na interface; integrações antigas que omitem `wallet` usam `BALANCE`. Nunca registrar um depósito como `EARNINGS`.
+
+### Compatibilidade com o histórico
+
+As movimentações recebem `wallet: BALANCE | EARNINGS` na normalização do banco atual (JSON local ou payload PostgreSQL). Bônus, diários e saques são identificados por seus vínculos; as descrições antigas conhecidas “Rendimento operacional”, “Bônus de rede” e “Saque” também são reconhecidas. Créditos sem origem identificável ficam na Carteira de Saldo, sem liberação automática para saque. Caso um ganho antigo não possua vínculo ou descrição reconhecida, o MASTER deve conferir sua origem e registrar os ajustes auditados nas duas carteiras. Os valores e registros originais são preservados.
+
+Validação: `npm test` inclui depósito PIX com provedor simulado, webhook duplicado, compras, reservas, pagamento de saque e bloqueio por pacote inativo. Os testes não realizam pagamentos reais.

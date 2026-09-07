@@ -1,3 +1,4 @@
+import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, creditDeposit, debitPurchase, moneyCents, storeProducts } from './wallets'
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
 import { summarizeBonusPeriods } from './bonusPeriods'
@@ -138,6 +139,7 @@ export function resetDemoDatabase() {
 }
 
 function save(db: DemoDatabase) {
+  for (const transaction of db.transactions) transaction.wallet = transactionWallet(transaction)
   localStorage.setItem(databaseKey, JSON.stringify(db))
 }
 
@@ -337,6 +339,46 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (route.startsWith('/admin/') && !isAdmin) throw Object.assign(new Error('Acesso administrativo obrigatório'), { status: 403 })
   if (method === 'GET' && route === '/auth/me') return { user: publicUser(user) } as T
 
+
+  if (method === 'POST' && route === '/deposits') {
+    if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
+    const existing = db.invoices.find(i => i.userId === user.id && i.productType === 'DEPOSIT' && i.idempotencyKey === body.idempotencyKey)
+    if (existing) return existing as T
+    const amountCents = moneyCents(body.amount)
+    const invoice = { id: id('DEP'), userId: user.id, productType: 'DEPOSIT', amount: amountCents / 100, amountCents, remaining: amountCents / 100, description: 'Depósito na Carteira de Saldo', status: 'Pendente', paymentStatus: 'PENDING', demo: true, idempotencyKey: body.idempotencyKey, createdAt: today() }
+    db.invoices.unshift(invoice); save(db); return invoice as T
+  }
+  const depositConfirmation = route.match(/^\/deposits\/([^/]+)\/confirm-demo$/)
+  if (method === 'POST' && depositConfirmation) {
+    const invoice = db.invoices.find(i => i.id === depositConfirmation[1] && i.userId === user.id && i.productType === 'DEPOSIT')
+    if (!invoice) throw new Error('Depósito não encontrado')
+    creditDeposit(db, invoice, () => id('MOV')); Object.assign(invoice, { paymentStatus: 'CONFIRMED', status: 'Pago', remaining: 0 }); save(db); return invoice as T
+  }
+  if (method === 'POST' && route === '/wallet/purchases') {
+    if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
+    const existing = [...db.orders, ...db.investments, ...db.invoices].find(i => i.userId === user.id && i.walletPurchaseKey === body.idempotencyKey)
+    if (existing) return existing as T
+    const base = { id: id('BUY'), userId: user.id, walletPurchaseKey: body.idempotencyKey, paymentProvider: 'WALLET', paymentMethod: 'Carteira de Saldo', paymentStatus: 'CONFIRMED', date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }
+    let item: Row
+    if (body.productType === 'ASSOCIATE_PLAN') {
+      if (user.associatePlanStatus === 'ACTIVE') throw new Error('O Plano de Associado já está ativo')
+      debitPurchase(db, user, ASSOCIATE_PLAN_PRICE_CENTS, base.id, 'Compra do Plano de Associado', () => id('MOV'))
+      item = { ...base, type: 'ASSOCIATE_PLAN', productType: 'ASSOCIATE_PLAN', amount: 55, amountCents: ASSOCIATE_PLAN_PRICE_CENTS, description: 'Plano de Associado GoMove', remaining: 0, status: 'Pago' }; db.invoices.unshift(item)
+      Object.assign(user, { associatePlanStatus: 'ACTIVE', associatePlanPaidAt: today() })
+    } else if (body.productType === 'INVESTMENT') {
+      const amounts = parseDemoQuotaAmount(body.amount)
+      debitPurchase(db, user, amounts.amountCents, base.id, 'Compra de cotas GoMove', () => id('MOV'))
+      item = { ...base, ...amounts, pack: 'Cotas GoMove', profit: 0, status: 'Ativo' }; db.investments.unshift(item)
+      confirmDemoInvestment(db, item, user.id)
+    } else if (body.productType === 'PRODUCT') {
+      const product = storeProducts.find(p => p.id === body.productId)
+      if (!product) throw new Error('Produto inválido')
+      debitPurchase(db, user, Math.round(product.price * 100), base.id, `Compra: ${product.name}`, () => id('MOV'))
+      item = { ...base, productId: product.id, description: product.name, quantity: 1, total: product.price, status: 'Processando' }; db.orders.unshift(item)
+    } else throw new Error('Tipo de compra inválido')
+    save(db); return item as T
+  }
+
   if (method === 'POST' && route === '/associate-plan') {
     if (user.associatePlanStatus === 'ACTIVE') throw new Error('O Plano de Associado já está ativo')
     if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
@@ -366,7 +408,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
 
   if (method === 'GET' && route === '/state') {
     const owned = (rows: Row[]) => rows.filter(row => !row.userId || row.userId === user.id)
-    return { vehicles: owned(db.vehicles), investments: owned(db.investments), orders: owned(db.orders), invoices: owned(db.invoices), transactions: owned(db.transactions), withdrawals: owned(db.withdrawals), tickets: owned(db.tickets), cart: owned(db.cart), profile: db.profiles[user.id] ?? { name: user.name, email: user.email }, business: businessSummary(db, user) } as T
+    return { vehicles: owned(db.vehicles), investments: owned(db.investments), orders: owned(db.orders), invoices: owned(db.invoices), transactions: owned(db.transactions), withdrawals: owned(db.withdrawals), tickets: owned(db.tickets), cart: owned(db.cart), profile: db.profiles[user.id] ?? { name: user.name, email: user.email }, business: { ...businessSummary(db, user), wallets: walletSummary(db, user) } } as T
   }
 
   const ids = descendants(db, user.id)
@@ -460,6 +502,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const prefixes: Record<string, string> = { vehicles: 'VEI', investments: 'ATV', orders: 'PED', invoices: 'INV', withdrawals: 'SAQ', tickets: 'TK' }
     const item: Row = { ...body, id: id(prefixes[adminCollection]), createdAt: today() }
     if (!item.date && adminCollection !== 'vehicles' && adminCollection !== 'invoices') item.date = new Date().toLocaleDateString('pt-BR')
+    if (adminCollection === 'withdrawals') { const requestedStatus = body?.status ?? 'Pendente'; Object.assign(item, { userId: owner!.id, status: 'Pendente' }); updateWithdrawal(db, item, { ...body, status: requestedStatus }, () => id('MOV')) }
     if (adminCollection === 'vehicles') item.driver = owner?.name ?? '—'
     if (adminCollection === 'investments') {
       item.pack = 'Cotas GoMove'
@@ -594,8 +637,74 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'POST' && investmentConfirm) {
     const investment = db.investments.find(item => item.id === investmentConfirm[1])
     if (!investment) throw new Error('Investimento não encontrado')
+    return confirmDemoInvestment(db, investment, user.id) as T
+  }
+
+  const adminPatch = route.match(/^\/admin\/(vehicles|investments|orders|invoices|withdrawals|tickets)\/([^/]+)$/)
+  if (method === 'PATCH' && adminPatch) {
+    const collection = db[adminPatch[1] as keyof DemoDatabase] as Row[]
+    const item = collection.find(row => row.id === adminPatch[2])
+    if (!item) throw new Error('Registro não encontrado')
+    if (body?.userId && !db.users.some(account => account.id === body.userId && account.role === 'ASSOCIATE')) throw new Error('Usuário inválido')
+    if (adminPatch[1] === 'withdrawals') { updateWithdrawal(db, item, body ?? {}, () => id('MOV')); audit(db, user.id, 'RECORD_UPDATE', 'WITHDRAWALS', item.id, body); save(db); return item as T }
+    const quotaUpdate = adminPatch[1] === 'investments' && body?.amount !== undefined ? parseDemoQuotaAmount(body.amount) : undefined
+    Object.assign(item, body, { id: item.id })
+    if (adminPatch[1] === 'vehicles') item.driver = db.users.find(account => account.id === item.userId)?.name ?? '—'
+    if (quotaUpdate) Object.assign(item, quotaUpdate)
+    audit(db, user.id, 'RECORD_UPDATE', adminPatch[1].toUpperCase(), item.id, body)
+    save(db)
+    return item as T
+  }
+  if (method === 'DELETE' && adminPatch) {
+    const collection = db[adminPatch[1] as keyof DemoDatabase] as Row[]
+    const item = collection.find(row => row.id === adminPatch[2])
+    if (!item) throw new Error('Registro não encontrado')
+    if (adminPatch[1] === 'withdrawals' && (item.status === 'Pago' || db.transactions.some(t => t.withdrawalId === item.id))) throw new Error('Um saque pago não pode ser excluído')
+    collection.splice(collection.findIndex(row => row.id === item.id), 1)
+    audit(db, user.id, 'RECORD_DELETE', adminPatch[1].toUpperCase(), item.id)
+    save(db)
+    return { id: item.id } as T
+  }
+
+  const userCollection = route.match(/^\/(investments|orders|withdrawals|tickets)$/)?.[1] as 'investments' | 'orders' | 'withdrawals' | 'tickets' | undefined
+  if (method === 'POST' && userCollection) {
+    if (userCollection === 'orders') throw new Error('Use a compra de produtos pela carteira')
+    if (userCollection === 'investments') {
+      const { amount, amountCents } = parseDemoQuotaAmount(body?.amount)
+      if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
+      const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
+      if (existing) return existing as T
+      const isPix = String(body?.paymentMethod ?? body?.preferredPaymentAsset).toUpperCase() === 'PIX'
+      if (isPix && ![11, 14].includes(String(body?.customerDocument ?? '').replace(/\D/g, '').length)) throw new Error('Informe um CPF ou CNPJ válido para o pagamento PIX')
+      const paymentAsset = isPix ? 'PIX' : (['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER')
+      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: isPix ? 'PIXPAY' : 'COINPAYMENTS', paymentMethod: isPix ? 'PIX' : 'CoinPayments', paymentAsset, paymentReference: id(isPix ? 'PIX' : 'CP'), ...(isPix ? { pixPayTransactionId: id('PXT'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-pixpay', paymentUrl: null } : { coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }) }
+    }
+    if (userCollection === 'withdrawals') {
+      const amount = validateWithdrawal(db, user, body?.amount)
+      body = { amount, account: body?.account, method: 'PIX', status: 'Pendente', paidAt: '—', wallet: 'EARNINGS' }
+    }
+    const prefix = { investments: 'ATV', orders: 'PED', withdrawals: 'SAQ', tickets: 'TK' }[userCollection]
+    const item = { ...body, id: id(prefix), userId: user.id, date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }
+    db[userCollection].unshift(item)
+    save(db)
+    return item as T
+  }
+
+  if (method === 'PUT' && route === '/profile') {
+    db.profiles[user.id] = { ...(db.profiles[user.id] ?? {}), ...body }
+    const account = db.users.find(item => item.id === user.id)
+    if (account && body.name) account.name = body.name
+    if (account && body.email) account.email = body.email
+    save(db)
+    return db.profiles[user.id] as T
+  }
+
+  throw Object.assign(new Error('Recurso não disponível'), { status: 404 })
+}
+
+function confirmDemoInvestment(db: DemoDatabase, investment: Row, actorId: string) {
     const existing = db.commissionEvents.find(event => event.investmentId === investment.id)
-    if (existing) return { event: existing, bonuses: db.bonusEntries.filter(item => item.eventId === existing.id), idempotent: true } as T
+    if (existing) return { event: existing, bonuses: db.bonusEntries.filter(item => item.eventId === existing.id), idempotent: true }
     const investor = db.users.find(item => item.id === investment.userId && item.status === 'ACTIVE')
     if (!investor || !Number.isInteger(investment.amountCents) || investment.amountCents <= 0) throw new Error('Investimento precisa estar vinculado a uma conta ativa e possuir valor válido')
     if (investment.amountCents < SHAREHOLDER_MIN_QUOTA_CENTS) throw new Error('A aquisição mínima para o upgrade de Cotista é de R$ 500,00 em cotas')
@@ -621,74 +730,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       const capacity = allocateEarning(db, investor, 1)
       releasedBonusCents = releaseBlockedBonuses(db.bonusEntries, investor.id, Math.max(0, capacity.capCents - capacity.consumedCents), () => id('BON'))
     }
-    audit(db, user.id, 'INVESTMENT_CONFIRM', 'INVESTMENT', investment.id, { eventId: event.id, ruleId: rule.id, membershipType: investor.membershipType, releasedBonusCents })
+    audit(db, actorId, 'INVESTMENT_CONFIRM', 'INVESTMENT', investment.id, { eventId: event.id, ruleId: rule.id, membershipType: investor.membershipType, releasedBonusCents })
     save(db)
-    return { event, bonuses: db.bonusEntries.filter(item => item.eventId === event.id), idempotent: false } as T
-  }
-
-  const adminPatch = route.match(/^\/admin\/(vehicles|investments|orders|invoices|withdrawals|tickets)\/([^/]+)$/)
-  if (method === 'PATCH' && adminPatch) {
-    const collection = db[adminPatch[1] as keyof DemoDatabase] as Row[]
-    const item = collection.find(row => row.id === adminPatch[2])
-    if (!item) throw new Error('Registro não encontrado')
-    if (body?.userId && !db.users.some(account => account.id === body.userId && account.role === 'ASSOCIATE')) throw new Error('Usuário inválido')
-    const quotaUpdate = adminPatch[1] === 'investments' && body?.amount !== undefined ? parseDemoQuotaAmount(body.amount) : undefined
-    const previousStatus = item.status
-    Object.assign(item, body, { id: item.id })
-    if (adminPatch[1] === 'vehicles') item.driver = db.users.find(account => account.id === item.userId)?.name ?? '—'
-    if (quotaUpdate) Object.assign(item, quotaUpdate)
-    if (adminPatch[1] === 'withdrawals' && item.status === 'Pago' && previousStatus !== 'Pago' && !db.transactions.some(transaction => transaction.withdrawalId === item.id)) {
-      item.paidAt = new Date().toLocaleDateString('pt-BR')
-      db.transactions.unshift({ id: id('MOV'), userId: item.userId, withdrawalId: item.id, date: item.paidAt, description: `Saque ${item.id}`, amount: -Math.abs(Number(item.amount)), status: 'Débito', createdAt: today() })
-    }
-    audit(db, user.id, 'RECORD_UPDATE', adminPatch[1].toUpperCase(), item.id, body)
-    save(db)
-    return item as T
-  }
-  if (method === 'DELETE' && adminPatch) {
-    const collection = db[adminPatch[1] as keyof DemoDatabase] as Row[]
-    const item = collection.find(row => row.id === adminPatch[2])
-    if (!item) throw new Error('Registro não encontrado')
-    collection.splice(collection.findIndex(row => row.id === item.id), 1)
-    audit(db, user.id, 'RECORD_DELETE', adminPatch[1].toUpperCase(), item.id)
-    save(db)
-    return { id: item.id } as T
-  }
-
-  const userCollection = route.match(/^\/(investments|orders|withdrawals|tickets)$/)?.[1] as 'investments' | 'orders' | 'withdrawals' | 'tickets' | undefined
-  if (method === 'POST' && userCollection) {
-    if (userCollection === 'investments') {
-      const { amount, amountCents } = parseDemoQuotaAmount(body?.amount)
-      if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
-      const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
-      if (existing) return existing as T
-      const isPix = String(body?.paymentMethod ?? body?.preferredPaymentAsset).toUpperCase() === 'PIX'
-      if (isPix && ![11, 14].includes(String(body?.customerDocument ?? '').replace(/\D/g, '').length)) throw new Error('Informe um CPF ou CNPJ válido para o pagamento PIX')
-      const paymentAsset = isPix ? 'PIX' : (['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER')
-      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: isPix ? 'PIXPAY' : 'COINPAYMENTS', paymentMethod: isPix ? 'PIX' : 'CoinPayments', paymentAsset, paymentReference: id(isPix ? 'PIX' : 'CP'), ...(isPix ? { pixPayTransactionId: id('PXT'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-pixpay', paymentUrl: null } : { coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }) }
-    }
-    if (userCollection === 'withdrawals') {
-      const amount = Number(body?.amount)
-      const ledger = db.transactions.filter(item => item.userId === user.id).reduce((sum, item) => sum + Number(item.amount || 0), 0)
-      const reserved = db.withdrawals.filter(item => item.userId === user.id && ['Pendente', 'Em análise'].includes(item.status)).reduce((sum, item) => sum + Number(item.amount || 0), 0)
-      if (!Number.isFinite(amount) || amount < 50 || amount > ledger - reserved) throw new Error('Valor indisponível para saque')
-      body = { ...body, amount, method: 'PIX', status: 'Pendente', paidAt: '—' }
-    }
-    const prefix = { investments: 'ATV', orders: 'PED', withdrawals: 'SAQ', tickets: 'TK' }[userCollection]
-    const item = { ...body, id: id(prefix), userId: user.id, date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }
-    db[userCollection].unshift(item)
-    save(db)
-    return item as T
-  }
-
-  if (method === 'PUT' && route === '/profile') {
-    db.profiles[user.id] = { ...(db.profiles[user.id] ?? {}), ...body }
-    const account = db.users.find(item => item.id === user.id)
-    if (account && body.name) account.name = body.name
-    if (account && body.email) account.email = body.email
-    save(db)
-    return db.profiles[user.id] as T
-  }
-
-  throw Object.assign(new Error('Recurso não disponível'), { status: 404 })
+    return { event, bonuses: db.bonusEntries.filter(item => item.eventId === event.id), idempotent: false }
 }

@@ -1,11 +1,11 @@
 import type { User } from './types'
-export type Session = { token:string; user:User }
+export type Session = { token:string; user:User; supportActor?:{id:string;name:string} }
 const key='gomove-session'
 export const authHeaders=(token:string|null):Record<string,string>=>token?{Authorization:`Bearer ${token}`}:{ }
 export const apiErrorMessage=(body:unknown,fallback:string)=>typeof body==='object'&&body&&'error' in body&&typeof (body as {error:unknown}).error==='string'?(body as {error:string}).error:fallback
-export function loadSession():Session|null { try { const value=localStorage.getItem(key); return value?JSON.parse(value):null } catch { return null } }
-export function saveSession(session:Session) { localStorage.setItem(key,JSON.stringify(session)) }
-export function clearSession() { localStorage.removeItem(key) }
+export function loadSession():Session|null { try { const value=sessionStorage.getItem('gomove-support-session')||localStorage.getItem(key); return value?JSON.parse(value):null } catch { return null } }
+export function saveSession(session:Session) { session.supportActor?sessionStorage.setItem('gomove-support-session',JSON.stringify(session)):localStorage.setItem(key,JSON.stringify(session)) }
+export function clearSession() { sessionStorage.getItem('gomove-support-session')?sessionStorage.removeItem('gomove-support-session'):localStorage.removeItem(key) }
 export class ApiClient {
   constructor(private token:string|null, private onUnauthorized?:()=>void) {}
   async request<T>(path:string, options:RequestInit={}) : Promise<T> {

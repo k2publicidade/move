@@ -285,3 +285,14 @@ tbody tr:hover{background:rgba(184,230,0,.025)}
 .activation-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.activation-card{position:relative;min-width:0;min-height:440px;padding:30px;border:1px solid var(--line);border-radius:var(--radius-lg);background:linear-gradient(145deg,#0c151a,#091015);overflow:hidden;display:flex;flex-direction:column;align-items:flex-start}.activation-card.featured{border-color:rgba(184,230,0,.34);background:linear-gradient(145deg,rgba(184,230,0,.08),#0a1216 48%)}.activation-number{position:absolute;right:18px;top:10px;color:rgba(255,255,255,.035);font:800 92px/1 'Barlow Condensed'}.activation-icon{width:40px;height:40px;margin-bottom:24px;padding:9px;border-radius:11px;background:rgba(184,230,0,.1);color:var(--lime)}.activation-card h2{margin:9px 0 5px;font:700 28px/1.1 'Barlow Condensed';text-transform:uppercase}.activation-card>strong{min-height:38px;color:var(--lime);font:700 26px/1.15 'Barlow Condensed'}.activation-card>p{margin:16px 0 20px;color:#9aabb3;font-size:12px;line-height:1.65}.activation-card>label{display:flex;width:100%;flex-direction:column;gap:8px;margin:auto 0 18px;color:#abb9bf;font-size:11px;font-weight:700}.activation-card select{width:100%;min-height:48px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--radius-sm);background:#091116;color:var(--text);outline:none}.activation-card select:focus{border-color:var(--lime);box-shadow:var(--focus)}.activation-card>ul{display:grid;gap:10px;margin:auto 0 20px;padding:0;list-style:none}.activation-card>ul li{display:flex;align-items:center;gap:8px;color:#b2c0c6;font-size:11px}.activation-card>ul svg{width:16px;color:var(--lime)}.activation-card>.primary-btn{width:100%;min-height:50px}.activation-card button:focus-visible{outline:2px solid white;outline-offset:3px}
 @media(max-width:900px){.activation-options{grid-template-columns:1fr}.activation-card{min-height:390px}}
 @media(max-width:600px){.activation-card{min-height:0;padding:23px}.activation-number{font-size:70px}.activation-card>label,.activation-card>ul{margin-top:8px}}
+
+.support-banner { display:flex; gap:16px; align-items:center; justify-content:space-between; padding:16px; margin-bottom:20px; border:2px solid #d99a17; border-radius:12px; background:#fff6dc; color:#42300c; flex-wrap:wrap; }
+.account-actions { display:flex; gap:8px; flex-wrap:wrap; }
+
+.wallet-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+.wallet-forms>.form-panel{min-width:0;align-self:start}
+.wallet-forms>.form-panel>label{display:flex;flex-direction:column;gap:9px;margin:18px 0;font-size:12px;color:var(--muted)}
+.wallet-forms>.form-panel>label>input{width:100%;min-width:0}
+.wallet-forms p{font-size:13px;line-height:1.65;color:var(--muted)}
+.wallet-forms .outline-btn{margin-top:12px}
+@media(max-width:600px){.wallet-metrics{grid-template-columns:1fr}.wallet-metrics .metric-card{min-height:135px}}

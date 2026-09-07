@@ -20,6 +20,24 @@ test('demo database includes separate MASTER and user profiles', () => {
   assert.ok(database.vehicles.length >= 3)
 })
 
+test('demo deposits stay in purchase wallet and only earnings with an active package can be withdrawn', async () => {
+  localStorage.clear()
+  const user = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Carteiras Demo', username: 'walletdemo', email: 'walletdemo@example.com', password: 'safe-password' })
+  const deposit = await demoRequest<Record<string, any>>('/deposits', 'POST', { amount: 600, idempotencyKey: 'demo-deposit' }, user.token)
+  await demoRequest(`/deposits/${deposit.id}/confirm-demo`, 'POST', {}, user.token)
+  await demoRequest(`/deposits/${deposit.id}/confirm-demo`, 'POST', {}, user.token)
+  let state = await demoRequest<Record<string, any>>('/state', 'GET', undefined, user.token)
+  assert.equal(state.business.wallets.balanceCents, 60000)
+  assert.equal(state.business.wallets.earningsCents, 0)
+  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 50 }, user.token), /pacote ativo/)
+  await demoRequest('/wallet/purchases', 'POST', { productType: 'INVESTMENT', amount: 500, idempotencyKey: 'demo-quota' }, user.token)
+  await demoRequest('/wallet/purchases', 'POST', { productType: 'INVESTMENT', amount: 500, idempotencyKey: 'demo-quota' }, user.token)
+  state = await demoRequest<Record<string, any>>('/state', 'GET', undefined, user.token)
+  assert.equal(state.business.wallets.balanceCents, 10000)
+  assert.equal(state.business.wallets.hasActivePackage, true)
+  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 50 }, user.token), /Carteira de Rendimentos/)
+})
+
 test('user-created ticket is visible to MASTER and protected by role', async () => {
   localStorage.clear()
   const userSession = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
@@ -372,8 +390,9 @@ test('all MASTER operational collections support integrated create, update and d
 
   for (const [collection, payload] of cases) {
     const created = await demoRequest<Record<string, any>>(`/admin/${collection}`, 'POST', payload, master.token)
-    const updated = await demoRequest<Record<string, any>>(`/admin/${collection}/${created.id}`, 'PATCH', { status: 'Atualizado' }, master.token)
-    assert.equal(updated.status, 'Atualizado')
+    const nextStatus = collection === 'withdrawals' ? 'Em análise' : 'Atualizado'
+    const updated = await demoRequest<Record<string, any>>(`/admin/${collection}/${created.id}`, 'PATCH', { status: nextStatus }, master.token)
+    assert.equal(updated.status, nextStatus)
     const state = await demoRequest<Record<string, Record<string, any>[]>>('/state', 'GET', undefined, userSession.token)
     assert.equal(state[collection].some(item => item.id === created.id), true)
     await demoRequest(`/admin/${collection}/${created.id}`, 'DELETE', undefined, master.token)

@@ -32,7 +32,7 @@ test('login offers an accessible create-account route', () => {
 
 test('financially inactive accounts are routed to activation inside the authenticated shell', () => {
   assert.match(source, /const needsActivation =[^\n]*associatePlanStatus !== 'ACTIVE'/)
-  assert.match(source, /needsActivation && !\['\/activation', '\/investments', '\/my-investments', '\/profile', '\/support'\]\.includes\(path\)/)
+  assert.match(source, /needsActivation && !\['\/activation', '\/investments', '\/my-investments', '\/profile', '\/support', '\/finance', '\/store'\]\.includes\(path\)/)
   assert.match(source, /return needsActivation \? <ActivationOnboarding session=\{session\} \/>/)
 })
 

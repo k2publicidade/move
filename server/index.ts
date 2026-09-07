@@ -10,12 +10,13 @@ import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityB
 import { CoinPaymentsConfigurationError, createCoinPaymentsInvoice, verifyCoinPaymentsWebhook } from './coinpayments.js'
 import { PixPayConfigurationError, createPixPayTransaction, normalizeCustomerDocument, verifyPixPayWebhookToken } from './pixpay.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
+import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts } from '../src/wallets.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
 
 const root = path.resolve(process.env.GOMOVE_ROOT || process.cwd())
 const dataFile = process.env.GOMOVE_DATA_FILE ? path.resolve(process.env.GOMOVE_DATA_FILE) : path.join(root, '.data', 'db.json')
 type Item = Record<string, any> & { id: string }
-type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; dailyProfitabilityRuns: Item[]; dailyProfitabilities: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; coinPaymentsWebhookEvents: Item[]; pixPayWebhookEvents: Item[]; sessions: Record<string,{userId:string;expiresAt:string}> }
+type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; dailyProfitabilityRuns: Item[]; dailyProfitabilities: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; coinPaymentsWebhookEvents: Item[]; pixPayWebhookEvents: Item[]; sessions: Record<string,{userId:string;expiresAt:string;actorId?:string;parentToken?:string}> }
 type DbRequestContext = { db: Db; dirty: boolean; version: number }
 const ACCOUNT_ONBOARDING_VERSION=1
 const databaseUrl=String(process.env.DATABASE_URL??'').trim()
@@ -80,11 +81,14 @@ function normalizeDb(db:any,persisted?:string): Db {
   Object.assign(user,withBusinessPlanDefaults(user as any))
   if(inferredShareholder)user.membershipType='SHAREHOLDER'
  }
+ for(const transaction of db.transactions)transaction.wallet=transactionWallet(transaction)
  const normalized=JSON.stringify(db,null,2)
  if(persisted!==undefined&&normalized!==persisted) writeDb(db,normalized)
  return db
 }
-function writeDb(db: Db, serialized=JSON.stringify(db,null,2)) {
+function writeDb(db: Db, serialized?:string) {
+ for(const transaction of db.transactions)transaction.wallet=transactionWallet(transaction)
+ serialized=JSON.stringify(db,null,2)
  const requestStore=dbRequestContext.getStore()
  if(databaseUrl) {
   if(!requestStore)throw new Error('Contexto do banco indisponível')
@@ -250,7 +254,7 @@ app.post('/api/webhooks/coinpayments',express.raw({type:'application/json',limit
  try { payload=JSON.parse(rawBody) } catch { return res.status(400).json({error:'JSON inválido'}) }
  const eventKey=crypto.createHash('sha256').update(rawBody).digest('hex'),db=readDb()
  if(db.coinPaymentsWebhookEvents.some(event=>event.id===eventKey))return res.json({received:true,idempotent:true})
- const invoicePayload=payload?.invoice??payload,invoiceId=String(invoicePayload?.id??payload?.id??''),localReference=String(invoicePayload?.customData?.investmentId??invoicePayload?.items?.find((item:any)=>item?.customId)?.customId??payload?.customData?.investmentId??''),type=String(payload?.type??'').toLowerCase(),matches=(item:any)=>item.coinPaymentsInvoiceId?item.coinPaymentsInvoiceId===invoiceId:Boolean(localReference&&item.id===localReference),inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>item.productType==='ASSOCIATE_PLAN'&&matches(item))
+ const invoicePayload=payload?.invoice??payload,invoiceId=String(invoicePayload?.id??payload?.id??''),localReference=String(invoicePayload?.customData?.investmentId??invoicePayload?.items?.find((item:any)=>item?.customId)?.customId??payload?.customData?.investmentId??''),type=String(payload?.type??'').toLowerCase(),matches=(item:any)=>item.coinPaymentsInvoiceId?item.coinPaymentsInvoiceId===invoiceId:Boolean(localReference&&item.id===localReference),inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>['ASSOCIATE_PLAN','DEPOSIT'].includes(item.productType)&&matches(item))
  if(!inv&&!planInvoice)return res.status(404).json({error:'Fatura do webhook não encontrada'})
  try{validateWebhookInvoice(invoicePayload,inv??planInvoice)}catch(error:any){return res.status(422).json({error:error.message})}
  if(inv) {
@@ -271,7 +275,8 @@ app.post('/api/webhooks/coinpayments',express.raw({type:'application/json',limit
   else if(type==='invoicecompleted'){
    planInvoice.paymentStatus='CONFIRMED';planInvoice.status='Pago';planInvoice.remaining=0;planInvoice.paidAt=now();planInvoice.reconciliationRequired=false;delete planInvoice.paymentError
    const participant=db.users.find(user=>user.id===planInvoice.userId&&user.role==='ASSOCIATE')
-   if(participant&&participant.associatePlanStatus!=='ACTIVE'){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'coinpayments-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,coinPaymentsInvoiceId:invoiceId})}
+   if(planInvoice.productType==='DEPOSIT')creditDeposit(db,planInvoice,crypto.randomUUID)
+   if(planInvoice.productType==='ASSOCIATE_PLAN'&&participant&&participant.associatePlanStatus!=='ACTIVE'){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'coinpayments-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,coinPaymentsInvoiceId:invoiceId})}
   }
   else if((type==='invoicecancelled'||type==='invoicetimedout')&&!['PAID','CONFIRMED'].includes(planInvoice.paymentStatus)){planInvoice.paymentStatus=type==='invoicecancelled'?'CANCELLED':'TIMED_OUT';planInvoice.status='Cancelado'}
  }
@@ -288,7 +293,7 @@ app.post('/api/webhooks/pixpay',express.raw({type:'application/json',limit:'256k
  try { payload=JSON.parse(rawBody) } catch { return res.status(400).json({error:'JSON inválido'}) }
  const data=payload?.data??payload,transactionId=String(data?.transactionId??'').trim(),providerStatus=String(data?.status??'').trim().toUpperCase(),paymentMethod=String(data?.paymentMethod??'pix').trim().toLowerCase()
  if(!transactionId||!providerStatus||paymentMethod!=='pix')return res.status(422).json({error:'Notificação PIXPAY inválida'})
- const db=readDb(),matches=(item:any)=>item.paymentProvider==='PIXPAY'&&item.pixPayTransactionId===transactionId,inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>item.productType==='ASSOCIATE_PLAN'&&matches(item))
+ const db=readDb(),matches=(item:any)=>item.paymentProvider==='PIXPAY'&&item.pixPayTransactionId===transactionId,inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>['ASSOCIATE_PLAN','DEPOSIT'].includes(item.productType)&&matches(item))
  if(!inv&&!planInvoice)return res.status(404).json({error:'Cobrança PIX não encontrada'})
  const target=inv??planInvoice,amountCents=parseWebhookAmountCents(data?.amount)
  if(amountCents===null||amountCents!==Number(target.amountCents))return res.status(422).json({error:'Valor da cobrança PIX não confere'})
@@ -300,7 +305,8 @@ app.post('/api/webhooks/pixpay',express.raw({type:'application/json',limit:'256k
   if(planInvoice&&planInvoice.paymentStatus!=='CONFIRMED') {
    Object.assign(planInvoice,{paymentStatus:'CONFIRMED',status:'Pago',remaining:0,paidAt:now(),reconciliationRequired:false});delete planInvoice.paymentError
    const participant=db.users.find(user=>user.id===planInvoice.userId&&user.role==='ASSOCIATE')
-   if(participant){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'pixpay-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,pixPayTransactionId:transactionId})}
+   if(planInvoice.productType==='DEPOSIT')creditDeposit(db,planInvoice,crypto.randomUUID)
+   if(planInvoice.productType==='ASSOCIATE_PLAN'&&participant){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'pixpay-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,pixPayTransactionId:transactionId})}
   }
  } else if(providerStatus==='FAILED') {
   if(target.paymentStatus!=='CONFIRMED')Object.assign(target,{paymentStatus:'FAILED',status:'Cancelado',reconciliationRequired:false})
@@ -312,8 +318,18 @@ app.post('/api/webhooks/pixpay',express.raw({type:'application/json',limit:'256k
 })
 app.use(express.json())
 app.get('/api/cron/daily-profitability',(req,res)=>{const secret=String(process.env.CRON_SECRET??'');if(secret.length<16)return res.status(503).json({error:'CRON_SECRET não configurado'});if(req.header('authorization')!==`Bearer ${secret}`)return res.status(401).json({error:'Cron não autorizado'});const d=readDb(),date=saoPauloDate(),run=d.dailyProfitabilityRuns.find(item=>item.date===date);if(!run)return res.json({processed:false,date,reason:'Nenhum Diário cadastrado para hoje'});try{const result=processDailyProfitabilityRun(d,run,'SYSTEM_CRON');if(!result.idempotent)writeDb(d);res.json({processed:true,...result})}catch(error:any){res.status(422).json({error:error.message})}})
-function auth(req:Request,res:Response,next:NextFunction) { const token=req.header('authorization')?.replace(/^Bearer\s+/i,''),db=readDb(),session=token?db.sessions[token]:undefined,id=session&&Date.parse(session.expiresAt)>Date.now()?session.userId:undefined,user=id&&db.users.find(u=>u.id===id); if(!user||user.status!=='ACTIVE') { if(token&&db.sessions[token]){delete db.sessions[token];writeDb(db)} return res.status(401).json({error:'Sessão inválida ou conta inativa'}); } (req as any).user=user; next() }
-function admin(req:Request,res:Response,next:NextFunction) { if((req as any).user.role!=='ADMIN_MASTER') return res.status(403).json({error:'Acesso administrativo obrigatório'}); next() }
+function auth(req:Request,res:Response,next:NextFunction) {
+ const token=req.header('authorization')?.replace(/^Bearer\s+/i,''),db=readDb(),session=token?db.sessions[token]:undefined
+ const user=session&&Date.parse(session.expiresAt)>Date.now()?db.users.find(u=>u.id===session.userId):undefined
+ const actor=session?.actorId?db.users.find(u=>u.id===session.actorId&&u.role==='ADMIN_MASTER'&&u.status==='ACTIVE'):undefined
+ const parent=session?.parentToken?db.sessions[session.parentToken]:undefined
+ const support=!!actor&&!!parent&&parent.userId===actor.id&&!parent.actorId&&Date.parse(parent.expiresAt)>Date.now()
+ if(!user||(session?.actorId?!support:user.status!=='ACTIVE'))return res.status(401).json({error:'Sessão inválida ou conta inativa'})
+ ;(req as any).user=user;(req as any).supportActor=actor
+ if(actor&&!['GET','HEAD'].includes(req.method)){audit(db,actor.id,'SUPPORT_ACTION_ATTEMPT','USER',user.id,{method:req.method,path:req.path});writeDb(db)}
+ next()
+}
+function admin(req:Request,res:Response,next:NextFunction) { if((req as any).supportActor||(req as any).user.role!=='ADMIN_MASTER') return res.status(403).json({error:'Acesso administrativo obrigatório'}); next() }
 function page<T>(items:T[], req:Request) { const p=Math.max(1,Number(req.query.page)||1), size=Math.min(100,Math.max(1,Number(req.query.pageSize)||20)); return {items:items.slice((p-1)*size,p*size),page:p,pageSize:size,total:items.length} }
 function createSession(db:Db,user:MlmUser) { const token=crypto.randomBytes(32).toString('base64url');db.sessions[token]={userId:user.id,expiresAt:new Date(Date.now()+12*60*60*1000).toISOString()};for(const [key,session] of Object.entries(db.sessions))if(Date.parse(session.expiresAt)<=Date.now())delete db.sessions[key];return {token,user:publicUser(user)} }
 app.post(['/api/auth/login','/api/login'],publicRateLimit,(req,res)=>{ const {username,password}=req.body??{},plainPassword=String(password??''),login=String(username).trim().toLowerCase(),db=readDb();let u=db.users.find(x=>x.username.toLowerCase()===login||x.email.toLowerCase()===login);if(!u&&login==='master')u=db.users.find(x=>x.username.toLowerCase()==='admin'); if(plainPassword.length>128||!u||!verify(plainPassword,String(u.passwordHash))||u.status!=='ACTIVE') return res.status(401).json({error:'Usuário ou senha inválidos'}); const session=createSession(db,u);writeDb(db);res.json(session) })
@@ -321,7 +337,7 @@ app.get('/api/auth/me',auth,(req,res)=>res.json({user:publicUser((req as any).us
 app.get('/api/public/invites/:inviteCode',publicRateLimit,(req,res)=>{const inviteCode=String(req.params.inviteCode).toLowerCase(),u=readDb().users.find(x=>x.inviteCode.toLowerCase()===inviteCode); if(!u||!canSponsorRegistrations(u)) return res.status(404).json({error:'Convite indisponível'}); res.json({sponsor:{name:(u as any).name,inviteCode:u.inviteCode}})})
 app.post('/api/public/register',publicRateLimit,(req,res)=>{ const b=req.body??{},password=String(b.password??''); if(!b.username||!b.email||password.length<6||password.length>128||!b.name) return res.status(422).json({error:'Informe nome, usuário, e-mail e uma senha entre 6 e 128 caracteres'}); const db=readDb(); try { const u=createRegistration(db.users,{username:b.username,email:b.email,passwordHash:hash(password),inviteCode:b.inviteCode,name:b.name}); db.users.push(u); const session=createSession(db,u);audit(db,u.id,'REGISTER','USER',u.id,{sponsorId:u.sponsorId,source:b.inviteCode?'INVITE':'DIRECT'});writeDb(db);res.status(201).json(session) } catch(e:any) { res.status(/already exists/.test(e.message)?409:422).json({error:e.message}) } })
 function descendants(db:Db,id:string) { const out=new Set<string>([id]); let changed=true; while(changed){changed=false; for(const u of db.users) if(u.sponsorId&&out.has(u.sponsorId)&&!out.has(u.id)){out.add(u.id);changed=true}} return out }
-function businessSummary(db:Db,user:MlmUser) { const bonuses=db.bonusEntries.filter(entry=>entry.userId===user.id&&entry.amountCents>0),approvedBonusCents=bonuses.filter(entry=>entry.status==='APPROVED').reduce((sum,entry)=>sum+entry.amountCents,0),pendingBonusCents=bonuses.filter(entry=>entry.status==='PENDING').reduce((sum,entry)=>sum+entry.amountCents,0),blockedBonusCents=bonuses.filter(entry=>entry.status==='BLOCKED_UPGRADE').reduce((sum,entry)=>sum+entry.amountCents,0),quotaAmountCents=confirmedQuotaCents(db,user.id),dailyEarningCents=db.dailyProfitabilities.filter(entry=>entry.userId===user.id).reduce((sum,entry)=>sum+Number(entry.creditedAmountCents||0),0),cappedEarningCents=db.dailyProfitabilities.filter(entry=>entry.userId===user.id).reduce((sum,entry)=>sum+Number(entry.cappedAmountCents||0),0)+bonuses.filter(entry=>entry.status==='CAPPED_200_PERCENT').reduce((sum,entry)=>sum+entry.amountCents,0),earningCapCents=user.membershipType==='SHAREHOLDER'?quotaAmountCents*2:Number(user.bonusCapCents||ASSOCIATE_BONUS_CAP_CENTS),earningCapConsumedCents=approvedBonusCents+pendingBonusCents+dailyEarningCents,earningCapRemainingCents=Math.max(0,earningCapCents-earningCapConsumedCents),registrationAudit=db.auditLogs.find(entry=>entry.action==='REGISTER'&&entry.targetId===user.id),createdViaInvite=Boolean(user.registrationSource==='INVITE'||registrationAudit?.details?.source==='INVITE'),bonusPeriods=summarizeBonusPeriods(user.id,db.bonusEntries as any,db.transactions as any);return {...publicUser(user),createdViaInvite,bonusPeriods,approvedBonusCents,pendingBonusCents,blockedBonusCents,dailyEarningCents,cappedEarningCents,earningCapCents,earningCapConsumedCents,earningCapRemainingCents,bonusCapRemainingCents:earningCapRemainingCents,quotaAmountCents,canReceiveFinancialResults:user.membershipType==='SHAREHOLDER'}}
+function businessSummary(db:Db,user:MlmUser) { const bonuses=db.bonusEntries.filter(entry=>entry.userId===user.id&&entry.amountCents>0),approvedBonusCents=bonuses.filter(entry=>entry.status==='APPROVED').reduce((sum,entry)=>sum+entry.amountCents,0),pendingBonusCents=bonuses.filter(entry=>entry.status==='PENDING').reduce((sum,entry)=>sum+entry.amountCents,0),blockedBonusCents=bonuses.filter(entry=>entry.status==='BLOCKED_UPGRADE').reduce((sum,entry)=>sum+entry.amountCents,0),quotaAmountCents=confirmedQuotaCents(db,user.id),dailyEarningCents=db.dailyProfitabilities.filter(entry=>entry.userId===user.id).reduce((sum,entry)=>sum+Number(entry.creditedAmountCents||0),0),cappedEarningCents=db.dailyProfitabilities.filter(entry=>entry.userId===user.id).reduce((sum,entry)=>sum+Number(entry.cappedAmountCents||0),0)+bonuses.filter(entry=>entry.status==='CAPPED_200_PERCENT').reduce((sum,entry)=>sum+entry.amountCents,0),earningCapCents=user.membershipType==='SHAREHOLDER'?quotaAmountCents*2:Number(user.bonusCapCents||ASSOCIATE_BONUS_CAP_CENTS),earningCapConsumedCents=approvedBonusCents+pendingBonusCents+dailyEarningCents,earningCapRemainingCents=Math.max(0,earningCapCents-earningCapConsumedCents),registrationAudit=db.auditLogs.find(entry=>entry.action==='REGISTER'&&entry.targetId===user.id),createdViaInvite=Boolean(user.registrationSource==='INVITE'||registrationAudit?.details?.source==='INVITE'),bonusPeriods=summarizeBonusPeriods(user.id,db.bonusEntries as any,db.transactions as any);return {...publicUser(user),createdViaInvite,wallets:walletSummary(db,user),bonusPeriods,approvedBonusCents,pendingBonusCents,blockedBonusCents,dailyEarningCents,cappedEarningCents,earningCapCents,earningCapConsumedCents,earningCapRemainingCents,bonusCapRemainingCents:earningCapRemainingCents,quotaAmountCents,canReceiveFinancialResults:user.membershipType==='SHAREHOLDER'}}
 app.get('/api/network/summary',auth,(req,res)=>{const db=readDb(),u=(req as any).user, ids=descendants(db,u.id);res.json({directs:db.users.filter(x=>x.sponsorId===u.id).length,networkSize:ids.size-1,activeNetwork:db.users.filter(x=>ids.has(x.id)&&x.status==='ACTIVE').length-1,pendingDirects:db.users.filter(x=>x.sponsorId===u.id&&x.status==='PENDING').length,...businessSummary(db,u)})})
 app.get('/api/network/directs',auth,(req,res)=>res.json(page(readDb().users.filter(x=>x.sponsorId===(req as any).user.id).map(publicUser),req)))
 app.get('/api/network/unilevel',auth,(req,res)=>{const db=readDb(), root=(req as any).user.id; let frontier=[root], out:any[]=[]; for(let l=1;l<=Math.min(20,Number(req.query.depth)||3);l++){frontier=db.users.filter(u=>frontier.includes(u.sponsorId||''));out.push(...frontier.map(u=>({...publicUser(u),level:l})));}res.json(out)})
@@ -329,6 +345,52 @@ app.get('/api/network/tree',auth,(req,res)=>{const db=readDb(), max=Math.min(10,
 app.get('/api/network/search',auth,(req,res)=>{const db=readDb(), q=String(req.query.q||'').toLowerCase(),ids=descendants(db,(req as any).user.id);res.json(page(db.users.filter(u=>ids.has(u.id)&&((u as any).name?.toLowerCase().includes(q)||u.username.toLowerCase().includes(q))).map(publicUser),req))})
 app.get('/api/bonuses/me',auth,(req,res)=>res.json(page(readDb().bonusEntries.filter(x=>x.userId===(req as any).user.id),req)))
 app.get('/api/admin/dashboard',auth,admin,(_req,res)=>{const d=readDb();res.json({users:d.users.length,active:d.users.filter(u=>u.status==='ACTIVE').length,pending:d.users.filter(u=>u.status==='PENDING').length,associates:d.users.filter(u=>u.role==='ASSOCIATE'&&u.membershipType!=='SHAREHOLDER').length,shareholders:d.users.filter(u=>u.role==='ASSOCIATE'&&u.membershipType==='SHAREHOLDER').length,pendingPlans:d.users.filter(u=>u.role==='ASSOCIATE'&&u.associatePlanStatus!=='ACTIVE').length,vehicles:d.vehicles.length,activeVehicles:d.vehicles.filter((v:any)=>v.status==='Em operação').length,revenue:d.invoices.filter((x:any)=>x.status==='Pago').reduce((s:number,x:any)=>s+Number(x.amount||0),0),pendingWithdrawals:d.withdrawals.filter((x:any)=>x.status==='Pendente').length,openTickets:d.tickets.filter((x:any)=>x.status!=='Resolvido').length,bonusPendingCents:d.bonusEntries.filter(b=>b.status==='PENDING').reduce((s,b)=>s+b.amountCents,0),bonusBlockedCents:d.bonusEntries.filter(b=>b.status==='BLOCKED_UPGRADE').reduce((s,b)=>s+b.amountCents,0)})})
+app.post('/api/admin/associates/:id/access',auth,admin,(req,res)=>{
+ const d=readDb(),u=d.users.find(u=>u.id===req.params.id&&u.role==='ASSOCIATE');if(!u)return res.status(404).json({error:'Conta não encontrada'})
+ const actor=(req as any).user,session=createSession(d,u)
+ Object.assign(d.sessions[session.token],{actorId:actor.id,parentToken:req.header('authorization')!.replace(/^Bearer\s+/i,''),expiresAt:new Date(Date.now()+60*60*1000).toISOString()})
+ audit(d,actor.id,'SUPPORT_ACCESS_START','USER',u.id);writeDb(d);res.json({...session,supportActor:{id:actor.id,name:actor.name}})
+})
+app.post('/api/auth/logout',auth,(req,res)=>{
+ const d=readDb(),token=req.header('authorization')!.replace(/^Bearer\s+/i,''),session=d.sessions[token]
+ if(session.actorId)audit(d,session.actorId,'SUPPORT_ACCESS_END','USER',session.userId)
+ for(const [key,value] of Object.entries(d.sessions))if(key===token||value.parentToken===token)delete d.sessions[key]
+ writeDb(d);res.json({ok:true})
+})
+app.get('/api/admin/associates/:id/account',auth,admin,(req,res)=>{
+ const d=readDb(),u=d.users.find(u=>u.id===req.params.id&&u.role==='ASSOCIATE');if(!u)return res.status(404).json({error:'Conta não encontrada'})
+ const owned=(key:string)=>d[key].filter((item:any)=>item.userId===u.id),transactions=owned('transactions')
+ res.json({user:publicUser(u),wallets:walletSummary(d,u),transactions,invoices:owned('invoices'),investments:owned('investments'),withdrawals:owned('withdrawals'),balanceCents:transactions.reduce((sum:number,t:any)=>sum+Math.round(Number(t.amount)*100),0),auditLogs:d.auditLogs.filter(log=>log.targetId===u.id||log.details?.userId===u.id)})
+})
+app.post('/api/admin/associates/:id/reconcile',auth,admin,(req,res)=>{
+ const d=readDb(),b=req.body??{},reason=String(b.reason??'').trim(),reference=String(b.reference??'').trim(),kind=b.kind
+ if(!['invoices','investments'].includes(kind)||!reason||!reference||reason.length>1000||reference.length>200)return res.status(422).json({error:'Informe tipo, referência e evidência da conferência no gateway'})
+ const user=d.users.find(u=>u.id===req.params.id&&u.role==='ASSOCIATE'),record=d[kind].find((r:any)=>r.id===b.recordId&&r.userId===req.params.id)
+ if(!user||!record)return res.status(404).json({error:'Pagamento não encontrado nesta conta'})
+ if(record.paymentStatus==='CONFIRMED')return res.json({record,idempotent:true})
+ if(kind==='invoices'&&!['ASSOCIATE_PLAN','DEPOSIT'].includes(record.productType))return res.status(422).json({error:'Conciliação disponível para planos de associado e cotas'})
+ if(kind==='invoices'&&record.productType==='ASSOCIATE_PLAN'&&record.amountCents!==ASSOCIATE_PLAN_PRICE_CENTS)return res.status(422).json({error:'Valor do plano inválido'})
+ const actorId=(req as any).user.id
+ try {
+ if(kind==='investments')confirmInvestmentInDb(d,record,actorId)
+ else if(record.productType==='DEPOSIT'){creditDeposit(d,record,crypto.randomUUID);Object.assign(record,{paymentStatus:'CONFIRMED',status:'Pago',remaining:0,paidAt:now()})}
+ else {Object.assign(record,{paymentStatus:'CONFIRMED',status:'Pago',remaining:0,paidAt:now()});Object.assign(user,{associatePlanStatus:'ACTIVE',associatePlanAmountCents:ASSOCIATE_PLAN_PRICE_CENTS,associatePlanPaidAt:now()})}
+ record.reconciliationRequired=false;delete record.paymentError
+ audit(d,actorId,'PAYMENT_RECONCILE','USER',user.id,{recordId:record.id,kind,amountCents:record.amountCents,reference,reason});writeDb(d);res.json({record,idempotent:false})
+ }catch(e:any){res.status(422).json({error:e.message})}
+})
+app.post('/api/admin/associates/:id/balance-adjustments',auth,admin,(req,res)=>{
+ const d=readDb(),u=d.users.find(u=>u.id===req.params.id&&u.role==='ASSOCIATE'),b=req.body??{},reason=String(b.reason??'').trim(),reference=String(b.reference??'').trim()
+ if(!u)return res.status(404).json({error:'Conta não encontrada'})
+ if(!Number.isSafeInteger(b.amountCents)||b.amountCents===0||Math.abs(b.amountCents)>100000000||!reason||!reference||reason.length>1000||reference.length>200)return res.status(422).json({error:'Informe valor até R$ 1.000.000, motivo e referência única do atendimento ou gateway'})
+ const wallet=b.wallet??'BALANCE';if(!['BALANCE','EARNINGS'].includes(wallet))return res.status(422).json({error:'Carteira inválida'})
+ const previous=d.transactions.find((t:any)=>t.userId===u.id&&t.adjustmentReference===reference)
+ if(previous){if(Math.round(previous.amount*100)!==b.amountCents||previous.reason!==reason||transactionWallet(previous)!==wallet)return res.status(409).json({error:'Referência já utilizada em outro ajuste'});return res.json({transaction:previous,idempotent:true})}
+ const wallets=walletSummary(d,u),balanceCents=wallet==='BALANCE'?wallets.balanceCents:wallets.earningsCents,reservedCents=wallet==='EARNINGS'?wallets.reservedCents:0
+ if(b.amountCents<0&&balanceCents+b.amountCents<reservedCents)return res.status(422).json({error:'O ajuste não pode consumir valores reservados nem deixar saldo negativo'})
+ const actorId=(req as any).user.id,transaction={id:crypto.randomUUID(),userId:u.id,actorId,wallet,amount:b.amountCents/100,adjustmentReference:reference,reason,description:`Ajuste MASTER: ${reason}`,status:b.amountCents>0?'Crédito':'Débito',date:new Date().toLocaleDateString('pt-BR'),createdAt:now()}
+ d.transactions.unshift(transaction);audit(d,actorId,'BALANCE_ADJUSTMENT','USER',u.id,{transactionId:transaction.id,wallet,amountCents:b.amountCents,beforeCents:balanceCents,afterCents:balanceCents+b.amountCents,reference,reason});writeDb(d);res.status(201).json({transaction,idempotent:false})
+})
 app.get('/api/admin/associates',auth,admin,(req,res)=>{const d=readDb();res.json(page(d.users.filter(u=>u.role==='ASSOCIATE').map(u=>({...publicUser(u),phone:d.profiles[u.id]?.phone??''})),req))})
 app.post('/api/admin/associates',auth,admin,(req,res)=>{
  const b=req.body??{},d=readDb(),username=String(b.username??'').trim().toLowerCase(),email=String(b.email??'').trim().toLowerCase(),password=String(b.password??''),sponsor=b.sponsorId?d.users.find(u=>u.id===b.sponsorId&&canSponsorRegistrations(u)):d.users.find(u=>u.role==='ADMIN_MASTER'&&canSponsorRegistrations(u))
@@ -345,12 +407,13 @@ app.patch('/api/admin/associates/:id',auth,admin,(req,res)=>{
  if(d.users.some(u=>u.id!==account.id&&(u.username.toLowerCase()===username||u.email.toLowerCase()===email)))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
  if(requestedSponsorId&&(!d.users.some(u=>u.id===requestedSponsorId&&canSponsorRegistrations(u))||wouldCreateSponsorCycle(d.users,account.id,requestedSponsorId)))return res.status(422).json({error:'Patrocinador precisa estar financeiramente elegível e não pode criar um ciclo'})
  const nextPlanStatus=['ACTIVE','PENDING','INACTIVE'].includes(b.associatePlanStatus)?b.associatePlanStatus:account.associatePlanStatus,nextStatus=['ACTIVE','PENDING','BLOCKED'].includes(b.status)?b.status:account.status
- const oldName=String(account.name??'');Object.assign(account,{name,username,email,status:nextStatus,associatePlanStatus:nextPlanStatus,sponsorId:requestedSponsorId??account.sponsorId});if(nextPlanStatus==='ACTIVE'&&!account.associatePlanPaidAt)account.associatePlanPaidAt=now();if(b.password){if(String(b.password).length<6||String(b.password).length>128)return res.status(422).json({error:'A senha deve ter entre 6 e 128 caracteres'});account.passwordHash=hash(String(b.password))}d.profiles[account.id]={...(d.profiles[account.id]??{}),name,email,phone:b.phone??d.profiles[account.id]?.phone??''}
+ if(b.password&&(typeof b.password!=='string'||b.password.length<6||b.password.length>128))return res.status(422).json({error:'A senha deve ter entre 6 e 128 caracteres'})
+ const oldName=String(account.name??'');Object.assign(account,{name,username,email,status:nextStatus,associatePlanStatus:nextPlanStatus,sponsorId:requestedSponsorId??account.sponsorId});if(nextPlanStatus==='ACTIVE'&&!account.associatePlanPaidAt)account.associatePlanPaidAt=now();if(b.password){if(String(b.password).length<6||String(b.password).length>128)return res.status(422).json({error:'A senha deve ter entre 6 e 128 caracteres'});account.passwordHash=hash(String(b.password));for(const [key,value] of Object.entries(d.sessions))if(value.userId===account.id)delete d.sessions[key];audit(d,(req as any).user.id,'PASSWORD_RESET','USER',account.id)}d.profiles[account.id]={...(d.profiles[account.id]??{}),name,email,phone:b.phone??d.profiles[account.id]?.phone??''}
  d.vehicles.filter((v:any)=>v.userId===account.id||v.driver===oldName).forEach((v:any)=>{v.userId=account.id;v.driver=name});audit(d,(req as any).user.id,'RECORD_UPDATE','USER',account.id,{name,username,email,status:account.status,sponsorId:account.sponsorId});writeDb(d);res.json(publicUser(account))
 })
 app.delete('/api/admin/associates/:id',auth,admin,(req,res)=>{
  const d=readDb(),account=d.users.find(u=>u.id===req.params.id&&u.role==='ASSOCIATE');if(!account)return res.status(404).json({error:'Usuário não encontrado'})
- if(d.commissionEvents.some(event=>event.investorId===account.id)||d.bonusEntries.some(entry=>entry.userId===account.id)||d.investments.some(investment=>investment.userId===account.id))return res.status(422).json({error:'Conta com histórico financeiro não pode ser excluída; altere o status para Bloqueado'})
+ if(d.transactions.some((t:any)=>t.userId===account.id)||d.commissionEvents.some(event=>event.investorId===account.id)||d.bonusEntries.some(entry=>entry.userId===account.id)||d.investments.some(investment=>investment.userId===account.id))return res.status(422).json({error:'Conta com histórico financeiro não pode ser excluída; altere o status para Bloqueado'})
  d.users.filter(u=>u.sponsorId===account.id).forEach(u=>u.sponsorId=account.sponsorId);for(const key of ['investments','orders','invoices','transactions','withdrawals','tickets','cart'])d[key]=d[key].filter((item:any)=>item.userId!==account.id);d.vehicles.filter((v:any)=>v.userId===account.id).forEach((v:any)=>{delete v.userId;v.driver='—'});d.bonusEntries=d.bonusEntries.filter((item:any)=>item.userId!==account.id);delete d.profiles[account.id];audit(d,(req as any).user.id,'RECORD_DELETE','USER',account.id,{username:account.username});d.users=d.users.filter(u=>u.id!==account.id);writeDb(d);res.json({id:account.id})
 })
 app.get('/api/admin/network/tree',auth,admin,(req,res)=>{const d=readDb(), requestedRoot=typeof req.query.rootUserId==='string'?req.query.rootUserId.trim():'', rootId=requestedRoot||(d.users.find(user=>user.role==='ADMIN_MASTER')?.id||''); const requestedDepth=Number(req.query.depth);const depth=Math.min(10,Math.max(0,Number.isFinite(requestedDepth)?Math.floor(requestedDepth):3));try{const redact=(node:any):any=>{const {passwordHash,...user}=node;return {...user,children:node.children.map(redact)}};res.json(redact(buildNetworkTree(d.users,rootId,depth)))}catch(error:any){res.status(422).json({error:error.message})}})
@@ -372,34 +435,64 @@ app.post('/api/admin/investments/:id/confirm',auth,admin,(req,res)=>{const d=rea
 app.get('/api/admin/audit-logs',auth,admin,(req,res)=>res.json(page(readDb().auditLogs,req)))
 for(const key of ['vehicles','investments','orders','invoices','withdrawals','tickets'] as const) {
  app.get(`/api/admin/${key}`,auth,admin,(req,res)=>res.json(page(readDb()[key],req)))
- app.post(`/api/admin/${key}`,auth,admin,(req,res)=>{const b=req.body??{},d=readDb(),owner=b.userId?d.users.find((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'):undefined;if(key!=='vehicles'&&!owner)return res.status(422).json({error:'Selecione uma conta de usuário válida'});if(b.userId&&!owner)return res.status(422).json({error:'Usuário inválido'});const prefixes:any={vehicles:'VEI',investments:'ATV',orders:'PED',invoices:'INV',withdrawals:'SAQ',tickets:'TK'},item:any={...b,id:`${prefixes[key]}-${Date.now().toString(36)}`,createdAt:now()};if(!item.date&&key!=='vehicles'&&key!=='invoices')item.date=new Date().toLocaleDateString('pt-BR');if(key==='vehicles')item.driver=owner?.name??'—';if(key==='investments'){try{Object.assign(item,parseQuotaAmount(b.amount),{pack:'Cotas GoMove'})}catch(error:any){return res.status(422).json({error:error.message})}}d[key].unshift(item);audit(d,(req as any).user.id,'RECORD_CREATE',key.toUpperCase(),item.id,item);writeDb(d);res.status(201).json(item)})
- app.patch(`/api/admin/${key}/:id`,auth,admin,(req,res)=>{const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id),b={...(req.body??{})} as any;if(!item)return res.status(404).json({error:'Registro não encontrado'});if(b.userId&&!d.users.some((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'))return res.status(422).json({error:'Usuário inválido'});let parsedInvestment:any;if(key==='investments'&&b.amount!==undefined){try{parsedInvestment=parseQuotaAmount(b.amount)}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='investments')delete b.amountCents;const previousStatus=item.status;Object.assign(item,b,{id:item.id},parsedInvestment??{});if(key==='vehicles')item.driver=d.users.find((u:any)=>u.id===item.userId)?.name??'—';if(key==='withdrawals'&&item.status==='Pago'&&previousStatus!=='Pago'&&!d.transactions.some((transaction:any)=>transaction.withdrawalId===item.id)){item.paidAt=new Date().toLocaleDateString('pt-BR');d.transactions.unshift({id:crypto.randomUUID(),userId:item.userId,withdrawalId:item.id,date:item.paidAt,description:`Saque ${item.id}`,amount:-Math.abs(Number(item.amount)),status:'Débito',createdAt:now()})}audit(d,(req as any).user.id,'RECORD_UPDATE',key.toUpperCase(),item.id,b);writeDb(d);res.json(item)})
- app.delete(`/api/admin/${key}/:id`,auth,admin,(req,res)=>{const d=readDb(),index=d[key].findIndex((x:any)=>x.id===req.params.id);if(index<0)return res.status(404).json({error:'Registro não encontrado'});const [item]=d[key].splice(index,1);audit(d,(req as any).user.id,'RECORD_DELETE',key.toUpperCase(),item.id);writeDb(d);res.json({id:item.id})})
+ app.post(`/api/admin/${key}`,auth,admin,(req,res)=>{const b=req.body??{},d=readDb(),owner=b.userId?d.users.find((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'):undefined;if(key!=='vehicles'&&!owner)return res.status(422).json({error:'Selecione uma conta de usuário válida'});if(b.userId&&!owner)return res.status(422).json({error:'Usuário inválido'});const prefixes:any={vehicles:'VEI',investments:'ATV',orders:'PED',invoices:'INV',withdrawals:'SAQ',tickets:'TK'},item:any={...b,id:`${prefixes[key]}-${Date.now().toString(36)}`,createdAt:now()};if(!item.date&&key!=='vehicles'&&key!=='invoices')item.date=new Date().toLocaleDateString('pt-BR');if(key==='withdrawals'){try{const requestedStatus=b.status??'Pendente';Object.assign(item,{userId:owner!.id,status:'Pendente',paidAt:'—',wallet:'EARNINGS'});updateWithdrawal(d,item,{...b,status:requestedStatus},crypto.randomUUID)}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='vehicles')item.driver=owner?.name??'—';if(key==='investments'){try{Object.assign(item,parseQuotaAmount(b.amount),{pack:'Cotas GoMove'})}catch(error:any){return res.status(422).json({error:error.message})}}d[key].unshift(item);audit(d,(req as any).user.id,'RECORD_CREATE',key.toUpperCase(),item.id,item);writeDb(d);res.status(201).json(item)})
+ app.patch(`/api/admin/${key}/:id`,auth,admin,(req,res)=>{const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id),b={...(req.body??{})} as any;if(!item)return res.status(404).json({error:'Registro não encontrado'});if(b.userId&&!d.users.some((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'))return res.status(422).json({error:'Usuário inválido'});if(key==='withdrawals'){try{updateWithdrawal(d,item,b,crypto.randomUUID);audit(d,(req as any).user.id,'RECORD_UPDATE','WITHDRAWALS',item.id,b);writeDb(d);return res.json(item)}catch(error:any){return res.status(422).json({error:error.message})}}let parsedInvestment:any;if(key==='investments'&&b.amount!==undefined){try{parsedInvestment=parseQuotaAmount(b.amount)}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='investments')delete b.amountCents;Object.assign(item,b,{id:item.id},parsedInvestment??{});if(key==='vehicles')item.driver=d.users.find((u:any)=>u.id===item.userId)?.name??'—';audit(d,(req as any).user.id,'RECORD_UPDATE',key.toUpperCase(),item.id,b);writeDb(d);res.json(item)})
+ app.delete(`/api/admin/${key}/:id`,auth,admin,(req,res)=>{const d=readDb(),index=d[key].findIndex((x:any)=>x.id===req.params.id);if(index<0)return res.status(404).json({error:'Registro não encontrado'});const item=d[key][index];if(key==='withdrawals'&&(item.status==='Pago'||d.transactions.some((t:any)=>t.withdrawalId===item.id)))return res.status(422).json({error:'Um saque pago não pode ser excluído'});d[key].splice(index,1);audit(d,(req as any).user.id,'RECORD_DELETE',key.toUpperCase(),item.id);writeDb(d);res.json({id:item.id})})
 }
 // Legacy UI resources are authenticated and scoped to the caller where owner/user ownership exists.
 for(const key of ['cart','investments','orders','tickets','invoices','withdrawals'] as const) app.get(`/api/${key}`,auth,(req,res)=>{const d=readDb(),u=(req as any).user;res.json(d[key].filter((x:any)=>!x.userId||x.userId===u.id))})
 app.put('/api/profile',auth,(req,res)=>{const d=readDb(),u=(req as any).user,allowed=['name','email','phone','birthdate','language','country','twoFactorLogin','twoFactorWithdraw','pixType'];d.profiles[u.id]={...(d.profiles[u.id]??{}),...Object.fromEntries(Object.entries(req.body??{}).filter(([k])=>allowed.includes(k)))};const account=d.users.find(x=>x.id===u.id) as any;if(account&&req.body?.name)account.name=req.body.name;if(account&&req.body?.email)account.email=req.body.email;writeDb(d);res.json(d.profiles[u.id])})
-app.post('/api/associate-plan',auth,async(req,res)=>{
+app.post('/api/wallet/purchases',auth,(req,res)=>{
+ const d=structuredClone(readDb()),user=d.users.find(u=>u.id===(req as any).user.id)!,b=req.body??{},key=String(b.idempotencyKey??'').trim()
+ if(!key)return res.status(422).json({error:'Identificador idempotente ausente'})
+ const existing=[...d.orders,...d.investments,...d.invoices].find((item:any)=>item.userId===user.id&&item.walletPurchaseKey===key)
+ if(existing)return res.json(existing)
+ try {
+  const id=crypto.randomUUID(),base={id,userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),walletPurchaseKey:key,paymentProvider:'WALLET',paymentMethod:'Carteira de Saldo',paymentStatus:'CONFIRMED'}
+  let item:any
+  if(b.productType==='ASSOCIATE_PLAN'){
+   if(user.associatePlanStatus==='ACTIVE')throw new Error('O Plano de Associado já está ativo')
+   debitPurchase(d,user,ASSOCIATE_PLAN_PRICE_CENTS,id,'Compra do Plano de Associado',crypto.randomUUID)
+   item={...base,productType:'ASSOCIATE_PLAN',description:'Plano de Associado GoMove',amount:ASSOCIATE_PLAN_PRICE_CENTS/100,amountCents:ASSOCIATE_PLAN_PRICE_CENTS,remaining:0,status:'Pago',paidAt:now()};d.invoices.unshift(item)
+   Object.assign(user,{associatePlanStatus:'ACTIVE',associatePlanAmountCents:ASSOCIATE_PLAN_PRICE_CENTS,associatePlanPaidAt:now()})
+  }else if(b.productType==='INVESTMENT'){
+   const {amount,amountCents}=parseQuotaAmount(b.amount)
+   if(walletSummary(d,user).balanceCents<amountCents)throw new Error('Saldo insuficiente na Carteira de Saldo')
+   item={...base,amount,amountCents,pack:'Cotas GoMove',profit:0,status:'Pendente',paymentStatus:'PENDING'}
+   d.investments.unshift(item);confirmInvestmentInDb(d,item,user.id)
+   debitPurchase(d,user,amountCents,id,'Compra de cotas GoMove',crypto.randomUUID)
+  }else if(b.productType==='PRODUCT'){
+   const product=storeProducts.find(p=>p.id===b.productId)
+   if(!product)throw new Error('Produto inválido')
+   debitPurchase(d,user,Math.round(product.price*100),id,`Compra: ${product.name}`,crypto.randomUUID)
+   item={...base,productId:product.id,description:product.name,quantity:1,total:product.price,status:'Processando'};d.orders.unshift(item)
+  }else throw new Error('Tipo de compra inválido')
+  audit(d,user.id,'WALLET_PURCHASE','USER',user.id,{recordId:id,productType:b.productType});writeDb(d);res.status(201).json(item)
+ }catch(error:any){res.status(422).json({error:error.message})}
+})
+app.post(['/api/associate-plan','/api/deposits'],auth,async(req,res)=>{
  const b=req.body??{},user=(req as any).user as MlmUser,idempotencyKey=String(b.idempotencyKey??'').trim()
  if(!idempotencyKey)return res.status(422).json({error:'Identificador idempotente ausente'})
+ const productType=req.path.endsWith('/deposits')?'DEPOSIT':'ASSOCIATE_PLAN';let invoiceAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;try{if(productType==='DEPOSIT')invoiceAmountCents=moneyCents(b.amount)}catch(error:any){return res.status(422).json({error:error.message})}
  const openStatuses=new Set(['INVOICE_CREATING','PENDING','PAID','PROVIDER_UNKNOWN'])
- let d=readDb(),invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType==='ASSOCIATE_PLAN'&&item.idempotencyKey===idempotencyKey)
+ let d=readDb(),invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType===productType&&item.idempotencyKey===idempotencyKey)
  if(invoice&&NON_RETRYABLE_CHECKOUT_STATUSES.has(invoice.paymentStatus))return res.status(409).json({error:'Esta tentativa de pagamento foi encerrada; inicie outra com uma nova chave'})
- if(invoice?.paymentUrl||invoice?.paymentStatus==='CONFIRMED')return res.json(invoice)
+ if(invoice&&productType==='DEPOSIT'&&invoice.amountCents!==invoiceAmountCents)return res.status(409).json({error:'Identificador já utilizado para outro valor de depósito'})
+ if(invoice?.paymentUrl||invoice?.pixQrCode||invoice?.paymentStatus==='CONFIRMED')return res.json(invoice)
  if(invoice)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
- invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType==='ASSOCIATE_PLAN'&&openStatuses.has(item.paymentStatus))
+ invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType===productType&&openStatuses.has(item.paymentStatus))
  if(invoice?.paymentUrl)return res.json(invoice)
  if(invoice)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
- if(user.associatePlanStatus==='ACTIVE')return res.status(409).json({error:'O Plano de Associado já está ativo'})
+ if(productType==='ASSOCIATE_PLAN'&&user.associatePlanStatus==='ACTIVE')return res.status(409).json({error:'O Plano de Associado já está ativo'})
  const isPix=String(b.paymentMethod??b.preferredPaymentAsset??'').toUpperCase()==='PIX';let customerDocument:string|undefined
  if(isPix){try{customerDocument=normalizeCustomerDocument(b.customerDocument)}catch(error:any){return res.status(422).json({error:error.message})}}
- const paymentAsset=isPix?'PIX':(['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER');invoice={id:crypto.randomUUID(),userId:user.id,createdAt:now(),due:new Date().toLocaleDateString('pt-BR'),description:'Plano de Associado GoMove',productType:'ASSOCIATE_PLAN',amount:ASSOCIATE_PLAN_PRICE_CENTS/100,amountCents:ASSOCIATE_PLAN_PRICE_CENTS,remaining:ASSOCIATE_PLAN_PRICE_CENTS/100,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:isPix?'PIXPAY':'COINPAYMENTS',paymentMethod:isPix?'PIX':'CoinPayments',paymentAsset,idempotencyKey};d.invoices.unshift(invoice)
+ const paymentAsset=isPix?'PIX':(['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER');invoice={id:crypto.randomUUID(),userId:user.id,createdAt:now(),due:new Date().toLocaleDateString('pt-BR'),description:productType==='DEPOSIT'?'Depósito na Carteira de Saldo':'Plano de Associado GoMove',productType,amount:invoiceAmountCents/100,amountCents:invoiceAmountCents,remaining:invoiceAmountCents/100,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:isPix?'PIXPAY':'COINPAYMENTS',paymentMethod:isPix?'PIX':'CoinPayments',paymentAsset,idempotencyKey};d.invoices.unshift(invoice)
  const targetInvoiceId=invoice.id
  writeDb(d)
- try{await flushDb()}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message)))throw error;d=await refreshDb();invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType==='ASSOCIATE_PLAN'&&openStatuses.has(item.paymentStatus));if(invoice?.paymentUrl)return res.json(invoice);return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})}
+ try{await flushDb()}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message)))throw error;d=await refreshDb();invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType===productType&&openStatuses.has(item.paymentStatus));if(invoice?.paymentUrl)return res.json(invoice);return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})}
  try {
   if(isPix){const transaction=await createPixPayTransaction({amount:invoice.amount,customerName:String(user.name??user.username),customerEmail:String(user.email),customerDocument:customerDocument!});invoice=await mergePixPayTransaction('invoices',targetInvoiceId,transaction,(currentDb,currentInvoice)=>audit(currentDb,user.id,'PIXPAY_TRANSACTION_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{pixPayTransactionId:transaction.id}))}
-  else {const providerInvoice=await createCoinPaymentsInvoice({investmentId:targetInvoiceId,pack:invoice.description,amount:invoice.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email),successPath:'/activation?payment=success',cancelPath:'/activation?payment=cancelled'});invoice=await mergeProviderInvoice('invoices',targetInvoiceId,providerInvoice,(currentDb,currentInvoice)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{coinPaymentsInvoiceId:providerInvoice.id}))}
+  else {const providerInvoice=await createCoinPaymentsInvoice({investmentId:targetInvoiceId,pack:invoice.description,amount:invoice.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email),successPath:productType==='DEPOSIT'?'/finance?payment=success':'/activation?payment=success',cancelPath:productType==='DEPOSIT'?'/finance?payment=cancelled':'/activation?payment=cancelled'});invoice=await mergeProviderInvoice('invoices',targetInvoiceId,providerInvoice,(currentDb,currentInvoice)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{coinPaymentsInvoiceId:providerInvoice.id}))}
   if(!invoice)return res.status(409).json({error:'A fatura foi removida durante a criação da cobrança'})
   return res.status(201).json(invoice)
  } catch(error:any) {
@@ -441,8 +534,8 @@ app.post('/api/investments',auth,async(req,res)=>{
  }
 })
 for(const key of ['cart','orders','tickets','invoices','withdrawals'] as const) {
- app.post(`/api/${key}`,auth,(req,res)=>{const d=readDb(),b={...(req.body??{})} as any,userId=(req as any).user.id;if(key==='withdrawals'){const amount=Number(b.amount),ledger=d.transactions.filter((item:any)=>item.userId===userId).reduce((sum:number,item:any)=>sum+Number(item.amount||0),0),reserved=d.withdrawals.filter((item:any)=>item.userId===userId&&['Pendente','Em análise'].includes(item.status)).reduce((sum:number,item:any)=>sum+Number(item.amount||0),0);if(!Number.isFinite(amount)||amount<50||amount>ledger-reserved)return res.status(422).json({error:'Valor indisponível para saque'});Object.assign(b,{amount,method:'PIX',status:'Pendente',paidAt:'—'})}const item={...b,id:crypto.randomUUID(),userId,date:new Date().toLocaleDateString('pt-BR'),createdAt:now()};d[key].unshift(item);writeDb(d);res.status(201).json(item)})
- app.patch(`/api/${key}/:id`,auth,(req,res)=>{const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id&&x.userId===(req as any).user.id);if(!item)return res.status(404).json({error:'Registro não encontrado'});Object.assign(item,req.body??{}, {id:item.id,userId:item.userId});writeDb(d);res.json(item)})
+ app.post(`/api/${key}`,auth,(req,res)=>{const d=readDb(),b={...(req.body??{})} as any,userId=(req as any).user.id;if(key==='withdrawals'){try{const amount=validateWithdrawal(d,(req as any).user,b.amount);Object.assign(b,{amount,method:'PIX',status:'Pendente',paidAt:'—',wallet:'EARNINGS'})}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='orders')return res.status(422).json({error:'Use a compra de produtos pela carteira'});if(key==='invoices')return res.status(403).json({error:'Faturas só podem ser geradas pelo checkout'});const item={...b,id:crypto.randomUUID(),userId,date:new Date().toLocaleDateString('pt-BR'),createdAt:now()};d[key].unshift(item);writeDb(d);res.status(201).json(item)})
+ app.patch(`/api/${key}/:id`,auth,(req,res)=>{if(['withdrawals','invoices','orders'].includes(key))return res.status(403).json({error:'Esta movimentação só pode ser alterada pelo financeiro MASTER'});const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id&&x.userId===(req as any).user.id);if(!item)return res.status(404).json({error:'Registro não encontrado'});Object.assign(item,req.body??{}, {id:item.id,userId:item.userId});writeDb(d);res.json(item)})
 }
 app.get('/api/state',auth,(req,res)=>{const d=readDb(),u=(req as any).user,owned=(rows:any[])=>rows.filter(item=>!item.userId||item.userId===u.id);res.json({vehicles:owned(d.vehicles),investments:owned(d.investments),orders:owned(d.orders),invoices:owned(d.invoices),transactions:owned(d.transactions),withdrawals:owned(d.withdrawals),tickets:owned(d.tickets),cart:owned(d.cart),profile:d.profiles[u.id]??{name:u.name,email:u.email},business:businessSummary(d,u)})})
 app.get('/api/health',(_req,res)=>res.json({ok:true,service:'GoMove API'}))
