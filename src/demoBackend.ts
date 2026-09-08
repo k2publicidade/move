@@ -1,5 +1,5 @@
 import { summarizeAdminMetrics } from './adminMetrics'
-import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, creditDeposit, debitPurchase, moneyCents, storeProducts, validatePixKey } from './wallets'
+import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, creditDeposit, debitPurchase, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from './wallets'
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
 import { summarizeBonusPeriods } from './bonusPeriods'
@@ -328,8 +328,11 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       : db.users.find(item => item.role === 'ADMIN_MASTER' && canSponsorDemoRegistration(item))
     if (!sponsor) throw new Error('Convite indisponível')
     if (db.users.some(item => item.username.toLowerCase() === username || item.email?.toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
+    const cpf = normalizeCpf(body?.cpf)
+    if (cpfOwnerId(db.profiles, cpf)) throw new Error('CPF já cadastrado para outro usuário')
     const user: User & { demoPassword: string } = { id: id('USR'), name, username, email, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode: `${username}01`, registrationSource: inviteCode ? 'INVITE' : 'DIRECT', demoPassword: password, membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
     db.users.push(user)
+    db.profiles[user.id] = { name, email, cpf }
     audit(db, user.id, 'REGISTER', 'USER', user.id, { sponsorId: sponsor.id, source: inviteCode ? 'INVITE' : 'DIRECT' })
     save(db)
     return { token: `demo:${user.username}`, user: publicUser(user) } as T
@@ -431,7 +434,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'GET' && route === '/admin/dashboard') {
     return { control: summarizeAdminMetrics(db), users: db.users.length, active: db.users.filter(item => item.status === 'ACTIVE').length, pending: db.users.filter(item => item.status === 'PENDING').length, associates: db.users.filter(item => item.role === 'ASSOCIATE' && item.membershipType !== 'SHAREHOLDER').length, shareholders: db.users.filter(item => item.role === 'ASSOCIATE' && item.membershipType === 'SHAREHOLDER').length, pendingPlans: db.users.filter(item => item.role === 'ASSOCIATE' && item.associatePlanStatus !== 'ACTIVE').length, vehicles: db.vehicles.length, activeVehicles: db.vehicles.filter(item => item.status === 'Em operação').length, revenue: db.invoices.filter(item => item.status === 'Pago').reduce((sum, item) => sum + item.amount, 0), pendingWithdrawals: db.withdrawals.filter(item => item.status === 'Pendente').length, openTickets: db.tickets.filter(item => item.status !== 'Resolvido').length, bonusPendingCents: db.bonusEntries.filter(item => item.status === 'PENDING').reduce((sum, item) => sum + item.amountCents, 0), bonusBlockedCents: db.bonusEntries.filter(item => item.status === 'BLOCKED_UPGRADE').reduce((sum, item) => sum + item.amountCents, 0) } as T
   }
-  if (method === 'GET' && route === '/admin/associates') return paged(db.users.filter(item => item.role === 'ASSOCIATE').map(item => ({ ...publicUser(item), phone: db.profiles[item.id]?.phone ?? '' }))) as T
+  if (method === 'GET' && route === '/admin/associates') return paged(db.users.filter(item => item.role === 'ASSOCIATE').map(item => ({ ...publicUser(item), phone: db.profiles[item.id]?.phone ?? '', cpf: db.profiles[item.id]?.cpf ?? '' }))) as T
 
   if (method === 'POST' && route === '/admin/associates') {
     const username = String(body?.username ?? '').trim().toLowerCase()
@@ -441,11 +444,13 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (username === 'master') throw new Error('O nome de usuário master é reservado')
     if (!body?.name?.trim() || username.length < 3 || !email.includes('@') || password.length < 6 || password.length > 128 || !sponsor) throw new Error('Preencha nome, usuário, e-mail, senha e patrocinador válidos')
     if (db.users.some(item => item.username.toLowerCase() === username || item.email?.toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
+    const cpf = normalizeCpf(body?.cpf)
+    if (cpfOwnerId(db.profiles, cpf)) throw new Error('CPF já cadastrado para outro usuário')
     const associatePlanStatus = ['ACTIVE', 'PENDING', 'INACTIVE'].includes(body.associatePlanStatus) ? body.associatePlanStatus : 'PENDING'
     const requestedStatus = ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : 'PENDING'
     const account: User & { demoPassword: string } = { id: id('USR'), name: body.name.trim(), username, email, role: 'ASSOCIATE', status: requestedStatus, sponsorId: sponsor.id, inviteCode: `${username}${Math.floor(10 + Math.random() * 90)}`, demoPassword: body.password, membershipType: 'ASSOCIATE', associatePlanStatus, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, ...(associatePlanStatus === 'ACTIVE' ? { associatePlanPaidAt: today() } : {}) }
     db.users.push(account)
-    db.profiles[account.id] = { name: account.name, email: account.email, phone: body.phone ?? '', country: 'Brasil' }
+    db.profiles[account.id] = { name: account.name, email: account.email, phone: body.phone ?? '', cpf, country: 'Brasil' }
     audit(db, user.id, 'RECORD_CREATE', 'USER', account.id, { sponsorId: account.sponsorId, status: account.status })
     save(db)
     return publicUser(account) as T
@@ -461,6 +466,11 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (username === 'master') throw new Error('O nome de usuário master é reservado')
     if (!body?.name?.trim() || username.length < 3 || !email.includes('@')) throw new Error('Nome, usuário e e-mail são obrigatórios')
     if (db.users.some(item => item.id !== target.id && (item.username.toLowerCase() === username || item.email?.toLowerCase() === email))) throw new Error('Usuário ou e-mail já cadastrado')
+    if (body.cpf !== undefined && String(body.cpf).trim() !== '') {
+      const cpf = normalizeCpf(body.cpf)
+      if (cpfOwnerId(db.profiles, cpf, target.id)) throw new Error('CPF já cadastrado para outro usuário')
+      db.profiles[target.id] = { ...(db.profiles[target.id] ?? {}), cpf }
+    }
     if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId && canSponsorDemoRegistration(item)) || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador precisa estar financeiramente elegível e não pode criar um ciclo')
     const previousName = target.name
     const nextPlanStatus = ['ACTIVE', 'PENDING', 'INACTIVE'].includes(body.associatePlanStatus) ? body.associatePlanStatus : target.associatePlanStatus
@@ -694,6 +704,14 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   }
 
   if (method === 'PUT' && route === '/profile') {
+    if (body.cpf !== undefined) {
+      if (String(body.cpf).trim() === '') delete body.cpf
+      else {
+        const cpf = normalizeCpf(body.cpf)
+        if (cpfOwnerId(db.profiles, cpf, user.id)) throw new Error('CPF já cadastrado para outro usuário')
+        body.cpf = cpf
+      }
+    }
     db.profiles[user.id] = { ...(db.profiles[user.id] ?? {}), ...body }
     const account = db.users.find(item => item.id === user.id)
     if (account && body.name) account.name = body.name

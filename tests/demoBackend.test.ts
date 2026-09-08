@@ -22,7 +22,7 @@ test('demo database includes separate MASTER and user profiles', () => {
 
 test('demo deposits stay in purchase wallet and only earnings with an active package can be withdrawn', async () => {
   localStorage.clear()
-  const user = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Carteiras Demo', username: 'walletdemo', email: 'walletdemo@example.com', password: 'safe-password' })
+  const user = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Carteiras Demo', username: 'walletdemo', email: 'walletdemo@example.com', password: 'safe-password', cpf: '12345678901' })
   const deposit = await demoRequest<Record<string, any>>('/deposits', 'POST', { amount: 600, idempotencyKey: 'demo-deposit' }, user.token)
   await demoRequest(`/deposits/${deposit.id}/confirm-demo`, 'POST', {}, user.token)
   await demoRequest(`/deposits/${deposit.id}/confirm-demo`, 'POST', {}, user.token)
@@ -227,7 +227,7 @@ test('MASTER cannot assign a new account to an inactive sponsor', async () => {
 
 test('invited account enters immediately and keeps participation pending until choosing a product', async () => {
   localStorage.clear()
-  const registration = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Nova Pessoa', email: 'nova@gomove.com.br', username: 'nova', password: 'segura123', inviteCode: 'matheus01' })
+  const registration = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Nova Pessoa', email: 'nova@gomove.com.br', username: 'nova', password: 'segura123', cpf: '12345678902', inviteCode: 'matheus01' })
   assert.ok(registration.token)
   assert.equal(registration.user.status, 'ACTIVE')
   assert.equal(registration.user.associatePlanStatus, 'PENDING')
@@ -237,7 +237,7 @@ test('invited account enters immediately and keeps participation pending until c
 
 test('direct registration uses MASTER sponsorship and can acquire quotas without the associate plan', async () => {
   localStorage.clear()
-  const registration = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Cotista Direto', email: 'cotista.direto@gomove.com.br', username: 'cotistadireto', password: 'segura123' })
+  const registration = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Cotista Direto', email: 'cotista.direto@gomove.com.br', username: 'cotistadireto', password: 'segura123', cpf: '12345678903' })
   assert.equal(registration.user.status, 'ACTIVE')
   assert.equal(registration.user.associatePlanStatus, 'PENDING')
 
@@ -257,7 +257,7 @@ test('direct registration uses MASTER sponsorship and can acquire quotas without
 
 test('associate choice creates one R$ 55 checkout per idempotency key', async () => {
   localStorage.clear()
-  const registration = await demoRequest<{ token: string }>('/public/register', 'POST', { name: 'Associado Novo', email: 'associado.novo@gomove.com.br', username: 'associadonovo', password: 'segura123' })
+  const registration = await demoRequest<{ token: string }>('/public/register', 'POST', { name: 'Associado Novo', email: 'associado.novo@gomove.com.br', username: 'associadonovo', password: 'segura123', cpf: '12345678904' })
   const first = await demoRequest<Record<string, any>>('/associate-plan', 'POST', { preferredPaymentAsset: 'USDT', idempotencyKey: 'associate-choice' }, registration.token)
   const retry = await demoRequest<Record<string, any>>('/associate-plan', 'POST', { preferredPaymentAsset: 'USDT', idempotencyKey: 'associate-choice' }, registration.token)
   assert.equal(first.amount, 55)
@@ -272,6 +272,7 @@ test('demo invite rejects an active account that has not chosen a financial prod
     email: `sem-produto-${suffix}@gomove.local`,
     username: `sem-produto-${suffix}`,
     password: 'senha-segura',
+    cpf: '12345678905',
   })
 
   await assert.rejects(
@@ -286,7 +287,7 @@ test('demo admin follows the same activation, sponsor and quota safety rules as 
   const master = await demoRequest<{ token: string; user: User }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const unpaid = await demoRequest<User>('/admin/associates', 'POST', {
     name: 'Ativo sem Produto', username: `unpaid-${suffix}`, email: `unpaid-${suffix}@gomove.local`,
-    password: 'senha-segura', sponsorId: master.user.id, status: 'ACTIVE', associatePlanStatus: 'PENDING',
+    password: 'senha-segura', cpf: '12345678906', sponsorId: master.user.id, status: 'ACTIVE', associatePlanStatus: 'PENDING',
   }, master.token)
   assert.equal(unpaid.status, 'ACTIVE')
   assert.equal(unpaid.associatePlanStatus, 'PENDING')
@@ -318,7 +319,7 @@ test('demo registration and quota inputs reject malformed credentials and unsafe
     () => demoRequest('/public/register', 'POST', { name: 'Inválido', username: `bad-${suffix}`, email: 'sem-arroba', password: '123' }),
     /dados de cadastro inválidos/i,
   )
-  const registration = await demoRequest<any>('/public/register', 'POST', { name: 'Cota Segura', username: `safe-${suffix}`, email: `safe-${suffix}@gomove.local`, password: 'senha-segura' })
+  const registration = await demoRequest<any>('/public/register', 'POST', { name: 'Cota Segura', username: `safe-${suffix}`, email: `safe-${suffix}@gomove.local`, password: 'senha-segura', cpf: '12345678907' })
   await assert.rejects(
     () => demoRequest('/investments', 'POST', { amount: 500.001, idempotencyKey: `unsafe-${suffix}` }, registration.token),
     /aquisição deve ficar entre/i,
@@ -331,7 +332,7 @@ test('demo reserves the master alias and confirms the associate plan idempotentl
     () => demoRequest('/public/register', 'POST', { name: 'Nome Reservado', username: 'master', email: `master-${suffix}@gomove.local`, password: 'senha-segura' }),
     /reservado/i,
   )
-  const registration = await demoRequest<any>('/public/register', 'POST', { name: 'Plano Demo', username: `plan-demo-${suffix}`, email: `plan-demo-${suffix}@gomove.local`, password: 'senha-segura' })
+  const registration = await demoRequest<any>('/public/register', 'POST', { name: 'Plano Demo', username: `plan-demo-${suffix}`, email: `plan-demo-${suffix}@gomove.local`, password: 'senha-segura', cpf: '12345678908' })
   const invoice = await demoRequest<any>('/associate-plan', 'POST', { idempotencyKey: `plan-demo-${suffix}` }, registration.token)
   assert.equal(invoice.demo, true)
   const first = await demoRequest<any>(`/associate-plan/${invoice.id}/confirm-demo`, 'POST', {}, registration.token)
@@ -364,7 +365,7 @@ test('MASTER CRUD synchronizes fleet records with the linked user account', asyn
 test('MASTER can create, edit and delete a user account', async () => {
   localStorage.clear()
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
-  const created = await demoRequest<User>('/admin/associates', 'POST', { name: 'Usuário CRUD', username: 'usuariocrud', email: 'crud@gomove.com.br', password: 'segura123', status: 'ACTIVE', associatePlanStatus: 'ACTIVE' }, master.token)
+  const created = await demoRequest<User>('/admin/associates', 'POST', { name: 'Usuário CRUD', username: 'usuariocrud', email: 'crud@gomove.com.br', password: 'segura123', cpf: '12345678909', status: 'ACTIVE', associatePlanStatus: 'ACTIVE' }, master.token)
   const session = await demoRequest<{ user: User }>('/auth/login', 'POST', { username: 'usuariocrud', password: 'segura123' })
   assert.equal(session.user.id, created.id)
 
@@ -399,4 +400,31 @@ test('all MASTER operational collections support integrated create, update and d
     const after = await demoRequest<Record<string, Record<string, any>[]>>('/state', 'GET', undefined, userSession.token)
     assert.equal(after[collection].some(item => item.id === created.id), false)
   }
+})
+
+test('registration requires a valid unique CPF and profile updates follow the same rule', async () => {
+  localStorage.clear()
+  const suffix = Math.random().toString(36).slice(2, 8)
+  const userA = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Titular A', username: `cpf-a-${suffix}`, email: `cpf-a-${suffix}@gomove.local`, password: 'senha-segura', cpf: '11144477735' })
+  assert.ok(userA.token)
+  await assert.rejects(() => demoRequest('/public/register', 'POST', { name: 'Titular Duplicado', username: `cpf-b-${suffix}`, email: `cpf-b-${suffix}@gomove.local`, password: 'senha-segura', cpf: '111.444.777-35' }), /CPF já cadastrado/)
+  await assert.rejects(() => demoRequest('/public/register', 'POST', { name: 'Cpf Ruim', username: `cpf-c-${suffix}`, email: `cpf-c-${suffix}@gomove.local`, password: 'senha-segura', cpf: '123' }), /CPF válido/)
+  const state = await demoRequest<Record<string, any>>('/state', 'GET', undefined, userA.token)
+  assert.equal(state.profile.cpf, '11144477735')
+  await demoRequest('/profile', 'PUT', { cpf: '222.555.888-44' }, userA.token)
+  const updated = await demoRequest<Record<string, any>>('/state', 'GET', undefined, userA.token)
+  assert.equal(updated.profile.cpf, '22255588844')
+})
+
+test('payout key must match the CPF collected at registration', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string; user: User }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const registration = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Titular PIX', username: 'titularpix', email: 'titular.pix@gomove.com.br', password: 'segura123', cpf: '33344455566' })
+  await demoRequest(`/admin/associates/${registration.user.id}`, 'PATCH', { name: registration.user.name, email: registration.user.email, username: registration.user.username, status: 'ACTIVE', associatePlanStatus: 'ACTIVE' }, master.token)
+  const credit = await demoRequest<Record<string, any>>('/admin/bonus-entries/manual-credit', 'POST', { userId: registration.user.id, amountCents: 20_000, reason: 'CPF titular' }, master.token)
+  await demoRequest(`/admin/bonus-entries/${credit.id}/approve`, 'POST', {}, master.token)
+  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: '12345678901' }, registration.token), /titular/)
+  const paid = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: '33344455566' }, registration.token)
+  assert.ok(paid.id)
+  assert.equal(paid.account, '33344455566')
 })

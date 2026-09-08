@@ -124,6 +124,24 @@ export function validatePixKey(account: unknown, userCpf?: string): string {
   return key
 }
 
+// Registration/profile CPF: normalized to 11 digits (same rule as the PIX key).
+export function normalizeCpf(value: unknown): string {
+  const digits = String(value ?? '').replace(/\D/g, '')
+  if (digits.length !== 11) throw new Error('Informe um CPF válido com 11 dígitos')
+  return digits
+}
+
+// CPF uniqueness across accounts: profiles is the Record<userId, profile> map.
+export function cpfOwnerId(profiles: Record<string, any> | undefined, cpf: string, excludeUserId?: string): string | undefined {
+  const digits = String(cpf ?? '').replace(/\D/g, '')
+  if (!digits) return undefined
+  for (const [id, profile] of Object.entries(profiles ?? {})) {
+    if (id === excludeUserId) continue
+    if (profile && profile.cpf && String(profile.cpf).replace(/\D/g, '') === digits) return id
+  }
+  return undefined
+}
+
 export function validateWithdrawal(db: Row, user: Row, amount: unknown, wallet: WalletType, excludeId?: string, date = new Date()) {
   if (wallet !== 'COTA' && wallet !== 'REDE') throw new Error('Selecione uma carteira válida para saque (Cota ou Rede)')
   const wallets = walletSummary(db, user, excludeId)

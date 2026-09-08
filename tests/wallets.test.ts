@@ -37,7 +37,7 @@ test('legacy credits are classified conservatively and active shareholder label 
 
 test('deposit webhook credits only purchase wallet; purchases, reservations and MASTER payout enforce separation', async () => {
   const master = (await request('/auth/login', undefined, { username: 'admin', password: 'gomove2026' })).body
-  const session = (await request('/public/register', undefined, { name: 'Wallet Test', username: 'wallet_test', email: 'wallet@example.com', password: 'safe-password-123' })).body
+  const session = (await request('/public/register', undefined, { name: 'Wallet Test', username: 'wallet_test', email: 'wallet@example.com', password: 'safe-password-123', cpf: '12345678901' })).body
   assert.ok(session.token, JSON.stringify(session))
   const userId = session.user.id
   const provider = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: { transactionId: 'wallet-deposit-1', qrCode: '000201-wallet-test', status: 'PENDING' } })) }) })
