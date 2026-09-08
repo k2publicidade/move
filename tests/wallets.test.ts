@@ -26,8 +26,8 @@ after(async () => { await new Promise<void>(resolve => server.close(() => resolv
 test('legacy credits are classified conservatively and active shareholder label alone does not unlock withdrawals', () => {
   assert.equal(transactionWallet({ amount: 100, description: 'Depósito PIX' }), 'BALANCE')
   assert.equal(transactionWallet({ amount: 100, description: 'Crédito sem origem' }), 'BALANCE')
-  assert.equal(transactionWallet({ amount: 100, bonusEntryId: 'bonus' }), 'EARNINGS')
-  assert.equal(transactionWallet({ amount: -50, withdrawalId: 'withdrawal' }), 'EARNINGS')
+  assert.equal(transactionWallet({ amount: 100, bonusEntryId: 'bonus' }), 'REDE')
+  assert.equal(transactionWallet({ amount: -50, withdrawalId: 'withdrawal' }), 'REDE')
   const db = { transactions: [{ userId: 'u', amount: 100, wallet: 'EARNINGS' }], withdrawals: [], investments: [] }
   const user = { id: 'u', status: 'ACTIVE', membershipType: 'SHAREHOLDER', associatePlanStatus: 'INACTIVE' }
   assert.equal(walletSummary(db, user).withdrawableCents, 0)
@@ -79,16 +79,16 @@ test('deposit webhook credits only purchase wallet; purchases, reservations and 
     assert.equal((await request('/wallet/purchases', session.token, product)).status, 200)
     assert.equal((await request('/wallet/purchases', session.token, { productType: 'INVESTMENT', amount: 500, idempotencyKey: 'too-much' })).status, 422)
     const base = `/admin/associates/${userId}/balance-adjustments`
-    assert.equal((await request(base, master.token, { amountCents: 20000, wallet: 'EARNINGS', reason: 'Ganho conferido', reference: 'earning-1' })).status, 201)
-    const pending = await request('/withdrawals', session.token, { amount: 150, wallet: 'BALANCE', status: 'Pago' })
+    assert.equal((await request(base, master.token, { amountCents: 20000, wallet: 'REDE', reason: 'Ganho conferido', reference: 'earning-1' })).status, 201)
+    const pending = await request('/withdrawals', session.token, { amount: 150, wallet: 'REDE', account: '12345678901', status: 'Pago' })
     assert.equal(pending.status, 201)
     assert.equal(pending.body.status, 'Pendente')
-    assert.equal(pending.body.wallet, 'EARNINGS')
+    assert.equal(pending.body.wallet, 'REDE')
     assert.equal((await request('/withdrawals', session.token, { amount: 50.01 })).status, 422)
     assert.equal((await request('/withdrawals', session.token, { amount: 50.001 })).status, 422)
     assert.equal((await request(`/withdrawals/${pending.body.id}`, session.token, { status: 'Recusado' }, 'PATCH')).status, 403)
     assert.equal((await request('/admin/withdrawals', master.token, { userId, amount: 100, status: 'Pago' })).status, 422)
-    assert.equal((await request(base, master.token, { amountCents: -10000, wallet: 'EARNINGS', reason: 'Débito', reference: 'debit-1' })).status, 422)
+    assert.equal((await request(base, master.token, { amountCents: -10000, wallet: 'REDE', reason: 'Débito', reference: 'debit-1' })).status, 422)
     const db = readDb(); db.users.find(u => u.id === userId)!.associatePlanStatus = 'INACTIVE'; db.investments.filter(i => i.userId === userId).forEach(i => { i.status = 'Encerrado' }); writeDb(db)
     assert.equal((await request(`/admin/withdrawals/${pending.body.id}`, master.token, { status: 'Pago' }, 'PATCH')).status, 422)
     const active = readDb(); active.users.find(u => u.id === userId)!.associatePlanStatus = 'ACTIVE'; writeDb(active)
@@ -100,8 +100,7 @@ test('deposit webhook credits only purchase wallet; purchases, reservations and 
     assert.equal(wallets.earningsCents, 5000)
     assert.equal(wallets.reservedCents, 0)
     assert.equal(wallets.withdrawableCents, 5000)
-    const refused = (await request('/withdrawals', session.token, { amount: 50 })).body
-    assert.equal((await request(`/admin/withdrawals/${refused.id}`, master.token, { status: 'Recusado' }, 'PATCH')).status, 200)
+    assert.equal((await request('/withdrawals', session.token, { amount: 50, wallet: 'REDE', account: '12345678901' })).status, 422)
     assert.equal((await request('/state', session.token)).body.business.wallets.withdrawableCents, 5000)
     assert.equal(readDb().transactions.filter((t: any) => t.withdrawalId === pending.body.id).length, 1)
     assert.equal(readDb().transactions.filter((t: any) => t.depositId === created.body.id).length, 1)

@@ -55,9 +55,9 @@ test('prevents direct and indirect sponsor cycles', () => {
   assert.equal(wouldCreateSponsorCycle(users, 'a', 'a'), true)
 })
 
-test('quota purchases generate only the 5% direct referral bonus', () => {
-  const bonuses = calculateDirectReferralBonus(users, 'c', 'investment-1', 100_00, 500)
-  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.type, b.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 500]])
+test('quota purchases generate only the 10% direct referral bonus', () => {
+  const bonuses = calculateDirectReferralBonus(users, 'c', 'investment-1', 100_00, 1_000)
+  assert.deepEqual(bonuses.map(b => [b.userId, b.level, b.type, b.amountCents]), [['b', 1, 'DIRECT_REFERRAL', 1_000]])
 })
 
 test('bonus calculation idempotency key is stable per event recipient and level', () => {
@@ -67,26 +67,26 @@ test('bonus calculation idempotency key is stable per event recipient and level'
 })
 
 test('each new quota purchase creates a new direct referral event', () => {
-  const first = calculateDirectReferralBonus(users, 'c', 'investment-1', 500_00, 500)
-  const second = calculateDirectReferralBonus(users, 'c', 'investment-2', 510_00, 500)
-  assert.equal(first[0].amountCents, 2_500)
-  assert.equal(second[0].amountCents, 2_550)
+  const first = calculateDirectReferralBonus(users, 'c', 'investment-1', 500_00, 1_000)
+  const second = calculateDirectReferralBonus(users, 'c', 'investment-2', 510_00, 1_000)
+  assert.equal(first[0].amountCents, 5_000)
+  assert.equal(second[0].amountCents, 5_100)
   assert.notEqual(first[0].idempotencyKey, second[0].idempotencyKey)
 })
 
-test('daily profitability distributes 6% to N1 and 5% to N2 over the daily earning only', () => {
-  const joseBonuses = calculateProfitabilityBonuses(users, 'c', 'profitability-jose', 1_000, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
+test('daily profitability distributes 10% to N1 and 9% to N2 over the daily earning only', () => {
+  const joseBonuses = calculateProfitabilityBonuses(users, 'c', 'profitability-jose', 1_000, [{ level: 1, bps: 1_000 }, { level: 2, bps: 900 }, { level: 3, bps: 800 }])
   assert.deepEqual(joseBonuses.map((item: Record<string, any>) => [item.userId, item.level, item.amountCents, item.type]), [
-    ['b', 1, 60, 'UNILEVEL_PROFITABILITY'],
-    ['a', 2, 50, 'UNILEVEL_PROFITABILITY'],
+    ['b', 1, 100, 'UNILEVEL_PROFITABILITY'],
+    ['a', 2, 90, 'UNILEVEL_PROFITABILITY'],
   ])
 
-  const cassioBonuses = calculateProfitabilityBonuses(users, 'b', 'profitability-cassio', 1_000, [{ level: 1, bps: 600 }, { level: 2, bps: 500 }, { level: 3, bps: 400 }])
-  assert.deepEqual(cassioBonuses.map((item: Record<string, any>) => [item.userId, item.level, item.amountCents]), [['a', 1, 60]])
+  const cassioBonuses = calculateProfitabilityBonuses(users, 'b', 'profitability-cassio', 1_000, [{ level: 1, bps: 1_000 }, { level: 2, bps: 900 }, { level: 3, bps: 800 }])
+  assert.deepEqual(cassioBonuses.map((item: Record<string, any>) => [item.userId, item.level, item.amountCents]), [['a', 1, 100]])
 })
 
 test('validates direct referral together with the unilevel percentages', () => {
-  assert.deepEqual(validateCommissionPlan([{ level: 1, bps: 600 }, { level: 2, bps: 500 }], 500), { directReferralBps: 500, levels: [{ level: 1, bps: 600 }, { level: 2, bps: 500 }] })
+  assert.deepEqual(validateCommissionPlan([{ level: 1, bps: 1_000 }, { level: 2, bps: 900 }], 1_000), { directReferralBps: 1_000, levels: [{ level: 1, bps: 1_000 }, { level: 2, bps: 900 }] })
   assert.throws(() => validateCommissionPlan([{ level: 1, bps: 9600 }], 500), /100%/)
 })
 

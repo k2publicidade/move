@@ -1,17 +1,17 @@
 export const ASSOCIATE_PLAN_PRICE_CENTS = 5_500
 export const ASSOCIATE_BONUS_CAP_CENTS = 50_000
 export const SHAREHOLDER_MIN_QUOTA_CENTS = 50_000
-export const SHAREHOLDER_EARNING_CAP_BPS = 20_000
-export const DIRECT_REFERRAL_BPS = 500
+export const SHAREHOLDER_EARNING_CAP_BPS = 15_000
+export const DIRECT_REFERRAL_BPS = 1_000
 export const UNILEVEL_LEVELS = [
-  { level: 1, bps: 600 },
-  { level: 2, bps: 500 },
-  { level: 3, bps: 400 },
-  { level: 4, bps: 300 },
-  { level: 5, bps: 200 },
-  { level: 6, bps: 100 },
+  { level: 1, bps: 1_000 },
+  { level: 2, bps: 900 },
+  { level: 3, bps: 800 },
+  { level: 4, bps: 700 },
+  { level: 5, bps: 600 },
+  { level: 6, bps: 500 },
 ] as const
-export const COMMISSION_PLAN_VERSION = 2
+export const COMMISSION_PLAN_VERSION = 3
 
 export type MembershipType = 'ASSOCIATE' | 'SHAREHOLDER'
 export type AssociatePlanStatus = 'PENDING' | 'ACTIVE' | 'INACTIVE'
@@ -106,10 +106,10 @@ export function releaseBlockedBonuses<T extends BonusLike & { id?: string; reaso
         entry.amountCents = availableCents
         entry.status = 'PENDING'
         released += availableCents
-        entries.push({ ...entry, id: idFactory(), amountCents: cappedCents, status: 'CAPPED_200_PERCENT', reason: 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' } as T)
+        entries.push({ ...entry, id: idFactory(), amountCents: cappedCents, status: 'CAPPED_250_PERCENT', reason: 'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite' } as T)
       } else {
-        entry.status = 'CAPPED_200_PERCENT'
-        entry.reason = 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite'
+        entry.status = 'CAPPED_250_PERCENT'
+        entry.reason = 'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite'
       }
     }
   }

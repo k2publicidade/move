@@ -1,7 +1,7 @@
 import { summarizeAdminMetrics } from './adminMetrics'
-import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, creditDeposit, debitPurchase, moneyCents, storeProducts } from './wallets'
+import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, creditDeposit, debitPurchase, moneyCents, storeProducts, validatePixKey } from './wallets'
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
-import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
 import { summarizeBonusPeriods } from './bonusPeriods'
 
 type Row = Record<string, any> & { id: string }
@@ -268,7 +268,7 @@ function processDailyProfitabilityRun(db: DemoDatabase, run: Row, actorId: strin
         db.transactions.unshift({ id: id('MOV'), userId: recipient.id, bonusEntryId: bonus.id, dailyProfitabilityId: earning.id, dailyProfitabilityRunId: run.id, date: run.date, description: `Unilevel N${calculated.level} sobre o Diário de ${participant.name}`, amount: bonus.amountCents / 100, status: 'Crédito', createdAt: today() })
       }
       if (bonusAllocation.cappedCents > 0) {
-        const capped: Bonus = { id: id('BON'), ...base, amountCents: bonusAllocation.cappedCents, status: 'CAPPED_200_PERCENT', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: 'Teto de ganhos atingido; renove suas cotas para ampliar o limite' }
+        const capped: Bonus = { id: id('BON'), ...base, amountCents: bonusAllocation.cappedCents, status: 'CAPPED_250_PERCENT', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: 'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite' }
         db.bonusEntries.unshift(capped); bonuses.push(capped)
       }
     }
@@ -285,8 +285,8 @@ function businessSummary(db: DemoDatabase, user: User) {
   const blockedBonusCents = bonuses.filter(entry => entry.status === 'BLOCKED_UPGRADE').reduce((sum, entry) => sum + entry.amountCents, 0)
   const quotaAmountCents = db.investments.filter(investment => investment.userId === user.id && (investment.status === 'Ativo' || investment.paymentStatus === 'CONFIRMED')).reduce((sum, investment) => sum + Number(investment.amountCents || 0), 0)
   const dailyEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.creditedAmountCents || 0), 0)
-  const cappedEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.cappedAmountCents || 0), 0) + bonuses.filter(entry => entry.status === 'CAPPED_200_PERCENT').reduce((sum, entry) => sum + entry.amountCents, 0)
-  const earningCapCents = user.membershipType === 'SHAREHOLDER' ? quotaAmountCents * 2 : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
+  const cappedEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.cappedAmountCents || 0), 0) + bonuses.filter(entry => entry.status === 'CAPPED_250_PERCENT').reduce((sum, entry) => sum + entry.amountCents, 0)
+  const earningCapCents = user.membershipType === 'SHAREHOLDER' ? Math.floor(quotaAmountCents * SHAREHOLDER_EARNING_CAP_BPS / 10_000) : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
   const earningCapConsumedCents = approvedBonusCents + pendingBonusCents + dailyEarningCents
   const earningCapRemainingCents = Math.max(0, earningCapCents - earningCapConsumedCents)
   const registrationAudit = db.auditLogs.find(entry => entry.action === 'REGISTER' && entry.targetId === user.id)
@@ -603,7 +603,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const allocation = allocateEarning(db, recipient, body.amountCents)
     const created: Bonus[] = []
     if (allocation.availableCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.availableCents, status: 'PENDING', type: 'MANUAL', reason: String(body.reason).trim(), createdAt: today() })
-    if (allocation.cappedCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_200_PERCENT' : 'BLOCKED_UPGRADE', type: 'MANUAL', reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista', createdAt: today() })
+    if (allocation.cappedCents) created.push({ id: id('BON'), userId: recipient.id, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_250_PERCENT' : 'BLOCKED_UPGRADE', type: 'MANUAL', reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista', createdAt: today() })
     db.bonusEntries.unshift(...created)
     const entry = created[0]
     audit(db, user.id, 'BONUS_MANUAL', 'BONUS', entry.id, { cappedCents: allocation.cappedCents, capCents: allocation.capCents })
@@ -681,8 +681,10 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: isPix ? 'PIXPAY' : 'COINPAYMENTS', paymentMethod: isPix ? 'PIX' : 'CoinPayments', paymentAsset, paymentReference: id(isPix ? 'PIX' : 'CP'), ...(isPix ? { pixPayTransactionId: id('PXT'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-pixpay', paymentUrl: null } : { coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }) }
     }
     if (userCollection === 'withdrawals') {
-      const amount = validateWithdrawal(db, user, body?.amount)
-      body = { amount, account: body?.account, method: 'PIX', status: 'Pendente', paidAt: '—', wallet: 'EARNINGS' }
+      const wallet = body?.wallet === 'COTA' ? 'COTA' as const : 'REDE' as const
+      const result = validateWithdrawal(db, user, body?.amount, wallet)
+      const account = validatePixKey(body?.account, db.profiles[user.id]?.cpf)
+      body = { amount: result.amountCents / 100, account, method: 'PIX', status: 'Pendente', paidAt: '—', wallet, feeCents: result.feeCents, netCents: result.netCents }
     }
     const prefix = { investments: 'ATV', orders: 'PED', withdrawals: 'SAQ', tickets: 'TK' }[userCollection]
     const item = { ...body, id: id(prefix), userId: user.id, date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }
@@ -720,7 +722,7 @@ function confirmDemoInvestment(db: DemoDatabase, investment: Row, actorId: strin
       const allocation = allocateEarning(db, recipient, calculated.amountCents)
       const base = { userId: calculated.userId, level: calculated.level, eventId: event.id, investmentId: investment.id, type: calculated.type, reason: `Indicação direta de ${plan.directReferralBps / 100}% sobre as cotas ${investment.id}`, createdAt: today() }
       if (allocation.availableCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.availableCents, status: 'PENDING', idempotencyKey: allocation.cappedCents ? `${calculated.idempotencyKey}:available` : calculated.idempotencyKey })
-      if (allocation.cappedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_200_PERCENT' : 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 200% das cotas atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
+      if (allocation.cappedCents) db.bonusEntries.unshift({ id: id('BON'), ...base, amountCents: allocation.cappedCents, status: recipient.membershipType === 'SHAREHOLDER' ? 'CAPPED_250_PERCENT' : 'BLOCKED_UPGRADE', idempotencyKey: `${calculated.idempotencyKey}:capped`, reason: recipient.membershipType === 'SHAREHOLDER' ? 'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite' : 'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista' })
     }
     investment.paymentStatus = 'CONFIRMED'
     investment.status = 'Ativo'

@@ -29,9 +29,9 @@ test('business plan constants match the attached document', () => {
   assert.equal(SHAREHOLDER_MIN_QUOTA_CENTS, 50_000)
 })
 
-test('commission plan uses 5% direct referral and six descending unilevel levels', () => {
-  assert.equal(DIRECT_REFERRAL_BPS, 500)
-  assert.deepEqual(UNILEVEL_LEVELS.map(item => item.bps), [600, 500, 400, 300, 200, 100])
+test('commission plan uses 10% direct referral and six descending unilevel levels', () => {
+  assert.equal(DIRECT_REFERRAL_BPS, 1_000)
+  assert.deepEqual(UNILEVEL_LEVELS.map(item => item.bps), [1_000, 900, 800, 700, 600, 500])
 })
 
 test('associate bonus is split at the accumulated R$ 500 cap', () => {
@@ -39,12 +39,12 @@ test('associate bonus is split at the accumulated R$ 500 cap', () => {
   assert.deepEqual(allocateBonusByBusinessPlan(associate, entries, 10_000), { availableCents: 5_000, blockedCents: 5_000 })
 })
 
-test('shareholder earnings are limited to 200% of confirmed quotas and renewal expands the cap', () => {
+test('shareholder earnings are limited to 150% additional (250% total) of confirmed quotas', () => {
   const shareholder = { ...associate, membershipType: 'SHAREHOLDER' as const }
   const bonuses = [{ userId: shareholder.id, amountCents: 95_000, status: 'APPROVED' }]
   const dailyEarnings = [{ userId: shareholder.id, creditedAmountCents: 4_000 }]
-  assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 50_000, 2_000), { availableCents: 1_000, cappedCents: 1_000, capCents: 100_000, consumedCents: 99_000 })
-  assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 100_000, 2_000), { availableCents: 2_000, cappedCents: 0, capCents: 200_000, consumedCents: 99_000 })
+  assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 50_000, 2_000), { availableCents: 0, cappedCents: 2_000, capCents: 75_000, consumedCents: 99_000 })
+  assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 100_000, 2_000), { availableCents: 2_000, cappedCents: 0, capCents: 150_000, consumedCents: 99_000 })
 })
 
 test('shareholder upgrade requires at least R$ 500 in quotas but not an associate plan', () => {
@@ -65,13 +65,13 @@ test('upgrade releases every blocked bonus for the participant', () => {
   assert.equal(entries[1].status, 'BLOCKED_UPGRADE')
 })
 
-test('shareholder upgrade releases blocked bonuses only within the 200% earning capacity', () => {
+test('shareholder upgrade releases blocked bonuses only within the available earning capacity', () => {
   const entries = [{ id: 'blocked-1', userId: associate.id, amountCents: 80_000, status: 'BLOCKED_UPGRADE', type: 'UNILEVEL' }]
   const released = releaseBlockedBonuses(entries, associate.id, 50_000, () => 'capped-1')
   assert.equal(released, 50_000)
   assert.deepEqual(entries.map(entry => ({ id: entry.id, amountCents: entry.amountCents, status: entry.status })), [
     { id: 'blocked-1', amountCents: 50_000, status: 'PENDING' },
-    { id: 'capped-1', amountCents: 30_000, status: 'CAPPED_200_PERCENT' },
+    { id: 'capped-1', amountCents: 30_000, status: 'CAPPED_250_PERCENT' },
   ])
 })
 

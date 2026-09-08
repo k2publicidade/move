@@ -35,7 +35,7 @@ test('demo deposits stay in purchase wallet and only earnings with an active pac
   state = await demoRequest<Record<string, any>>('/state', 'GET', undefined, user.token)
   assert.equal(state.business.wallets.balanceCents, 10000)
   assert.equal(state.business.wallets.hasActivePackage, true)
-  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 50 }, user.token), /Carteira de Rendimentos/)
+  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 50 }, user.token), /R\$ 55/)
 })
 
 test('user-created ticket is visible to MASTER and protected by role', async () => {
@@ -68,7 +68,7 @@ test('investment creates an idempotent CoinPayments checkout', async () => {
   assert.equal(state.investments.filter(item => item.idempotencyKey === payload.idempotencyKey).length, 1)
 })
 
-test('each investment confirmation generates only a 5% direct bonus and remains idempotent', async () => {
+test('each investment confirmation generates only a 10% direct bonus and remains idempotent', async () => {
   localStorage.clear()
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const users = await demoRequest<{ items: Record<string, any>[] }>('/admin/associates', 'GET', undefined, master.token)
@@ -83,7 +83,7 @@ test('each investment confirmation generates only a 5% direct bonus and remains 
     result[key] = (result[key] || 0) + item.amountCents
     return result
   }, {})
-  assert.deepEqual(totals, { 'DIRECT_REFERRAL:N1': 12500 })
+  assert.deepEqual(totals, { 'DIRECT_REFERRAL:N1': 25000 })
   const retry = await demoRequest<{ event: Record<string, any>; bonuses: Record<string, any>[]; idempotent: boolean }>(`/admin/investments/${investment.id}/confirm`, 'POST', {}, master.token)
   assert.equal(retry.idempotent, true)
   assert.equal(retry.event.id, confirmation.event.id)
@@ -92,7 +92,7 @@ test('each investment confirmation generates only a 5% direct bonus and remains 
   const nextConfirmation = await demoRequest<{ bonuses: Record<string, any>[] }>(`/admin/investments/${nextInvestment.id}/confirm`, 'POST', {}, master.token)
   assert.equal(nextConfirmation.bonuses.length, 1)
   assert.equal(nextConfirmation.bonuses[0].type, 'DIRECT_REFERRAL')
-  assert.equal(nextConfirmation.bonuses[0].amountCents, 2550)
+  assert.equal(nextConfirmation.bonuses[0].amountCents, 5100)
 
   const matheusInvestment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: ana.id, pack: 'Cotas GoMove', amount: 500, status: 'Aguardando pagamento' }, master.token)
   const matheusConfirmation = await demoRequest<{ bonuses: Record<string, any>[] }>(`/admin/investments/${matheusInvestment.id}/confirm`, 'POST', {}, master.token)
@@ -101,11 +101,11 @@ test('each investment confirmation generates only a 5% direct bonus and remains 
   const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
   let state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
   assert.equal(state.transactions.filter(item => item.bonusEntryId === matheusBonus.id).length, 1)
-  assert.equal(state.transactions.find(item => item.bonusEntryId === matheusBonus.id)?.amount, 25)
+  assert.equal(state.transactions.find(item => item.bonusEntryId === matheusBonus.id)?.amount, 50)
 
   const reversal = await demoRequest<Record<string, any>>(`/admin/bonus-entries/${matheusBonus.id}/reverse`, 'POST', { reason: 'Teste de estorno auditável' }, master.token)
   state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
-  assert.equal(state.transactions.find(item => item.bonusEntryId === reversal.id)?.amount, -25)
+  assert.equal(state.transactions.find(item => item.bonusEntryId === reversal.id)?.amount, -50)
   await assert.rejects(() => demoRequest(`/admin/bonus-entries/${matheusBonus.id}/reverse`, 'POST', { reason: 'Duplicado' }, master.token), /já estornado/)
 })
 
@@ -130,8 +130,8 @@ test('approved bonuses fund withdrawals and paid withdrawals debit the user ledg
   const credit = await demoRequest<Record<string, any>>('/admin/bonus-entries/manual-credit', 'POST', { userId: matheus.id, amountCents: 20_000, reason: 'Crédito de teste' }, master.token)
   await demoRequest(`/admin/bonus-entries/${credit.id}/approve`, 'POST', {}, master.token)
   const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
-  const withdrawal = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: 'CPF' }, user.token)
-  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 1_000, method: 'PIX', account: 'CPF' }, user.token), /indisponível/)
+  const withdrawal = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: '12345678901' }, user.token)
+  await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 1_000, method: 'PIX', account: '12345678901' }, user.token), /1 saque por dia/)
   await demoRequest(`/admin/withdrawals/${withdrawal.id}`, 'PATCH', { ...withdrawal, status: 'Pago' }, master.token)
   await demoRequest(`/admin/withdrawals/${withdrawal.id}`, 'PATCH', { ...withdrawal, status: 'Pago' }, master.token)
   const state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
@@ -158,8 +158,8 @@ test('MASTER daily rate credits shareholders by quota value and approved unileve
   assert.equal(camilaEarning.grossAmountCents, 1_000)
   assert.equal(camilaEarning.creditedAmountCents, 1_000)
   assert.deepEqual(result.bonuses.filter(item => item.sourceUserId === camila.id).map(item => [item.userId, item.level, item.amountCents, item.status]), [
-    [ana.id, 1, 60, 'APPROVED'],
-    [matheus.id, 2, 50, 'APPROVED'],
+    [ana.id, 1, 100, 'APPROVED'],
+    [matheus.id, 2, 90, 'APPROVED'],
   ])
 
   const retry = await demoRequest<{ run: Record<string, any>; idempotent: boolean }>(`/admin/daily-profitabilities/${scheduled.run.id}/process`, 'POST', {}, master.token)
@@ -178,8 +178,8 @@ test('migrates an existing demo database to the current commission plan', async 
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const rules = await demoRequest<{ items: Record<string, any>[] }>('/admin/commission-rules', 'GET', undefined, master.token)
   const active = rules.items.find(item => item.active)
-  assert.equal(active.directReferralBps, 500)
-  assert.deepEqual(active.levels.map((item: Record<string, number>) => item.bps), [600, 500, 400, 300, 200, 100])
+  assert.equal(active.directReferralBps, 1_000)
+  assert.deepEqual(active.levels.map((item: Record<string, number>) => item.bps), [1_000, 900, 800, 700, 600, 500])
 })
 
 test('associate cap blocks excess bonus and confirmed quota upgrades to shareholder', async () => {
@@ -384,7 +384,7 @@ test('all MASTER operational collections support integrated create, update and d
     ['investments', { userId: owner, pack: 'Cotas GoMove', amount: 1000, profit: 0, date: '31/07/2026', status: 'Pendente' }],
     ['orders', { userId: owner, description: 'Pedido CRUD', quantity: 1, total: 99, date: '31/07/2026', status: 'Processando' }],
     ['invoices', { userId: owner, description: 'Fatura CRUD', amount: 199, remaining: 199, due: '10/08/2026', status: 'Pendente' }],
-    ['withdrawals', { userId: owner, amount: 50, method: 'PIX', account: 'teste@pix', date: '31/07/2026', status: 'Pendente' }],
+    ['withdrawals', { userId: owner, amount: 55, method: 'PIX', account: 'teste@pix', date: '31/07/2026', status: 'Pendente' }],
     ['tickets', { userId: owner, subject: 'Ticket CRUD', department: 'Atendimento', category: 'Teste', priority: 'Média', status: 'Aberto' }],
   ] as const
 
