@@ -128,7 +128,25 @@ export function validatePixKey(account: unknown, userCpf?: string): string {
 export function normalizeCpf(value: unknown): string {
   const digits = String(value ?? '').replace(/\D/g, '')
   if (digits.length !== 11) throw new Error('Informe um CPF válido com 11 dígitos')
+  if (!isValidCpfDigits(digits)) throw new Error('CPF inválido: os dígitos verificadores não conferem')
   return digits
+}
+
+// Validates the two check digits a real CPF carries (this is what makes an
+// 11-digit number a CPF rather than an arbitrary string).
+export function isValidCpfDigits(digits: string): boolean {
+  if (!/^\d{11}$/.test(digits)) return false
+  if (/^(\d)\1{10}$/.test(digits)) return false
+  let sum = 0
+  for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
+  let check = (sum * 10) % 11
+  if (check === 10) check = 0
+  if (check !== Number(digits[9])) return false
+  sum = 0
+  for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
+  check = (sum * 10) % 11
+  if (check === 10) check = 0
+  return check === Number(digits[10])
 }
 
 // CPF uniqueness across accounts: profiles is the Record<userId, profile> map.

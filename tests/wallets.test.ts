@@ -37,7 +37,7 @@ test('legacy credits are classified conservatively and active shareholder label 
 
 test('deposit webhook credits only purchase wallet; purchases, reservations and MASTER payout enforce separation', async () => {
   const master = (await request('/auth/login', undefined, { username: 'admin', password: 'gomove2026' })).body
-  const session = (await request('/public/register', undefined, { name: 'Wallet Test', username: 'wallet_test', email: 'wallet@example.com', password: 'safe-password-123', cpf: '12345678901' })).body
+  const session = (await request('/public/register', undefined, { name: 'Wallet Test', username: 'wallet_test', email: 'wallet@example.com', password: 'safe-password-123', cpf: '99000000050' })).body
   assert.ok(session.token, JSON.stringify(session))
   const userId = session.user.id
   const provider = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: { transactionId: 'wallet-deposit-1', qrCode: '000201-wallet-test', status: 'PENDING' } })) }) })
@@ -80,7 +80,7 @@ test('deposit webhook credits only purchase wallet; purchases, reservations and 
     assert.equal((await request('/wallet/purchases', session.token, { productType: 'INVESTMENT', amount: 500, idempotencyKey: 'too-much' })).status, 422)
     const base = `/admin/associates/${userId}/balance-adjustments`
     assert.equal((await request(base, master.token, { amountCents: 20000, wallet: 'REDE', reason: 'Ganho conferido', reference: 'earning-1' })).status, 201)
-    const pending = await request('/withdrawals', session.token, { amount: 150, wallet: 'REDE', account: '12345678901', status: 'Pago' })
+    const pending = await request('/withdrawals', session.token, { amount: 150, wallet: 'REDE', account: '99000000050', status: 'Pago' })
     assert.equal(pending.status, 201)
     assert.equal(pending.body.status, 'Pendente')
     assert.equal(pending.body.wallet, 'REDE')
@@ -100,7 +100,7 @@ test('deposit webhook credits only purchase wallet; purchases, reservations and 
     assert.equal(wallets.earningsCents, 5000)
     assert.equal(wallets.reservedCents, 0)
     assert.equal(wallets.withdrawableCents, 5000)
-    assert.equal((await request('/withdrawals', session.token, { amount: 50, wallet: 'REDE', account: '12345678901' })).status, 422)
+    assert.equal((await request('/withdrawals', session.token, { amount: 50, wallet: 'REDE', account: '99000000050' })).status, 422)
     assert.equal((await request('/state', session.token)).body.business.wallets.withdrawableCents, 5000)
     assert.equal(readDb().transactions.filter((t: any) => t.withdrawalId === pending.body.id).length, 1)
     assert.equal(readDb().transactions.filter((t: any) => t.depositId === created.body.id).length, 1)

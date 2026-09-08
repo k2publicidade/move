@@ -160,7 +160,7 @@ test('public registration creates an active authenticated session directly or th
     const invitedResponse = await fetch(`${baseUrl}/api/public/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Convidado Ativo', email: `invited-${suffix}@gomove.local`, username: `invited-${suffix}`, password: 'senha-segura', cpf: '10100000001', inviteCode: 'matheus01' }),
+      body: JSON.stringify({ name: 'Convidado Ativo', email: `invited-${suffix}@gomove.local`, username: `invited-${suffix}`, password: 'senha-segura', cpf: '99000001021', inviteCode: 'matheus01' }),
     })
     assert.equal(invitedResponse.status, 201)
     const invited = await invitedResponse.json() as { token: string; user: Record<string, any> }
@@ -180,7 +180,7 @@ test('public registration creates an active authenticated session directly or th
     const directResponse = await fetch(`${baseUrl}/api/public/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Cadastro Direto', email: `direct-${suffix}@gomove.local`, username: `direct-${suffix}`, password: 'senha-segura', cpf: '10200000001' }),
+      body: JSON.stringify({ name: 'Cadastro Direto', email: `direct-${suffix}@gomove.local`, username: `direct-${suffix}`, password: 'senha-segura', cpf: '99000001102' }),
     })
     assert.equal(directResponse.status, 201)
     const direct = await directResponse.json() as { token: string; user: Record<string, any> }
@@ -215,7 +215,7 @@ test('direct quota checkout and confirmation upgrades an unpaid account and incl
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Cotista sem Plano', email: `share-${suffix}@gomove.local`, username: `share-${suffix}`, password: 'senha-segura', cpf: '10300000001' }),
+      body: JSON.stringify({ name: 'Cotista sem Plano', email: `share-${suffix}@gomove.local`, username: `share-${suffix}`, password: 'senha-segura', cpf: '99000001293' }),
     })
     assert.equal(registrationResponse.status, 201)
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
@@ -264,7 +264,7 @@ test('associate plan checkout is authenticated, idempotent and activated only by
     assert.equal(unauthorized.status, 401)
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Associado Checkout', email: `plan-${suffix}@gomove.local`, username: `plan-${suffix}`, password: 'senha-segura', cpf: '10400000001' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Associado Checkout', email: `plan-${suffix}@gomove.local`, username: `plan-${suffix}`, password: 'senha-segura', cpf: '99000001374' }),
     })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
@@ -303,7 +303,7 @@ test('concurrent associate-plan requests reserve one open invoice and reuse it a
   await withCoinPaymentsServers(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Concorrência Plano', email: `concurrent-${suffix}@gomove.local`, username: `concurrent-${suffix}`, password: 'senha-segura', cpf: '10500000001' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Concorrência Plano', email: `concurrent-${suffix}@gomove.local`, username: `concurrent-${suffix}`, password: 'senha-segura', cpf: '99000001455' }),
     })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
@@ -327,7 +327,7 @@ test('an early completed webhook resolves the local invoice reference and checko
   await withCoinPaymentsServers(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Webhook Precoce', email: `early-${suffix}@gomove.local`, username: `early-${suffix}`, password: 'senha-segura', cpf: '10600000001' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Webhook Precoce', email: `early-${suffix}@gomove.local`, username: `early-${suffix}`, password: 'senha-segura', cpf: '99000001536' }),
     })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     provider.beforeResponse = async request => {
@@ -367,7 +367,7 @@ test('MASTER can keep an account ACTIVE with a pending plan but cannot assign it
     const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
     const suffix = crypto.randomUUID().slice(0, 8)
     const unpaidResponse = await fetch(`${baseUrl}/api/admin/associates`, {
-      method: 'POST', headers, body: JSON.stringify({ name: 'Ativo sem Plano', username: `unpaid-admin-${suffix}`, email: `unpaid-admin-${suffix}@gomove.local`, password: 'senha-segura', cpf: '10700000001', sponsorId: master.id, status: 'ACTIVE', associatePlanStatus: 'PENDING' }),
+      method: 'POST', headers, body: JSON.stringify({ name: 'Ativo sem Plano', username: `unpaid-admin-${suffix}`, email: `unpaid-admin-${suffix}@gomove.local`, password: 'senha-segura', cpf: '99000001617', sponsorId: master.id, status: 'ACTIVE', associatePlanStatus: 'PENDING' }),
     })
     assert.equal(unpaidResponse.status, 201)
     const unpaid = await unpaidResponse.json() as Record<string, any>
@@ -380,7 +380,7 @@ test('MASTER can keep an account ACTIVE with a pending plan but cannot assign it
     assert.equal(invalidChild.status, 422)
 
     const childResponse = await fetch(`${baseUrl}/api/admin/associates`, {
-      method: 'POST', headers, body: JSON.stringify({ name: 'Filho Válido', username: `valid-child-${suffix}`, email: `valid-child-${suffix}@gomove.local`, password: 'senha-segura', cpf: '10800000001', sponsorId: master.id, status: 'PENDING', associatePlanStatus: 'PENDING' }),
+      method: 'POST', headers, body: JSON.stringify({ name: 'Filho Válido', username: `valid-child-${suffix}`, email: `valid-child-${suffix}@gomove.local`, password: 'senha-segura', cpf: '99000001706', sponsorId: master.id, status: 'PENDING', associatePlanStatus: 'PENDING' }),
     })
     assert.equal(childResponse.status, 201)
     const child = await childResponse.json() as Record<string, any>
@@ -451,7 +451,7 @@ test('quota checkout rejects unsafe or over-precise values before contacting Coi
   await withCoinPaymentsServers(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Validação Cota', email: `amount-${suffix}@gomove.local`, username: `amount-${suffix}`, password: 'senha-segura', cpf: '10900000001' }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Validação Cota', email: `amount-${suffix}@gomove.local`, username: `amount-${suffix}`, password: 'senha-segura', cpf: '99000001889' }),
     })
     const { token } = await registrationResponse.json() as { token: string }
     const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
@@ -474,7 +474,7 @@ test('manual credit requires financial eligibility but accepts a shareholder wit
     assert.ok(address && typeof address === 'object')
     const baseUrl = `http://127.0.0.1:${address.port}`
     const suffix = crypto.randomUUID().slice(0, 8)
-    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Crédito Elegível', email: `credit-${suffix}@gomove.local`, username: `credit-${suffix}`, password: 'senha-segura', cpf: '11000000001' }) })
+    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Crédito Elegível', email: `credit-${suffix}@gomove.local`, username: `credit-${suffix}`, password: 'senha-segura', cpf: '99000001960' }) })
     const registration = await registrationResponse.json() as { user: Record<string, any> }
     const login = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'gomove2026' }) })
     const { token } = await login.json() as { token: string }
@@ -526,7 +526,7 @@ test('MASTER investment create and patch reject unsafe amounts without mutating 
 test('webhook rejects provider-id conflicts and mismatched amount or currency without consuming events', async () => {
   await withCoinPaymentsServers(async (baseUrl) => {
     const suffix = crypto.randomUUID().slice(0, 8)
-    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Webhook Seguro', email: `secure-hook-${suffix}@gomove.local`, username: `secure-hook-${suffix}`, password: 'senha-segura', cpf: '11100000001' }) })
+    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Webhook Seguro', email: `secure-hook-${suffix}@gomove.local`, username: `secure-hook-${suffix}`, password: 'senha-segura', cpf: '99000002001' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const checkoutResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers: { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `secure-${suffix}` }) })
     const checkout = await checkoutResponse.json() as Record<string, any>
@@ -549,7 +549,7 @@ test('webhook rejects provider-id conflicts and mismatched amount or currency wi
 test('ambiguous provider failure is reconciled without creating a second invoice', async () => {
   await withCoinPaymentsServers(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
-    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Reconciliação', email: `reconcile-${suffix}@gomove.local`, username: `reconcile-${suffix}`, password: 'senha-segura', cpf: '11200000001' }) })
+    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Reconciliação', email: `reconcile-${suffix}@gomove.local`, username: `reconcile-${suffix}`, password: 'senha-segura', cpf: '99000002184' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
     provider.beforeResponse = async request => {
@@ -580,7 +580,7 @@ test('ambiguous provider failure is reconciled without creating a second invoice
 test('CoinPayments checkout requires a valid public HTTP URL before contacting the provider', async () => {
   await withCoinPaymentsServers(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
-    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'URL Pública', email: `public-url-${suffix}@gomove.local`, username: `public-url-${suffix}`, password: 'senha-segura', cpf: '11300000001' }) })
+    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'URL Pública', email: `public-url-${suffix}@gomove.local`, username: `public-url-${suffix}`, password: 'senha-segura', cpf: '99000002265' }) })
     const { token } = await registrationResponse.json() as { token: string }
     const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
     delete process.env.APP_PUBLIC_URL
@@ -616,7 +616,7 @@ test('MASTER status and sponsor routes cannot mutate the ADMIN_MASTER account', 
 test('associate-plan terminal idempotency preserves a cancelled invoice and requires a new key', async () => {
   await withCoinPaymentsServers(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
-    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Plano Terminal', email: `plan-terminal-${suffix}@gomove.local`, username: `plan-terminal-${suffix}`, password: 'senha-segura', cpf: '11400000001' }) })
+    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Plano Terminal', email: `plan-terminal-${suffix}@gomove.local`, username: `plan-terminal-${suffix}`, password: 'senha-segura', cpf: '99000002346' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
     const firstResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-old-${suffix}` }) })
@@ -652,7 +652,7 @@ test('associate-plan terminal idempotency preserves a cancelled invoice and requ
 test('quota terminal idempotency preserves a timed-out acquisition and requires a new key', async () => {
   await withCoinPaymentsServers(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
-    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Cota Terminal', email: `quota-terminal-${suffix}@gomove.local`, username: `quota-terminal-${suffix}`, password: 'senha-segura', cpf: '11500000001' }) })
+    const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Cota Terminal', email: `quota-terminal-${suffix}@gomove.local`, username: `quota-terminal-${suffix}`, password: 'senha-segura', cpf: '99000002427' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
     const firstResponse = await fetch(`${baseUrl}/api/investments`, { method: 'POST', headers, body: JSON.stringify({ amount: 500, idempotencyKey: `quota-old-${suffix}` }) })
@@ -692,12 +692,12 @@ test('master username is reserved while login prefers an exact legacy account be
     const address = server.address()
     assert.ok(address && typeof address === 'object')
     const baseUrl = `http://127.0.0.1:${address.port}`
-    const publicRegistration = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Master Público', email: `public-master-${suffix}@gomove.local`, username: 'master', password: 'senha-segura', cpf: '11600000001' }) })
+    const publicRegistration = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Master Público', email: `public-master-${suffix}@gomove.local`, username: 'master', password: 'senha-segura', cpf: '99000002508' }) })
     assert.equal(publicRegistration.status, 422)
 
     const adminLogin = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'gomove2026' }) })
     const adminSession = await adminLogin.json() as { token: string; user: Record<string, any> }
-    const adminCreate = await fetch(`${baseUrl}/api/admin/associates`, { method: 'POST', headers: { authorization: `Bearer ${adminSession.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Master Admin', email: `admin-master-${suffix}@gomove.local`, username: 'master', password: 'senha-segura', cpf: '11700000001', status: 'ACTIVE', associatePlanStatus: 'ACTIVE', sponsorId: adminSession.user.id }) })
+    const adminCreate = await fetch(`${baseUrl}/api/admin/associates`, { method: 'POST', headers: { authorization: `Bearer ${adminSession.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Master Admin', email: `admin-master-${suffix}@gomove.local`, username: 'master', password: 'senha-segura', cpf: '99000002699', status: 'ACTIVE', associatePlanStatus: 'ACTIVE', sponsorId: adminSession.user.id }) })
     assert.equal(adminCreate.status, 422)
 
     const db = readDb()
@@ -716,7 +716,16 @@ test('master username is reserved while login prefers an exact legacy account be
 test('public registration collects a unique CPF that persists to the profile and PIX titular rule', async () => {
   const server = app.listen(0)
   const suffix = crypto.randomUUID().slice(0, 8)
-  const cpf = `99${String(Math.floor(Math.random() * 1e9)).padStart(9, '0')}`
+  const cpfCheck = (base: string) => {
+    let s = 0
+    for (let i = 0; i < 9; i++) s += Number(base[i]) * (10 - i)
+    let d1 = (s * 10) % 11; if (d1 === 10) d1 = 0
+    s = 0; const head = base + d1
+    for (let i = 0; i < 10; i++) s += Number(head[i]) * (11 - i)
+    let d2 = (s * 10) % 11; if (d2 === 10) d2 = 0
+    return head + d2
+  }
+  const cpf = cpfCheck(String(99000000 + Math.floor(Math.random() * 9000000)))
   try {
     const address = server.address()
     assert.ok(address && typeof address === 'object')
