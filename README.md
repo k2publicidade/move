@@ -29,21 +29,17 @@ npm run build
 npm start
 ```
 
-## Pagamentos com CoinPayments
+## Pagamentos com o 2PP (2pp.online)
 
-O fluxo de investimentos cria uma invoice em BRL no checkout hospedado do CoinPayments. O contrato permanece aguardando pagamento e só é ativado após o webhook assinado `InvoiceCompleted`. Assinaturas inválidas, timestamps antigos e entregas duplicadas são rejeitados ou deduplicados.
+PIX e cripto usam a mesma API do 2PP. O contrato permanece aguardando pagamento e só é ativado depois do webhook autenticado de conclusão; entregas duplicadas são deduplicadas e notificações com identificador, valor ou forma de pagamento divergentes da fatura são rejeitadas.
 
-1. Conclua a conta comercial e o KYC no CoinPayments.
-2. No painel, crie uma API Integration com permissão para invoices.
-3. Copie `.env.example` para `.env` e preencha `COINPAYMENTS_CLIENT_ID` e `COINPAYMENTS_CLIENT_SECRET`.
-4. Cadastre a URL HTTPS exata de `COINPAYMENTS_WEBHOOK_URL`, assinando os eventos `invoicePending`, `invoicePaid`, `invoiceCompleted`, `invoiceCancelled` e `invoiceTimedOut`.
-5. Confirme no painel quais criptomoedas estão habilitadas para recebimento e execute um pagamento de teste antes de produção.
+1. No painel do 2PP, abra **Integração API** e gere as credenciais (API Key e API Secret).
+2. Copie `.env.example` para `.env` e preencha `TWOPP_API_KEY`, `TWOPP_API_SECRET` e `TWOPP_WEBHOOK_TOKEN` (segredo aleatório com pelo menos 32 caracteres).
+3. `TWOPP_BASE_URL` é o host da API mostrado no painel (padrão `https://webhookxxx.2pp.online`).
+4. `APP_PUBLIC_URL` precisa ser a URL HTTPS pública: cada cobrança informa `APP_PUBLIC_URL/api/webhooks/2pp/<identificador>?token=...` como URL de notificação.
+5. `POST /api/v1/transactions/pix` cria a cobrança PIX (QR Code e copia e cola) e `POST /api/v1/transactions/crypto` cria a cobrança em USDT. As moedas habilitadas na conta vêm de `GET /api/v1/currencies/crypto` (hoje `usdt-trc20` e `usdt-bep20`).
 
-A senha de login da conta CoinPayments não é uma credencial de API e nunca deve ser adicionada ao projeto.
-
-## Pagamentos via PIXPAY
-
-O checkout também aceita PIX e cria uma cobrança com QR Code copia e cola no PIXPAY. Configure `PIXPAY_API_KEY`, `PIXPAY_API_SECRET`, `PIXPAY_WEBHOOK_TOKEN` (segredo aleatório com pelo menos 32 caracteres) e `APP_PUBLIC_URL`. Cada cobrança informa ao gateway o webhook HTTPS `/api/webhooks/pixpay`; o pagamento só é confirmado quando o PIXPAY notifica o mesmo identificador e valor da transação.
+A cobrança cripto devolve endereço e valor exato em USDT, exibidos no portal para o pagador. O webhook único `/api/webhooks/2pp` aceita `paymentMethod` `pix` e `crypto` e nunca rebaixa uma fatura já confirmada.
 
 ## Funcionalidades
 
@@ -112,7 +108,7 @@ As novas rotas são implementadas em `server/index.ts`, usado pelo servidor Node
 - Bônus aprovados, indicações e rendimentos creditados entram na **Carteira de Rendimentos**. Estornos de ganhos e saques pagos são debitados dessa mesma carteira.
 - Saques exigem conta ativa e Plano de Associado ativo ou cotas com pagamento confirmado e status Ativo (sem expiração vencida, quando informada). Apenas a classificação Cotista não basta.
 - O mínimo de saque continua em R$ 50. Solicitações Pendente/Em análise reservam rendimentos; Recusado libera a reserva; Pago debita uma única vez. A elegibilidade é revalidada ao solicitar, editar e pagar, inclusive pelo MASTER.
-- O financeiro oferece depósito PIX. A API `/api/deposits` também suporta CoinPayments. Apenas confirmação autenticada do gateway ou conciliação MASTER credita o depósito, com deduplicação por fatura.
+- O financeiro oferece depósito PIX e cripto pelo 2PP. Apenas confirmação autenticada do gateway ou conciliação MASTER credita o depósito, com deduplicação por fatura.
 - Compras pela carteira usam `/api/wallet/purchases`, chave idempotente e preços conferidos no servidor. Não usam rendimentos nem valores reservados para saques.
 - Ajustes MASTER exigem carteira explícita na interface; integrações antigas que omitem `wallet` usam `BALANCE`. Nunca registrar um depósito como `EARNINGS`.
 

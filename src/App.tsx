@@ -2,7 +2,7 @@ import { storeProducts, transactionWallet, walletLabels } from './wallets'
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
-  Activity, AlertCircle, BarChart3, Bitcoin, CalendarDays, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
+  Activity, AlertCircle, BarChart3, CalendarDays, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
   Headphones, LayoutDashboard, LogOut, Menu, Network, Package, Pencil, Plus, QrCode, Search,
   Settings, ShieldCheck, ShoppingBag, TicketCheck, UserRound, UsersRound, Wallet,
   Trash2, WalletCards, Wrench, X,
@@ -115,7 +115,7 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
           {qrImageUrl ? (
             <img
               src={qrImageUrl}
-              alt="QR Code PIX gerado pela PIXPAY"
+              alt="QR Code PIX gerado pelo gateway 2PP"
               width={300}
               height={300}
               className="pix-qr-image"
@@ -137,7 +137,7 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
         <small className="pix-qr-hint">Abra o app do seu banco, escolha <b>Pagar com PIX &gt; Ler QR Code</b> e aponte a câmera para a imagem acima.</small>
         {paymentUrl && (
           <a href={paymentUrl} target="_blank" rel="noreferrer" className="outline-btn" style={{ fontSize: '11px', padding: '6px 12px', marginTop: '6px' }}>
-            Abrir página de pagamento da PixPay
+            Abrir página de pagamento do 2PP
           </a>
         )}
       </div>
@@ -157,6 +157,45 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
         </button>
       </div>
 
+      <div className="pix-status-badge">
+        <span>Referência: <b>{payment.paymentReference || payment.id}</b></span>
+        <span className="pix-live-indicator">
+          <span className="pix-pulse-dot" aria-hidden="true" />
+          Aguardando confirmação automática
+        </span>
+      </div>
+    </div>
+  )
+}
+function CryptoPaymentDetails({ payment }: { payment: Row }) {
+  const [copied, setCopied] = useState('')
+  const address = String(payment.payAddress || '')
+  const amount = String(payment.payAmount || '')
+  const currency = String(payment.payCurrency || '').toUpperCase()
+
+  const copy = async () => {
+    if (!address) return
+    await navigator.clipboard.writeText(address)
+    setCopied(address)
+    window.setTimeout(() => setCopied(''), 2500)
+  }
+
+  return (
+    <div className="pix-payment-details" role="status">
+      <div className="pix-copy-section">
+        <div className="pix-copy-header">
+          <Copy aria-hidden="true" />
+          <span>
+            <b>Envie exatamente {amount} {currency}</b>
+            <small>Transfira o valor para o endereço abaixo usando a rede correta. A confirmação é automática pelo gateway 2PP.</small>
+          </span>
+        </div>
+        <textarea readOnly aria-label="Endereço da carteira cripto" value={address} onClick={event => (event.target as HTMLTextAreaElement).select()} />
+        <button type="button" className="primary-btn" onClick={() => void copy()}>
+          {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+          {copied ? 'Endereço copiado!' : 'Copiar endereço'}
+        </button>
+      </div>
       <div className="pix-status-badge">
         <span>Referência: <b>{payment.paymentReference || payment.id}</b></span>
         <span className="pix-live-indicator">
@@ -301,7 +340,7 @@ function Router({ session, path }: { session: Session; path: string }) {
 function ActivationOnboarding({ session }: { session: Session }) {
   const api = useApi(session)
   const [planCheckoutKey] = useState(() => crypto.randomUUID())
-  const [planPaymentAsset, setPlanPaymentAsset] = useState<'BTC' | 'USDT' | 'OTHER' | 'PIX' | 'BALANCE'>('BTC')
+  const [planPaymentAsset, setPlanPaymentAsset] = useState<'USDT-TRC20' | 'USDT-BEP20' | 'PIX' | 'BALANCE'>('PIX')
   const [customerDocument, setCustomerDocument] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -335,7 +374,7 @@ function ActivationOnboarding({ session }: { session: Session }) {
         <span className="activation-number" aria-hidden="true">01</span><ShieldCheck className="activation-icon" aria-hidden="true" />
         <span className="eyebrow">REDE E BONIFICAÇÕES</span><h2>Plano de Associado</h2><strong>{cents(ASSOCIATE_PLAN_PRICE_CENTS)}</strong>
         <p>Ative o plano para participar como Associado e seguir as regras de indicação e ganhos da modalidade.</p>
-        <label>Forma de pagamento<select value={planPaymentAsset} onChange={event => setPlanPaymentAsset(event.target.value as typeof planPaymentAsset)}><option value="BALANCE">Carteira de Saldo</option><option value="PIX">PIX</option><option value="BTC">Bitcoin (BTC)</option><option value="USDT">Tether (USDT)</option><option value="OTHER">Outra criptomoeda</option></select></label>
+        <label>Forma de pagamento<select value={planPaymentAsset} onChange={event => setPlanPaymentAsset(event.target.value as typeof planPaymentAsset)}><option value="BALANCE">Carteira de Saldo</option><option value="PIX">PIX</option><option value="USDT-TRC20">Tether (USDT) TRC-20</option><option value="USDT-BEP20">Tether (USDT) BEP-20</option></select></label>
         {planPaymentAsset === 'PIX' && <label>CPF ou CNPJ do pagador<input required inputMode="numeric" autoComplete="off" value={customerDocument} onChange={event => setCustomerDocument(event.target.value)} placeholder="Somente números" /></label>}
         <button className="primary-btn" disabled={busy}>{busy ? 'Criando cobrança…' : 'Comprar Plano de Associado'}</button>
       </form>
@@ -348,7 +387,7 @@ function ActivationOnboarding({ session }: { session: Session }) {
       </article>
     </section>
     {checkout && checkout.demo && <div className="payment-notice" role="status"><ShieldCheck aria-hidden="true" /><span><b>Checkout de demonstração criado</b><small>Confirme abaixo para simular o retorno de pagamento e ativar o plano nesta demonstração.</small></span><button type="button" className="primary-btn" disabled={busy} onClick={() => void confirmDemoAssociate()}>{busy ? 'Confirmando…' : 'Confirmar pagamento de demonstração'}</button></div>}
-    {checkout && !checkout.demo && (checkout.pixQrCode ? <PixPaymentDetails payment={checkout} /> : <div className="success-box" role="status"><Check aria-hidden="true" />Cobrança criada. Referência: {checkout.paymentReference || checkout.id}</div>)}
+    {checkout && !checkout.demo && (checkout.pixQrCode ? <PixPaymentDetails payment={checkout} /> : checkout.payAddress ? <CryptoPaymentDetails payment={checkout} /> : <div className="success-box" role="status"><Check aria-hidden="true" />Cobrança criada. Referência: {checkout.paymentReference || checkout.id}</div>)}
   </Page>
 }
 
@@ -366,9 +405,8 @@ function UserDashboard({ session }: { session: Session }) {
 const quotaPaymentOptions = [
   { id: 'BALANCE', label: 'Carteira de Saldo', description: 'Usar o saldo depositado', icon: Wallet },
   { id: 'PIX', label: 'PIX', description: 'Pagamento instantâneo em reais', icon: QrCode },
-  { id: 'BTC', label: 'Bitcoin (BTC)', description: 'Pagamento com Bitcoin', icon: Bitcoin },
-  { id: 'USDT', label: 'Tether (USDT)', description: 'Stablecoin pareada ao dólar', icon: CircleDollarSign },
-  { id: 'OTHER', label: 'Outras criptomoedas', description: 'Escolha no checkout CoinPayments', icon: WalletCards },
+  { id: 'USDT-TRC20', label: 'Tether (USDT) TRC-20', description: 'Stablecoin na rede Tron', icon: CircleDollarSign },
+  { id: 'USDT-BEP20', label: 'Tether (USDT) BEP-20', description: 'Stablecoin na rede BNB Chain', icon: WalletCards },
 ] as const
 type QuotaPaymentOption = typeof quotaPaymentOptions[number]['id']
 
@@ -379,7 +417,7 @@ function UserInvestments({ session }: { session: Session }) {
   const [amount, setAmount] = useState('500')
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [checkoutKey, setCheckoutKey] = useState('')
-  const [paymentOption, setPaymentOption] = useState<QuotaPaymentOption>('BTC')
+  const [paymentOption, setPaymentOption] = useState<QuotaPaymentOption>('PIX')
   const [customerDocument, setCustomerDocument] = useState('')
   const [checkoutResult, setCheckoutResult] = useState<Row>()
   const openCheckout = (event: FormEvent) => {
@@ -391,7 +429,7 @@ function UserInvestments({ session }: { session: Session }) {
     try {
       if (paymentOption === 'BALANCE') { await api.post('/wallet/purchases', { productType: 'INVESTMENT', amount: Number(amount), idempotencyKey: checkoutKey }); await load(); setCheckoutOpen(false); return }
       const investment = await api.post<Row>('/investments', { pack: 'Cotas GoMove', amount: Number(amount), preferredPaymentAsset: paymentOption, paymentMethod: paymentOption, ...(paymentOption === 'PIX' ? { customerDocument } : {}), idempotencyKey: checkoutKey })
-      if (!investment.paymentUrl && !investment.pixQrCode) throw new Error('O gateway não retornou os dados do pagamento')
+      if (!investment.paymentUrl && !investment.pixQrCode && !investment.payAddress) throw new Error('O gateway não retornou os dados do pagamento')
       await load()
       if (/^https?:\/\//i.test(investment.paymentUrl)) window.location.assign(investment.paymentUrl)
       else setCheckoutResult(investment)
@@ -400,7 +438,7 @@ function UserInvestments({ session }: { session: Session }) {
   }
   const participant = data?.business || {}
   const isShareholder = participant.membershipType === 'SHAREHOLDER'
-  return <Page title="Cotas GoMove" subtitle={isShareholder ? 'Amplie sua participação como Cotista.' : 'Torne-se Cotista sem precisar adquirir o Plano de Associado.'}><ErrorBox error={error || actionError} /><section className="dashboard-split quota-section"><form className="form-panel" onSubmit={openCheckout}><span className="eyebrow">AQUISIÇÃO DIRETA DE COTAS</span><h2>{isShareholder ? 'Adquirir novas cotas' : 'Ativar como Cotista'}</h2><p>A compra direta de cotas dispensa o Plano de Associado de {cents(ASSOCIATE_PLAN_PRICE_CENTS)}. O valor mínimo é {cents(SHAREHOLDER_MIN_QUOTA_CENTS)}.</p><label>Valor das cotas<input required min={SHAREHOLDER_MIN_QUOTA_CENTS / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} /></label><div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>Sem exigência do plano de R$ 55</b><small>Ao confirmar no mínimo {cents(SHAREHOLDER_MIN_QUOTA_CENTS)}, sua conta será ativada diretamente como Cotista.</small></span></div><button className="primary-btn">Escolher pagamento</button></form><div className="panel business-rights"><h2>Direitos como Cotista</h2><div><Check aria-hidden="true" /><span><b>Participação nos resultados financeiros</b><small>Direito exclusivo da modalidade Cotista.</small></span></div><div><Check aria-hidden="true" /><span><b>Teto de 250% total por cota</b><small>Diário e bonificações acumulam até 250% do valor da cota, incluindo os 100% investidos (150% de rendimento adicional).</small></span></div><div><Check aria-hidden="true" /><span><b>Plano de R$ 55 dispensado</b><small>A compra direta de cotas é uma modalidade independente.</small></span></div></div></section><h2 className="section-title">Minhas aquisições</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PRODUTO"], ["amount", "VALOR", row => brl(row.amount)], ["paymentMethod", "PAGAMENTO", row => row.paymentProvider === 'PIXPAY' ? 'PIXPAY · PIX' : row.paymentAsset ? `CoinPayments · ${row.paymentAsset}` : row.paymentMethod || '—'], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}{checkoutOpen && <Modal title={checkoutResult ? 'Pagamento iniciado' : 'Escolha como pagar'} close={() => !busy && setCheckoutOpen(false)}>{checkoutResult ? <div className="modal-form investment-checkout"><div className="checkout-summary"><span><small>Referência</small><b>{checkoutResult.paymentReference}</b></span><strong>{brl(checkoutResult.amount)}</strong></div>{checkoutResult.pixQrCode ? <PixPaymentDetails payment={checkoutResult} /> : <div className="payment-notice"><Check aria-hidden="true" /><span><b>Pagamento iniciado</b><small>Use o link do CoinPayments para concluir o pagamento.</small></span></div>}<div className="modal-actions"><button className="primary-btn" onClick={() => setCheckoutOpen(false)}>Concluir</button></div></div> : <form className="modal-form investment-checkout" onSubmit={invest} aria-busy={busy}><div className="checkout-summary"><span><small>Aquisição</small><b>Cotas GoMove</b></span><strong>{brl(Number(amount))}</strong></div><fieldset><legend>Como você deseja pagar?</legend><div className="payment-method-grid">{quotaPaymentOptions.map(option => <label className={paymentOption === option.id ? 'selected' : ''} key={option.id}><input type="radio" name="paymentOption" value={option.id} checked={paymentOption === option.id} onChange={() => setPaymentOption(option.id)} /><option.icon aria-hidden="true" /><span><b>{option.label}</b><small>{option.description}</small></span><Check className="method-check" aria-hidden="true" /></label>)}</div></fieldset>{paymentOption === 'PIX' && <label>CPF ou CNPJ do pagador<input required inputMode="numeric" autoComplete="off" value={customerDocument} onChange={event => setCustomerDocument(event.target.value)} placeholder="Somente números" /></label>}<div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>{paymentOption === 'BALANCE' ? 'Pagamento com a Carteira de Saldo' : `Pagamento processado pelo ${paymentOption === 'PIX' ? 'PIXPAY' : 'CoinPayments'}`}</b><small>{paymentOption === 'BALANCE' ? 'O valor será debitado do saldo depositado e as cotas serão ativadas.' : 'A aquisição só será confirmada após a notificação do gateway.'}</small></span></div><ErrorBox error={actionError} /><div className="modal-actions"><button type="button" className="outline-btn" disabled={busy} onClick={() => setCheckoutOpen(false)}>Cancelar</button><button className="primary-btn" disabled={busy}>{busy ? 'Criando cobrança…' : 'Continuar para pagamento'}</button></div></form>}</Modal>}</Page>
+  return <Page title="Cotas GoMove" subtitle={isShareholder ? 'Amplie sua participação como Cotista.' : 'Torne-se Cotista sem precisar adquirir o Plano de Associado.'}><ErrorBox error={error || actionError} /><section className="dashboard-split quota-section"><form className="form-panel" onSubmit={openCheckout}><span className="eyebrow">AQUISIÇÃO DIRETA DE COTAS</span><h2>{isShareholder ? 'Adquirir novas cotas' : 'Ativar como Cotista'}</h2><p>A compra direta de cotas dispensa o Plano de Associado de {cents(ASSOCIATE_PLAN_PRICE_CENTS)}. O valor mínimo é {cents(SHAREHOLDER_MIN_QUOTA_CENTS)}.</p><label>Valor das cotas<input required min={SHAREHOLDER_MIN_QUOTA_CENTS / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} /></label><div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>Sem exigência do plano de R$ 55</b><small>Ao confirmar no mínimo {cents(SHAREHOLDER_MIN_QUOTA_CENTS)}, sua conta será ativada diretamente como Cotista.</small></span></div><button className="primary-btn">Escolher pagamento</button></form><div className="panel business-rights"><h2>Direitos como Cotista</h2><div><Check aria-hidden="true" /><span><b>Participação nos resultados financeiros</b><small>Direito exclusivo da modalidade Cotista.</small></span></div><div><Check aria-hidden="true" /><span><b>Teto de 250% total por cota</b><small>Diário e bonificações acumulam até 250% do valor da cota, incluindo os 100% investidos (150% de rendimento adicional).</small></span></div><div><Check aria-hidden="true" /><span><b>Plano de R$ 55 dispensado</b><small>A compra direta de cotas é uma modalidade independente.</small></span></div></div></section><h2 className="section-title">Minhas aquisições</h2>{data ? <DataTable rows={data.investments} columns={[["id", "CONTRATO"], ["date", "DATA"], ["pack", "PRODUTO"], ["amount", "VALOR", row => brl(row.amount)], ["paymentMethod", "PAGAMENTO", row => row.paymentProvider === '2PP' ? `2PP · ${row.paymentMethod || 'PIX'}` : row.paymentAsset ? `2PP · ${row.paymentAsset}` : row.paymentMethod || '—'], ["status", "STATUS", row => status(row.status)]]} /> : <Loader />}{checkoutOpen && <Modal title={checkoutResult ? 'Pagamento iniciado' : 'Escolha como pagar'} close={() => !busy && setCheckoutOpen(false)}>{checkoutResult ? <div className="modal-form investment-checkout"><div className="checkout-summary"><span><small>Referência</small><b>{checkoutResult.paymentReference}</b></span><strong>{brl(checkoutResult.amount)}</strong></div>{checkoutResult.pixQrCode ? <PixPaymentDetails payment={checkoutResult} /> : <div className="payment-notice"><Check aria-hidden="true" /><span><b>Pagamento iniciado</b><small>Use os dados da cobrança para concluir o pagamento.</small></span></div>}<div className="modal-actions"><button className="primary-btn" onClick={() => setCheckoutOpen(false)}>Concluir</button></div></div> : <form className="modal-form investment-checkout" onSubmit={invest} aria-busy={busy}><div className="checkout-summary"><span><small>Aquisição</small><b>Cotas GoMove</b></span><strong>{brl(Number(amount))}</strong></div><fieldset><legend>Como você deseja pagar?</legend><div className="payment-method-grid">{quotaPaymentOptions.map(option => <label className={paymentOption === option.id ? 'selected' : ''} key={option.id}><input type="radio" name="paymentOption" value={option.id} checked={paymentOption === option.id} onChange={() => setPaymentOption(option.id)} /><option.icon aria-hidden="true" /><span><b>{option.label}</b><small>{option.description}</small></span><Check className="method-check" aria-hidden="true" /></label>)}</div></fieldset>{paymentOption === 'PIX' && <label>CPF ou CNPJ do pagador<input required inputMode="numeric" autoComplete="off" value={customerDocument} onChange={event => setCustomerDocument(event.target.value)} placeholder="Somente números" /></label>}<div className="payment-notice"><ShieldCheck aria-hidden="true" /><span><b>{paymentOption === 'BALANCE' ? 'Pagamento com a Carteira de Saldo' : 'Pagamento processado pelo gateway 2PP'}</b><small>{paymentOption === 'BALANCE' ? 'O valor será debitado do saldo depositado e as cotas serão ativadas.' : 'A aquisição só será confirmada após a notificação do gateway.'}</small></span></div><ErrorBox error={actionError} /><div className="modal-actions"><button type="button" className="outline-btn" disabled={busy} onClick={() => setCheckoutOpen(false)}>Cancelar</button><button className="primary-btn" disabled={busy}>{busy ? 'Criando cobrança…' : 'Continuar para pagamento'}</button></div></form>}</Modal>}</Page>
 }
 
 const products = storeProducts

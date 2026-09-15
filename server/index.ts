@@ -8,8 +8,7 @@ import crypto from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { neon } from '@neondatabase/serverless'
 import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
-import { CoinPaymentsConfigurationError, createCoinPaymentsInvoice, verifyCoinPaymentsWebhook } from './coinpayments.js'
-import { PixPayConfigurationError, createPixPayTransaction, normalizeCustomerDocument, verifyPixPayWebhookToken } from './pixpay.js'
+import { TwoPpConfigurationError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, normalizeCustomerDocument, verifyTwoPpWebhookToken, type TwoPpCryptoCurrency } from './twopayments.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
 import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from '../src/wallets.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
@@ -17,7 +16,7 @@ import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
 const root = path.resolve(process.env.GOMOVE_ROOT || process.cwd())
 const dataFile = process.env.GOMOVE_DATA_FILE ? path.resolve(process.env.GOMOVE_DATA_FILE) : path.join(root, '.data', 'db.json')
 type Item = Record<string, any> & { id: string }
-type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; dailyProfitabilityRuns: Item[]; dailyProfitabilities: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; coinPaymentsWebhookEvents: Item[]; pixPayWebhookEvents: Item[]; sessions: Record<string,{userId:string;expiresAt:string;actorId?:string;parentToken?:string}> }
+type Db = Record<string, any> & { users: MlmUser[]; commissionRules: Item[]; commissionEvents: Item[]; dailyProfitabilityRuns: Item[]; dailyProfitabilities: Item[]; bonusEntries: any[]; auditLogs: Item[]; investments: Item[]; twoPpWebhookEvents: Item[]; sessions: Record<string,{userId:string;expiresAt:string;actorId?:string;parentToken?:string}> }
 type DbRequestContext = { db: Db; dirty: boolean; version: number }
 const ACCOUNT_ONBOARDING_VERSION=1
 const databaseUrl=String(process.env.DATABASE_URL??'').trim()
@@ -31,7 +30,7 @@ function demoSeeded(): Db {
  const matheus = { id: crypto.randomUUID(), username: 'matheus', email: 'matheus@gomove.com.br', name: 'Matheus Oliveira', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: admin.id, inviteCode: 'matheus01', membershipType: 'SHAREHOLDER' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now(), shareholderSince: now() }
  const ana = { id: crypto.randomUUID(), username: 'ana', email: 'ana@gomove.local', name: 'Ana Silva', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: matheus.id, inviteCode: 'ana01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now() }
  const bruno = { id: crypto.randomUUID(), username: 'bruno', email: 'bruno@gomove.local', name: 'Bruno Costa', passwordHash: hash('gomove2026'), role: 'ASSOCIATE' as const, status: 'ACTIVE' as const, sponsorId: ana.id, inviteCode: 'bruno01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'ACTIVE' as const, associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS, associatePlanPaidAt: now() }
- return { accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION, commissionPlanVersion:COMMISSION_PLAN_VERSION, users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Indicação direta + Unilevel GoMove', eventType:'INVESTMENT_CONFIRMED', active:true, directReferralBps:DIRECT_REFERRAL_BPS, levels:UNILEVEL_LEVELS.map(level=>({...level})), createdAt:now() }], commissionEvents:[], dailyProfitabilityRuns:[], dailyProfitabilities:[], bonusEntries:[], auditLogs:[], coinPaymentsWebhookEvents:[], pixPayWebhookEvents:[], sessions:{}, invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profiles:{} }
+ return { accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION, commissionPlanVersion:COMMISSION_PLAN_VERSION, users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Indicação direta + Unilevel GoMove', eventType:'INVESTMENT_CONFIRMED', active:true, directReferralBps:DIRECT_REFERRAL_BPS, levels:UNILEVEL_LEVELS.map(level=>({...level})), createdAt:now() }], commissionEvents:[], dailyProfitabilityRuns:[], dailyProfitabilities:[], bonusEntries:[], auditLogs:[], twoPpWebhookEvents:[], sessions:{}, invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profiles:{} }
 }
 function ensureDemoContent(db: Db) {
  const matheus=db.users.find(user=>user.username==='matheus'), ana=db.users.find(user=>user.username==='ana')
@@ -54,7 +53,7 @@ function productionSeeded(): Db {
  const email=String(process.env.GOMOVE_ADMIN_EMAIL??'admin@gomoveinfra.com.br').trim().toLowerCase()
  const name=String(process.env.GOMOVE_ADMIN_NAME??'Administrador GoMove').trim()
  const admin={id:crypto.randomUUID(),username,email,name,passwordHash:hash(password),role:'ADMIN_MASTER' as const,status:'ACTIVE' as const,sponsorId:null,inviteCode:String(process.env.GOMOVE_ADMIN_INVITE_CODE??'gomove').trim().toLowerCase()}
- return {accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION,commissionPlanVersion:COMMISSION_PLAN_VERSION,users:[admin],commissionRules:[{id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()}],commissionEvents:[],dailyProfitabilityRuns:[],dailyProfitabilities:[],bonusEntries:[],auditLogs:[{id:crypto.randomUUID(),actorId:admin.id,action:'PRODUCTION_INITIALIZED',targetType:'SYSTEM',targetId:'gomove',details:{mode:'production'},createdAt:now()}],coinPaymentsWebhookEvents:[],pixPayWebhookEvents:[],sessions:{},vehicles:[],invoices:[],orders:[],investments:[],transactions:[],withdrawals:[],tickets:[],cart:[],profiles:{[admin.id]:{name,email,country:'Brasil'}}}
+ return {accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION,commissionPlanVersion:COMMISSION_PLAN_VERSION,users:[admin],commissionRules:[{id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()}],commissionEvents:[],dailyProfitabilityRuns:[],dailyProfitabilities:[],bonusEntries:[],auditLogs:[{id:crypto.randomUUID(),actorId:admin.id,action:'PRODUCTION_INITIALIZED',targetType:'SYSTEM',targetId:'gomove',details:{mode:'production'},createdAt:now()}],twoPpWebhookEvents:[],sessions:{},vehicles:[],invoices:[],orders:[],investments:[],transactions:[],withdrawals:[],tickets:[],cart:[],profiles:{[admin.id]:{name,email,country:'Brasil'}}}
 }
 const initialDatabase=()=>process.env.NODE_ENV==='test'?demoSeeded():productionSeeded()
 function readDb(): Db {
@@ -69,7 +68,7 @@ function readDb(): Db {
  return normalizeDb(db,persisted)
 }
 function normalizeDb(db:any,persisted?:string): Db {
- for (const k of ['users','vehicles','commissionRules','commissionEvents','dailyProfitabilityRuns','dailyProfitabilities','bonusEntries','auditLogs','coinPaymentsWebhookEvents','pixPayWebhookEvents','invoices','orders','investments','transactions','withdrawals','tickets','cart']) if (!Array.isArray(db[k])) db[k]=[]
+ for (const k of ['users','vehicles','commissionRules','commissionEvents','dailyProfitabilityRuns','dailyProfitabilities','bonusEntries','auditLogs','twoPpWebhookEvents','invoices','orders','investments','transactions','withdrawals','tickets','cart']) if (!Array.isArray(db[k])) db[k]=[]
  if (!db.profiles) db.profiles={}
  if (!db.sessions) db.sessions={}
  if (!db.users.length) Object.assign(db, initialDatabase(), db)
@@ -135,22 +134,11 @@ async function refreshDb():Promise<Db> {
  return context.db
 }
 const audit=(db:Db, actorId:string, action:string, targetType:string, targetId:string, details:any={}) => db.auditLogs.unshift({id:crypto.randomUUID(),actorId,action,targetType,targetId,details,createdAt:now()})
-async function mergeProviderInvoice(collection:'invoices'|'investments',localId:string,providerInvoice:{id:string;checkoutLink:string;link:string},onMerge:(db:Db,item:any)=>void) {
+async function mergeTwoPpTransaction(collection:'invoices'|'investments',localId:string,transaction:{id:string;status:string;paymentMethod:'pix'|'crypto';pixQrCode:string|null;pixQrCodeBase64:string|null;pixQrCodeUrl:string|null;paymentUrl:string|null;payAddress:string|null;payAmount:string|null;payCurrency:string|null},onMerge:(db:Db,item:any)=>void) {
  for(let attempt=0;attempt<3;attempt++) {
   const db=await refreshDb(),item=db[collection].find((candidate:any)=>candidate.id===localId)
   if(!item)return null
-  Object.assign(item,{coinPaymentsInvoiceId:providerInvoice.id,paymentReference:providerInvoice.id,paymentUrl:providerInvoice.checkoutLink,invoiceUrl:providerInvoice.link})
-  if(item.paymentStatus==='INVOICE_CREATING')Object.assign(item,{paymentStatus:'PENDING',paymentProviderStatus:'Unpaid'})
-  onMerge(db,item);writeDb(db)
-  try{await flushDb();return item}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message))||attempt===2)throw error}
- }
- return null
-}
-async function mergePixPayTransaction(collection:'invoices'|'investments',localId:string,transaction:{id:string;qrCode:string;qrCodeBase64?:string|null;qrCodeUrl?:string|null;status:string;paymentUrl:string|null},onMerge:(db:Db,item:any)=>void) {
- for(let attempt=0;attempt<3;attempt++) {
-  const db=await refreshDb(),item=db[collection].find((candidate:any)=>candidate.id===localId)
-  if(!item)return null
-  Object.assign(item,{pixPayTransactionId:transaction.id,paymentReference:transaction.id,paymentUrl:transaction.paymentUrl,pixQrCode:transaction.qrCode,pixQrCodeBase64:transaction.qrCodeBase64||null,pixQrCodeUrl:transaction.qrCodeUrl||null,paymentProviderStatus:transaction.status})
+  Object.assign(item,{twoPpTransactionId:transaction.id,paymentReference:transaction.id,paymentUrl:transaction.paymentUrl,pixQrCode:transaction.pixQrCode,pixQrCodeBase64:transaction.pixQrCodeBase64,pixQrCodeUrl:transaction.pixQrCodeUrl,payAddress:transaction.payAddress,payAmount:transaction.payAmount,payCurrency:transaction.payCurrency,paymentProviderStatus:transaction.status})
   if(item.paymentStatus==='INVOICE_CREATING')item.paymentStatus='PENDING'
   onMerge(db,item);writeDb(db)
   try{await flushDb();return item}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message))||attempt===2)throw error}
@@ -159,7 +147,7 @@ async function mergePixPayTransaction(collection:'invoices'|'investments',localI
 }
 function parseQuotaAmount(input:unknown) { const amount=Number(input),rawCents=amount*100,amountCents=Math.round(rawCents),configuredMax=Number(process.env.GOMOVE_MAX_QUOTA_CENTS),maxCents=Number.isSafeInteger(configuredMax)&&configuredMax>=SHAREHOLDER_MIN_QUOTA_CENTS?configuredMax:100_000_000;if(!Number.isFinite(amount)||!Number.isSafeInteger(amountCents)||Math.abs(rawCents-amountCents)>0.000001||amountCents<SHAREHOLDER_MIN_QUOTA_CENTS||amountCents>maxCents)throw new Error(`A aquisição deve ficar entre R$ 500,00 e R$ ${(maxCents/100).toLocaleString('pt-BR',{minimumFractionDigits:2})}, com no máximo duas casas decimais`);return {amount,amountCents} }
 function parseWebhookAmountCents(value:unknown) { const raw=String(value??'').trim();if(!/^\d+(?:\.\d{1,2})?$/.test(raw))return null;const [units,decimals='']=raw.split('.'),cents=Number(units)*100+Number(decimals.padEnd(2,'0'));return Number.isSafeInteger(cents)?cents:null }
-function validateWebhookInvoice(invoicePayload:any,target:any) { if(invoicePayload&&Object.prototype.hasOwnProperty.call(invoicePayload,'amount')){const amountValue=typeof invoicePayload.amount==='object'&&invoicePayload.amount!==null?(invoicePayload.amount.total??invoicePayload.amount.value):invoicePayload.amount,amountCents=parseWebhookAmountCents(amountValue);if(amountCents===null||amountCents!==Number(target.amountCents))throw new Error('Valor da fatura no webhook não confere')}if(invoicePayload&&Object.prototype.hasOwnProperty.call(invoicePayload,'currency')){const received=String(typeof invoicePayload.currency==='object'&&invoicePayload.currency!==null?(invoicePayload.currency.id??invoicePayload.currency.code??''):invoicePayload.currency),expected=String(process.env.COINPAYMENTS_INVOICE_CURRENCY??'5203');if(!received||received!==expected)throw new Error('Moeda da fatura no webhook não confere')} }
+const CRYPTO_ASSET_CURRENCIES:Record<string,TwoPpCryptoCurrency>={'USDT-TRC20':'usdt-trc20','USDT-BEP20':'usdt-bep20','USDT':'usdt-trc20'}
 const NON_RETRYABLE_CHECKOUT_STATUSES=new Set(['CANCELLED','TIMED_OUT','ERROR','SUPERSEDED'])
 function confirmedQuotaCents(db:Db,userId:string) { return db.investments.filter((investment:any)=>investment.userId===userId&&(investment.status==='Ativo'||investment.paymentStatus==='CONFIRMED')).reduce((sum:number,investment:any)=>sum+Number(investment.amountCents||0),0) }
 function allocateEarning(db:Db,participant:MlmUser,amountCents:number) { return allocateEarningByBusinessPlan(participant,db.bonusEntries,db.dailyProfitabilities as any,confirmedQuotaCents(db,participant.id),amountCents) }
@@ -242,78 +230,41 @@ if(databaseUrl)app.use(async(_req,res,next)=>{
   })
  } catch(error){next(error)}
 })
-app.post('/api/webhooks/coinpayments',express.raw({type:'application/json',limit:'256kb'}),(req,res)=>{
- const rawBody=Buffer.isBuffer(req.body)?req.body.toString('utf8'):''
- try {
-  const verification=verifyCoinPaymentsWebhook(rawBody,req.headers)
-  if(!verification.ok)return res.status(401).json({error:'Assinatura de webhook inválida'})
- } catch(error) {
-  if(error instanceof CoinPaymentsConfigurationError)return res.status(503).json({error:'CoinPayments não configurado'})
-  return res.status(401).json({error:'Webhook inválido'})
- }
- let payload:any
- try { payload=JSON.parse(rawBody) } catch { return res.status(400).json({error:'JSON inválido'}) }
- const eventKey=crypto.createHash('sha256').update(rawBody).digest('hex'),db=readDb()
- if(db.coinPaymentsWebhookEvents.some(event=>event.id===eventKey))return res.json({received:true,idempotent:true})
- const invoicePayload=payload?.invoice??payload,invoiceId=String(invoicePayload?.id??payload?.id??''),localReference=String(invoicePayload?.customData?.investmentId??invoicePayload?.items?.find((item:any)=>item?.customId)?.customId??payload?.customData?.investmentId??''),type=String(payload?.type??'').toLowerCase(),matches=(item:any)=>item.coinPaymentsInvoiceId?item.coinPaymentsInvoiceId===invoiceId:Boolean(localReference&&item.id===localReference),inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>['ASSOCIATE_PLAN','DEPOSIT'].includes(item.productType)&&matches(item))
- if(!inv&&!planInvoice)return res.status(404).json({error:'Fatura do webhook não encontrada'})
- try{validateWebhookInvoice(invoicePayload,inv??planInvoice)}catch(error:any){return res.status(422).json({error:error.message})}
- if(inv) {
-  if(invoiceId&&!inv.coinPaymentsInvoiceId)inv.coinPaymentsInvoiceId=invoiceId
-  if(inv.paymentStatus!=='CONFIRMED')inv.paymentProviderStatus=String(payload?.invoice?.state??payload?.type??'')
-  inv.paymentConfirmations=Math.max(Number(inv.paymentConfirmations)||0,0,...(Array.isArray(payload?.invoice?.payments)?payload.invoice.payments.map((payment:any)=>Number(payment.confirmations)||0):[0]))
-  if(type==='invoicepending'&&!['PAID','COMPLETED','CONFIRMED'].includes(inv.paymentStatus))inv.paymentStatus='PENDING'
-  else if(type==='invoicepaid'&&!['COMPLETED','CONFIRMED'].includes(inv.paymentStatus))inv.paymentStatus='PAID'
-  else if(type==='invoicecompleted'){if(inv.paymentStatus!=='CONFIRMED')inv.paymentStatus='COMPLETED';confirmInvestmentInDb(db,inv,'coinpayments-webhook');inv.paymentStatus='CONFIRMED';inv.status='Ativo';inv.reconciliationRequired=false;delete inv.paymentError}
-   else if((type==='invoicecancelled'||type==='invoicetimedout')&&!['PAID','COMPLETED','CONFIRMED'].includes(inv.paymentStatus)){inv.paymentStatus=type==='invoicecancelled'?'CANCELLED':'TIMED_OUT';inv.status='Cancelado'}
-  }
- if(planInvoice) {
-  if(invoiceId&&!planInvoice.coinPaymentsInvoiceId)planInvoice.coinPaymentsInvoiceId=invoiceId
-  if(planInvoice.paymentStatus!=='CONFIRMED')planInvoice.paymentProviderStatus=String(payload?.invoice?.state??payload?.type??'')
-  planInvoice.paymentConfirmations=Math.max(Number(planInvoice.paymentConfirmations)||0,0,...(Array.isArray(payload?.invoice?.payments)?payload.invoice.payments.map((payment:any)=>Number(payment.confirmations)||0):[0]))
-  if(type==='invoicepending'&&!['PAID','CONFIRMED'].includes(planInvoice.paymentStatus))planInvoice.paymentStatus='PENDING'
-  else if(type==='invoicepaid'&&planInvoice.paymentStatus!=='CONFIRMED')planInvoice.paymentStatus='PAID'
-  else if(type==='invoicecompleted'){
-   planInvoice.paymentStatus='CONFIRMED';planInvoice.status='Pago';planInvoice.remaining=0;planInvoice.paidAt=now();planInvoice.reconciliationRequired=false;delete planInvoice.paymentError
-   const participant=db.users.find(user=>user.id===planInvoice.userId&&user.role==='ASSOCIATE')
-   if(planInvoice.productType==='DEPOSIT')creditDeposit(db,planInvoice,crypto.randomUUID)
-   if(planInvoice.productType==='ASSOCIATE_PLAN'&&participant&&participant.associatePlanStatus!=='ACTIVE'){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'coinpayments-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,coinPaymentsInvoiceId:invoiceId})}
-  }
-  else if((type==='invoicecancelled'||type==='invoicetimedout')&&!['PAID','CONFIRMED'].includes(planInvoice.paymentStatus)){planInvoice.paymentStatus=type==='invoicecancelled'?'CANCELLED':'TIMED_OUT';planInvoice.status='Cancelado'}
- }
- db.coinPaymentsWebhookEvents.unshift({id:eventKey,type:String(payload?.type??''),invoiceId,investmentId:inv?.id??null,associatePlanInvoiceId:planInvoice?.id??null,createdAt:now()})
- if(db.coinPaymentsWebhookEvents.length>10000)db.coinPaymentsWebhookEvents.length=10000
- writeDb(db)
- return res.json({received:true,idempotent:false})
-})
-app.post('/api/webhooks/pixpay',express.raw({type:'application/json',limit:'256kb'}),(req,res)=>{
- try { if(!verifyPixPayWebhookToken(req.query.token))return res.status(401).json({error:'Webhook PIXPAY não autorizado'}) }
- catch(error) { return res.status(error instanceof PixPayConfigurationError?503:401).json({error:'Webhook PIXPAY indisponível'}) }
+app.post(['/api/webhooks/2pp','/api/webhooks/2pp/:localId'],express.raw({type:'application/json',limit:'256kb'}),(req,res)=>{
+ try { if(!verifyTwoPpWebhookToken(req.query.token))return res.status(401).json({error:'Webhook 2PP não autorizado'}) }
+ catch(error) { return res.status(error instanceof TwoPpConfigurationError?503:401).json({error:'Webhook 2PP indisponível'}) }
  const rawBody=Buffer.isBuffer(req.body)?req.body.toString('utf8'):''
  let payload:any
  try { payload=JSON.parse(rawBody) } catch { return res.status(400).json({error:'JSON inválido'}) }
- const data=payload?.data??payload,transactionId=String(data?.transactionId??'').trim(),providerStatus=String(data?.status??'').trim().toUpperCase(),paymentMethod=String(data?.paymentMethod??'pix').trim().toLowerCase()
- if(!transactionId||!providerStatus||paymentMethod!=='pix')return res.status(422).json({error:'Notificação PIXPAY inválida'})
- const db=readDb(),matches=(item:any)=>item.paymentProvider==='PIXPAY'&&item.pixPayTransactionId===transactionId,inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>['ASSOCIATE_PLAN','DEPOSIT'].includes(item.productType)&&matches(item))
- if(!inv&&!planInvoice)return res.status(404).json({error:'Cobrança PIX não encontrada'})
- const target=inv??planInvoice,amountCents=parseWebhookAmountCents(data?.amount)
- if(amountCents===null||amountCents!==Number(target.amountCents))return res.status(422).json({error:'Valor da cobrança PIX não confere'})
+ const data=payload?.data??payload,transactionId=String(data?.transactionId??'').trim(),providerStatus=String(data?.status??'').trim().toUpperCase(),paymentMethod=String(data?.paymentMethod??'').trim().toLowerCase(),localId=String((req.params as any)?.localId??'').trim()
+ if(!transactionId||!providerStatus)return res.status(422).json({error:'Notificação 2PP inválida'})
+ const db=readDb(),isPlan=(item:any)=>['ASSOCIATE_PLAN','DEPOSIT'].includes(item.productType),matches=(item:any)=>item.paymentProvider==='2PP'&&item.twoPpTransactionId===transactionId
+ let inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>isPlan(item)&&matches(item))
+ if(!inv&&!planInvoice&&localId){inv=db.investments.find((item:any)=>item.id===localId);planInvoice=db.invoices.find((item:any)=>item.id===localId&&isPlan(item))}
+ if(!inv&&!planInvoice)return res.status(404).json({error:'Cobrança 2PP não encontrada'})
+ const target=inv??planInvoice
+ if(target.twoPpTransactionId&&target.twoPpTransactionId!==transactionId)return res.status(409).json({error:'Cobrança já vinculada a outra transação do 2PP'})
+ if(paymentMethod&&((paymentMethod==='pix')!==(String(target.paymentAsset)==='PIX')))return res.status(422).json({error:'Forma de pagamento da notificação não confere'})
+ if(providerStatus==='COMPLETED'){const amountCents=parseWebhookAmountCents(data?.amount);if(amountCents===null||amountCents!==Number(target.amountCents))return res.status(422).json({error:'Valor da cobrança 2PP não confere'})}
  const eventKey=crypto.createHash('sha256').update(`${transactionId}:${providerStatus}:${rawBody}`).digest('hex')
- if(db.pixPayWebhookEvents.some(event=>event.id===eventKey))return res.json({received:true,idempotent:true})
+ if(db.twoPpWebhookEvents.some(event=>event.id===eventKey))return res.json({received:true,idempotent:true})
+ if(!target.twoPpTransactionId)target.twoPpTransactionId=transactionId
+ if(['INVOICE_CREATING','PROVIDER_UNKNOWN'].includes(target.paymentStatus))target.paymentStatus='PENDING'
  target.paymentProviderStatus=providerStatus
  if(providerStatus==='COMPLETED') {
-  if(inv&&inv.paymentStatus!=='CONFIRMED')confirmInvestmentInDb(db,inv,'pixpay-webhook')
+  if(inv&&inv.paymentStatus!=='CONFIRMED')confirmInvestmentInDb(db,inv,'2pp-webhook')
   if(planInvoice&&planInvoice.paymentStatus!=='CONFIRMED') {
    Object.assign(planInvoice,{paymentStatus:'CONFIRMED',status:'Pago',remaining:0,paidAt:now(),reconciliationRequired:false});delete planInvoice.paymentError
    const participant=db.users.find(user=>user.id===planInvoice.userId&&user.role==='ASSOCIATE')
    if(planInvoice.productType==='DEPOSIT')creditDeposit(db,planInvoice,crypto.randomUUID)
-   if(planInvoice.productType==='ASSOCIATE_PLAN'&&participant){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'pixpay-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,pixPayTransactionId:transactionId})}
+   if(planInvoice.productType==='ASSOCIATE_PLAN'&&participant&&participant.associatePlanStatus!=='ACTIVE'){participant.associatePlanStatus='ACTIVE';participant.associatePlanAmountCents=ASSOCIATE_PLAN_PRICE_CENTS;participant.associatePlanPaidAt=now();audit(db,'2pp-webhook','ASSOCIATE_PLAN_ACTIVATE','INVOICE',planInvoice.id,{userId:participant.id,twoPpTransactionId:transactionId})}
   }
- } else if(providerStatus==='FAILED') {
-  if(target.paymentStatus!=='CONFIRMED')Object.assign(target,{paymentStatus:'FAILED',status:'Cancelado',reconciliationRequired:false})
+ } else if(['FAILED','CANCELLED','EXPIRED','REFUNDED'].includes(providerStatus)) {
+  const terminal=providerStatus==='EXPIRED'?'TIMED_OUT':providerStatus==='FAILED'?'FAILED':'CANCELLED'
+  if(target.paymentStatus!=='CONFIRMED')Object.assign(target,{paymentStatus:terminal,status:'Cancelado',reconciliationRequired:false})
  } else if(target.paymentStatus!=='CONFIRMED') target.paymentStatus='PENDING'
- db.pixPayWebhookEvents.unshift({id:eventKey,transactionId,status:providerStatus,investmentId:inv?.id??null,associatePlanInvoiceId:planInvoice?.id??null,createdAt:now()})
- if(db.pixPayWebhookEvents.length>10000)db.pixPayWebhookEvents.length=10000
+ db.twoPpWebhookEvents.unshift({id:eventKey,transactionId,status:providerStatus,paymentMethod,investmentId:inv?.id??null,associatePlanInvoiceId:planInvoice?.id??null,createdAt:now()})
+ if(db.twoPpWebhookEvents.length>10000)db.twoPpWebhookEvents.length=10000
  writeDb(db)
  return res.json({received:true,idempotent:false})
 })
@@ -482,28 +433,28 @@ app.post(['/api/associate-plan','/api/deposits'],auth,async(req,res)=>{
  let d=readDb(),invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType===productType&&item.idempotencyKey===idempotencyKey)
  if(invoice&&NON_RETRYABLE_CHECKOUT_STATUSES.has(invoice.paymentStatus))return res.status(409).json({error:'Esta tentativa de pagamento foi encerrada; inicie outra com uma nova chave'})
  if(invoice&&productType==='DEPOSIT'&&invoice.amountCents!==invoiceAmountCents)return res.status(409).json({error:'Identificador já utilizado para outro valor de depósito'})
- if(invoice?.paymentUrl||invoice?.pixQrCode||invoice?.paymentStatus==='CONFIRMED')return res.json(invoice)
+ if(invoice?.paymentUrl||invoice?.pixQrCode||invoice?.payAddress||invoice?.paymentStatus==='CONFIRMED')return res.json(invoice)
  if(invoice)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
  invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType===productType&&openStatuses.has(item.paymentStatus))
- if(invoice?.paymentUrl)return res.json(invoice)
+ if(invoice?.paymentUrl||invoice?.pixQrCode||invoice?.payAddress)return res.json(invoice)
  if(invoice)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
  if(productType==='ASSOCIATE_PLAN'&&user.associatePlanStatus==='ACTIVE')return res.status(409).json({error:'O Plano de Associado já está ativo'})
- const isPix=String(b.paymentMethod??b.preferredPaymentAsset??'').toUpperCase()==='PIX';let customerDocument:string|undefined
+ const requestedAsset=String(b.preferredPaymentAsset??b.paymentMethod??'').trim().toUpperCase(),isPix=!requestedAsset||requestedAsset==='PIX',cryptoCurrency=CRYPTO_ASSET_CURRENCIES[requestedAsset];if(!isPix&&!cryptoCurrency)return res.status(422).json({error:'Forma de pagamento inválida; escolha PIX ou USDT (TRC-20 ou BEP-20)'});let customerDocument:string|undefined
  if(isPix){try{customerDocument=normalizeCustomerDocument(b.customerDocument)}catch(error:any){return res.status(422).json({error:error.message})}}
- const paymentAsset=isPix?'PIX':(['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER');invoice={id:crypto.randomUUID(),userId:user.id,createdAt:now(),due:new Date().toLocaleDateString('pt-BR'),description:productType==='DEPOSIT'?'Depósito na Carteira de Saldo':'Plano de Associado GoMove',productType,amount:invoiceAmountCents/100,amountCents:invoiceAmountCents,remaining:invoiceAmountCents/100,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:isPix?'PIXPAY':'COINPAYMENTS',paymentMethod:isPix?'PIX':'CoinPayments',paymentAsset,idempotencyKey};d.invoices.unshift(invoice)
+ const paymentAsset=isPix?'PIX':requestedAsset;invoice={id:crypto.randomUUID(),userId:user.id,createdAt:now(),due:new Date().toLocaleDateString('pt-BR'),description:productType==='DEPOSIT'?'Depósito na Carteira de Saldo':'Plano de Associado GoMove',productType,amount:invoiceAmountCents/100,amountCents:invoiceAmountCents,remaining:invoiceAmountCents/100,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:'2PP',paymentMethod:isPix?'PIX':`Cripto ${paymentAsset}`,paymentAsset,idempotencyKey};d.invoices.unshift(invoice)
  const targetInvoiceId=invoice.id
  writeDb(d)
  try{await flushDb()}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message)))throw error;d=await refreshDb();invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType===productType&&openStatuses.has(item.paymentStatus));if(invoice?.paymentUrl)return res.json(invoice);return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})}
  try {
-  if(isPix){const transaction=await createPixPayTransaction({amount:invoice.amount,customerName:String(user.name??user.username),customerEmail:String(user.email),customerDocument:customerDocument!});invoice=await mergePixPayTransaction('invoices',targetInvoiceId,transaction,(currentDb,currentInvoice)=>audit(currentDb,user.id,'PIXPAY_TRANSACTION_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{pixPayTransactionId:transaction.id}))}
-  else {const providerInvoice=await createCoinPaymentsInvoice({investmentId:targetInvoiceId,pack:invoice.description,amount:invoice.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email),successPath:productType==='DEPOSIT'?'/finance?payment=success':'/activation?payment=success',cancelPath:productType==='DEPOSIT'?'/finance?payment=cancelled':'/activation?payment=cancelled'});invoice=await mergeProviderInvoice('invoices',targetInvoiceId,providerInvoice,(currentDb,currentInvoice)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{coinPaymentsInvoiceId:providerInvoice.id}))}
+  const transaction=isPix?await createTwoPpPixTransaction({localId:targetInvoiceId,amount:invoice.amount,customerName:String(user.name??user.username),customerEmail:String(user.email),customerDocument:customerDocument!}):await createTwoPpCryptoTransaction({localId:targetInvoiceId,amount:invoice.amount,payCurrency:cryptoCurrency!,customerName:String(user.name??user.username),customerEmail:String(user.email)})
+  invoice=await mergeTwoPpTransaction('invoices',targetInvoiceId,transaction,(currentDb,currentInvoice)=>audit(currentDb,user.id,'TWOPP_TRANSACTION_CREATE','ASSOCIATE_PLAN',currentInvoice.id,{twoPpTransactionId:transaction.id,paymentMethod:transaction.paymentMethod}))
   if(!invoice)return res.status(409).json({error:'A fatura foi removida durante a criação da cobrança'})
   return res.status(201).json(invoice)
  } catch(error:any) {
   d=await refreshDb();invoice=d.invoices.find((item:any)=>item.id===targetInvoiceId)
-  const configurationError=isPix?error instanceof PixPayConfigurationError:error instanceof CoinPaymentsConfigurationError
+  const configurationError=error instanceof TwoPpConfigurationError
   if(invoice&&['INVOICE_CREATING','PENDING','PAID'].includes(invoice.paymentStatus)){if(invoice.paymentStatus!=='PAID')invoice.paymentStatus=configurationError?'ERROR':'PROVIDER_UNKNOWN';invoice.reconciliationRequired=!configurationError;invoice.paymentError=configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
-  const status=configurationError?503:502,provider=isPix?'PIXPAY':'CoinPayments'
+  const status=configurationError?503:502,provider='2PP'
   return res.status(status).json({error:status===503?`${provider} ainda não foi configurado pelo administrador`:`Não foi possível iniciar o pagamento no ${provider}`})
  }
 })
@@ -514,26 +465,26 @@ app.post('/api/investments',auth,async(req,res)=>{
  if(!idempotencyKey)return res.status(422).json({error:'Identificador idempotente ausente'})
  let d=readDb(),investment=d.investments.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey)
  if(investment&&NON_RETRYABLE_CHECKOUT_STATUSES.has(investment.paymentStatus))return res.status(409).json({error:'Esta tentativa de pagamento foi encerrada; inicie outra com uma nova chave'})
- if(investment?.paymentUrl||investment?.paymentStatus==='CONFIRMED')return res.json(investment)
+ if(investment?.paymentUrl||investment?.pixQrCode||investment?.payAddress||investment?.paymentStatus==='CONFIRMED')return res.json(investment)
  if(investment)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
  investment=d.investments.find((item:any)=>item.userId===user.id&&(item.paymentStatus==='PROVIDER_UNKNOWN'||(item.paymentStatus==='PAID'&&item.reconciliationRequired)))
  if(investment)return res.status(409).json({error:'Existe um pagamento aguardando conciliação com o provedor'})
- const isPix=String(b.paymentMethod??b.preferredPaymentAsset??'').toUpperCase()==='PIX';let customerDocument:string|undefined
+ const requestedAsset=String(b.preferredPaymentAsset??b.paymentMethod??'').trim().toUpperCase(),isPix=!requestedAsset||requestedAsset==='PIX',cryptoCurrency=CRYPTO_ASSET_CURRENCIES[requestedAsset];if(!isPix&&!cryptoCurrency)return res.status(422).json({error:'Forma de pagamento inválida; escolha PIX ou USDT (TRC-20 ou BEP-20)'});let customerDocument:string|undefined
  if(isPix){try{customerDocument=normalizeCustomerDocument(b.customerDocument)}catch(error:any){return res.status(422).json({error:error.message})}}
- const paymentAsset=isPix?'PIX':(['BTC','USDT','OTHER'].includes(String(b.preferredPaymentAsset))?String(b.preferredPaymentAsset):'OTHER');investment={id:crypto.randomUUID(),userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),pack,amount,amountCents,profit:0,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:isPix?'PIXPAY':'COINPAYMENTS',paymentMethod:isPix?'PIX':'CoinPayments',paymentAsset,idempotencyKey};d.investments.unshift(investment)
+ const paymentAsset=isPix?'PIX':requestedAsset;investment={id:crypto.randomUUID(),userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),pack,amount,amountCents,profit:0,status:'Aguardando pagamento',paymentStatus:'INVOICE_CREATING',paymentProvider:'2PP',paymentMethod:isPix?'PIX':`Cripto ${paymentAsset}`,paymentAsset,idempotencyKey};d.investments.unshift(investment)
  const targetInvestmentId=investment.id
  writeDb(d)
- try{await flushDb()}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message)))throw error;d=await refreshDb();investment=d.investments.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey);if(investment?.paymentUrl)return res.json(investment);return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})}
+ try{await flushDb()}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message)))throw error;d=await refreshDb();investment=d.investments.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey);if(investment?.paymentUrl||investment?.pixQrCode||investment?.payAddress)return res.json(investment);return res.status(409).json({error:'A cobrança já está sendo criada; tente novamente em instantes'})}
  try {
-  if(isPix){const transaction=await createPixPayTransaction({amount:investment.amount,customerName:String(user.name??user.username),customerEmail:String(user.email),customerDocument:customerDocument!});investment=await mergePixPayTransaction('investments',targetInvestmentId,transaction,(currentDb,currentInvestment)=>audit(currentDb,user.id,'PIXPAY_TRANSACTION_CREATE','INVESTMENT',currentInvestment.id,{pixPayTransactionId:transaction.id}))}
-  else {const invoice=await createCoinPaymentsInvoice({investmentId:targetInvestmentId,pack:investment.pack,amount:investment.amount,buyerName:String(user.name??user.username),buyerEmail:String(user.email)});investment=await mergeProviderInvoice('investments',targetInvestmentId,invoice,(currentDb,currentInvestment)=>audit(currentDb,user.id,'COINPAYMENTS_INVOICE_CREATE','INVESTMENT',currentInvestment.id,{coinPaymentsInvoiceId:invoice.id}))}
+  const transaction=isPix?await createTwoPpPixTransaction({localId:targetInvestmentId,amount:investment.amount,customerName:String(user.name??user.username),customerEmail:String(user.email),customerDocument:customerDocument!}):await createTwoPpCryptoTransaction({localId:targetInvestmentId,amount:investment.amount,payCurrency:cryptoCurrency!,customerName:String(user.name??user.username),customerEmail:String(user.email)})
+  investment=await mergeTwoPpTransaction('investments',targetInvestmentId,transaction,(currentDb,currentInvestment)=>audit(currentDb,user.id,'TWOPP_TRANSACTION_CREATE','INVESTMENT',currentInvestment.id,{twoPpTransactionId:transaction.id,paymentMethod:transaction.paymentMethod}))
   if(!investment)return res.status(409).json({error:'O investimento foi removido durante a criação da cobrança'})
   return res.status(201).json(investment)
  } catch(error:any) {
   d=await refreshDb();investment=d.investments.find((item:any)=>item.id===targetInvestmentId)
-  const configurationError=isPix?error instanceof PixPayConfigurationError:error instanceof CoinPaymentsConfigurationError
+  const configurationError=error instanceof TwoPpConfigurationError
   if(investment&&['INVOICE_CREATING','PENDING','PAID'].includes(investment.paymentStatus)){if(investment.paymentStatus!=='PAID')investment.paymentStatus=configurationError?'ERROR':'PROVIDER_UNKNOWN';investment.reconciliationRequired=!configurationError;investment.paymentError=configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
-  const status=configurationError?503:502,provider=isPix?'PIXPAY':'CoinPayments'
+  const status=configurationError?503:502,provider='2PP'
   return res.status(status).json({error:status===503?`${provider} ainda não foi configurado pelo administrador`:`Não foi possível iniciar o pagamento no ${provider}`})
  }
 })

@@ -27,6 +27,6 @@ Qualquer definição futura desses parâmetros deve ser incorporada ao documento
 
 - Valores monetários das regras são processados em centavos.
 - Confirmações de pagamento são idempotentes.
-- Webhooks CoinPayments continuam validados por assinatura.
+- Webhooks do 2PP continuam autenticados por token na URL da cobrança, com validação de valor e de forma de pagamento.
 - Mudanças de modalidade, confirmação de cotas e liberação de bônus são registradas na auditoria.
 - O schema PostgreSQL/Supabase contém modalidade, status do plano, valor do plano, teto de bônus e datas de confirmação/upgrade.

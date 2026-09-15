@@ -15,3 +15,4 @@ WhatsApp Image*.jpeg
 .codex-dev*.log
 .dev-ui*.log
 output/
+.vercel

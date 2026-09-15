@@ -88,7 +88,7 @@ if ($method==='GET' && $path==='/network/tree') { $root=safeUser($user)+['childr
 if ($method==='GET' && $path==='/bonuses/me') { $rows=array_values(array_filter($db['bonusEntries'],fn($x)=>($x['userId']??'')===$user['id']));closeDb($handle);respond(200,pageRows($rows)); }
 foreach(['cart','investments','orders','tickets','invoices','withdrawals'] as $key) {
   if($method==='GET'&&$path==='/'.$key){$rows=owned($db[$key],$user['id']);closeDb($handle);respond(200,$rows);}
-  if($method==='POST'&&$path==='/'.$key){if($key==='investments'){closeDb($handle);respond(503,['error'=>'Pagamento CoinPayments ainda não foi configurado']);}$item=$body+['id'=>uid(),'userId'=>$user['id'],'date'=>date('d/m/Y'),'createdAt'=>nowIso()];array_unshift($db[$key],$item);saveDb($handle,$db);respond(201,$item);}
+  if($method==='POST'&&$path==='/'.$key){if($key==='investments'){closeDb($handle);respond(503,['error'=>'Pagamento pelo 2PP ainda não foi configurado']);}$item=$body+['id'=>uid(),'userId'=>$user['id'],'date'=>date('d/m/Y'),'createdAt'=>nowIso()];array_unshift($db[$key],$item);saveDb($handle,$db);respond(201,$item);}
 }
 
 $admin=requireAdmin($db);

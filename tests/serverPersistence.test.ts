@@ -28,7 +28,9 @@ type ProviderHarness = {
   dropConnection?: boolean
 }
 
-async function withCoinPaymentsServers(run: (baseUrl: string, provider: ProviderHarness) => Promise<void>) {
+const TWOPP_WEBHOOK_TOKEN = 'twop-test-token-with-at-least-32-characters'
+
+async function withTwoPpServer(run: (baseUrl: string, provider: ProviderHarness) => Promise<void>) {
   const harness: ProviderHarness = { calls: 0, requests: [] }
   const provider = http.createServer((req, res) => {
     harness.calls += 1
@@ -36,19 +38,23 @@ async function withCoinPaymentsServers(run: (baseUrl: string, provider: Provider
     req.setEncoding('utf8')
     req.on('data', chunk => { body += chunk })
     req.on('end', async () => {
-      const request = JSON.parse(body) as Record<string, any> & { invoiceId: string }
+      const request = JSON.parse(body) as Record<string, any>
+      request.localId = String(new URL(String(request.webhookUrl)).pathname.split('/').pop())
+      request.transactionId = `2pp-${request.localId}`
       harness.requests.push(request)
       await harness.beforeResponse?.(request)
-      if(harness.dropConnection){req.socket.destroy();return}
+      if (harness.dropConnection) { req.socket.destroy(); return }
       res.setHeader('content-type', 'application/json')
-      res.end(JSON.stringify({ invoices: [{ id: `cp-${request.invoiceId}`, link: `https://pay.example/invoice/${request.invoiceId}`, checkoutLink: `https://pay.example/checkout/${request.invoiceId}` }] }))
+      res.end(JSON.stringify(String(req.url).includes('/crypto')
+        ? { status: 'success', data: { transactionId: request.transactionId, payAddress: 'TDemo2ppUsdtAddressTrc20', payAmount: '9.26', payCurrency: request.payCurrency, status: 'PENDING' } }
+        : { status: 'success', data: { transactionId: request.transactionId, qrCode: '000201-2pp-copy-paste', paymentUrl: '000201-2pp-copy-paste', status: 'PENDING' } }))
     })
   })
   const providerPort = await listen(provider)
-  process.env.COINPAYMENTS_CLIENT_ID = 'test-client'
-  process.env.COINPAYMENTS_CLIENT_SECRET = 'test-secret'
-  process.env.COINPAYMENTS_WEBHOOK_URL = 'https://gomove.example/api/webhooks/coinpayments'
-  process.env.COINPAYMENTS_BASE_URL = `http://127.0.0.1:${providerPort}`
+  process.env.TWOPP_API_KEY = 'test-key'
+  process.env.TWOPP_API_SECRET = 'test-secret'
+  process.env.TWOPP_WEBHOOK_TOKEN = TWOPP_WEBHOOK_TOKEN
+  process.env.TWOPP_BASE_URL = `http://127.0.0.1:${providerPort}`
   process.env.APP_PUBLIC_URL = 'https://gomove.example'
   const server = app.listen(0)
   try {
@@ -61,15 +67,14 @@ async function withCoinPaymentsServers(run: (baseUrl: string, provider: Provider
   }
 }
 
-function signedWebhookHeaders(rawBody: string) {
-  const timestamp = new Date().toISOString().split('.')[0]
-  const message = `\ufeffPOST${process.env.COINPAYMENTS_WEBHOOK_URL}${process.env.COINPAYMENTS_CLIENT_ID}${timestamp}${rawBody}`
-  return {
-    'content-type': 'application/json',
-    'x-coinpayments-client': process.env.COINPAYMENTS_CLIENT_ID!,
-    'x-coinpayments-timestamp': timestamp,
-    'x-coinpayments-signature': crypto.createHmac('sha256', process.env.COINPAYMENTS_CLIENT_SECRET!).update(message).digest('base64'),
-  }
+function webhookUrl(baseUrl: string, localId = '') {
+  return `${baseUrl}/api/webhooks/2pp${localId ? `/${localId}` : ''}?token=${encodeURIComponent(TWOPP_WEBHOOK_TOKEN)}`
+}
+
+const jsonHeaders = { 'content-type': 'application/json' }
+
+function webhookBody(transactionId: string, status: 'COMPLETED' | 'PENDING' | 'FAILED' | 'CANCELLED' | 'EXPIRED', amount?: string, paymentMethod = 'pix') {
+  return JSON.stringify({ status: status === 'COMPLETED' ? 'success' : 'pending', data: { transactionId, ...(amount ? { amount, netAmount: amount } : {}), status, paymentMethod, createdAt: new Date().toISOString() } })
 }
 
 after(() => fs.rmSync(testDir, { recursive: true, force: true }))
@@ -111,7 +116,7 @@ test('parallel authenticated administrative reads do not contend for the databas
   }
 })
 
-test('MASTER can manually confirm a pending CoinPayments quota acquisition once', async () => {
+test('MASTER can manually confirm a pending 2PP quota acquisition once', async () => {
   const server = app.listen(0)
   try {
     const address = server.address()
@@ -132,7 +137,7 @@ test('MASTER can manually confirm a pending CoinPayments quota acquisition once'
     const creation = await fetch(`${baseUrl}/api/admin/investments`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ userId: participant.id, amount: 500, paymentProvider: 'COINPAYMENTS', paymentMethod: 'CoinPayments', paymentStatus: 'PENDING', status: 'Aguardando pagamento' }),
+      body: JSON.stringify({ userId: participant.id, amount: 500, paymentProvider: '2PP', paymentMethod: 'PIX', paymentStatus: 'PENDING', status: 'Aguardando pagamento' }),
     })
     assert.equal(creation.status, 201)
     const investment = await creation.json() as { id: string }
@@ -210,7 +215,7 @@ test('public registration creates an active authenticated session directly or th
 })
 
 test('direct quota checkout and confirmation upgrades an unpaid account and includes it in daily profitability', async () => {
-  await withCoinPaymentsServers(async baseUrl => {
+  await withTwoPpServer(async baseUrl => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
       method: 'POST',
@@ -238,12 +243,12 @@ test('direct quota checkout and confirmation upgrades an unpaid account and incl
     const account = readDb().users.find(user => user.id === registration.user.id)
     assert.equal(account?.membershipType, 'SHAREHOLDER')
     assert.equal(account?.associatePlanStatus, 'PENDING')
-    const latePendingBody = JSON.stringify({ type: 'invoicePending', invoice: { id: quota.paymentReference, state: 'Pending', payments: [] } })
-    const latePending = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(latePendingBody), body: latePendingBody })
+    const latePendingBody = webhookBody(quota.paymentReference, 'PENDING', undefined, 'crypto')
+    const latePending = await fetch(webhookUrl(baseUrl, quota.id), { method: 'POST', headers: jsonHeaders, body: latePendingBody })
     assert.equal(latePending.status, 200)
     assert.equal(readDb().investments.find((investment: any) => investment.id === quota.id)?.paymentStatus, 'CONFIRMED')
-    const repeatedCompletedBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: quota.paymentReference, state: 'Completed', payments: [{ confirmations: 9 }] } })
-    const repeatedCompleted = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(repeatedCompletedBody), body: repeatedCompletedBody })
+    const repeatedCompletedBody = webhookBody(quota.paymentReference, 'COMPLETED', '500.00', 'crypto')
+    const repeatedCompleted = await fetch(webhookUrl(baseUrl, quota.id), { method: 'POST', headers: jsonHeaders, body: repeatedCompletedBody })
     assert.equal(repeatedCompleted.status, 200)
     assert.equal(readDb().investments.find((investment: any) => investment.id === quota.id)?.paymentStatus, 'CONFIRMED')
 
@@ -258,8 +263,8 @@ test('direct quota checkout and confirmation upgrades an unpaid account and incl
   })
 })
 
-test('associate plan checkout is authenticated, idempotent and activated only by a signed completed invoice webhook', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+test('associate plan checkout is authenticated, idempotent and activated only by a token-protected completed webhook', async () => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const unauthorized = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: 'unauthorized' }) })
     assert.equal(unauthorized.status, 401)
     const suffix = crypto.randomUUID().slice(0, 8)
@@ -268,31 +273,33 @@ test('associate plan checkout is authenticated, idempotent and activated only by
     })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
-    const firstResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-${suffix}`, preferredPaymentAsset: 'USDT' }) })
+    const firstResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-${suffix}`, preferredPaymentAsset: 'USDT-TRC20' }) })
     assert.equal(firstResponse.status, 201)
     const first = await firstResponse.json() as Record<string, any>
     assert.equal(first.amount, 55)
     assert.equal(first.paymentStatus, 'PENDING')
-    assert.ok(first.paymentUrl)
+    assert.ok(first.payAddress)
+    assert.ok(first.payAmount)
     assert.ok(first.paymentReference)
-    const retryResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-${suffix}`, preferredPaymentAsset: 'USDT' }) })
+    const retryResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-${suffix}`, preferredPaymentAsset: 'USDT-TRC20' }) })
     assert.equal(retryResponse.status, 200)
     const retry = await retryResponse.json() as Record<string, any>
     assert.equal(retry.id, first.id)
     assert.equal(provider.calls, 1)
-    assert.equal(provider.requests[0].successUrl, 'https://gomove.example/activation?payment=success')
-    assert.equal(provider.requests[0].cancelUrl, 'https://gomove.example/activation?payment=cancelled')
+    assert.equal(provider.requests[0].priceCurrency, 'BRL')
+    assert.equal(provider.requests[0].payCurrency, 'usdt-trc20')
+    assert.equal(provider.requests[0].webhookUrl, `https://gomove.example/api/webhooks/2pp/${first.id}?token=${encodeURIComponent(TWOPP_WEBHOOK_TOKEN)}`)
     assert.equal(readDb().users.find(user => user.id === registration.user.id)?.associatePlanStatus, 'PENDING')
 
-    const rawBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: first.paymentReference, state: 'Completed', payments: [{ confirmations: 3 }] } })
-    const webhook = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(rawBody), body: rawBody })
+    const rawBody = webhookBody(first.paymentReference, 'COMPLETED', '55.00', 'crypto')
+    const webhook = await fetch(webhookUrl(baseUrl, first.id), { method: 'POST', headers: jsonHeaders, body: rawBody })
     assert.equal(webhook.status, 200)
     assert.equal(readDb().users.find(user => user.id === registration.user.id)?.associatePlanStatus, 'ACTIVE')
-    const latePendingBody = JSON.stringify({ type: 'invoicePending', invoice: { id: first.paymentReference, state: 'Pending', payments: [] } })
-    const latePending = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(latePendingBody), body: latePendingBody })
+    const latePendingBody = webhookBody(first.paymentReference, 'PENDING', undefined, 'crypto')
+    const latePending = await fetch(webhookUrl(baseUrl, first.id), { method: 'POST', headers: jsonHeaders, body: latePendingBody })
     assert.equal(latePending.status, 200)
     assert.equal(readDb().invoices.find((invoice: any) => invoice.id === first.id)?.paymentStatus, 'CONFIRMED')
-    const duplicate = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(rawBody), body: rawBody })
+    const duplicate = await fetch(webhookUrl(baseUrl, first.id), { method: 'POST', headers: jsonHeaders, body: rawBody })
     assert.equal(duplicate.status, 200)
     assert.equal(((await duplicate.json()) as { idempotent: boolean }).idempotent, true)
     assert.equal(readDb().invoices.filter((invoice: any) => invoice.id === first.id).length, 1)
@@ -300,7 +307,7 @@ test('associate plan checkout is authenticated, idempotent and activated only by
 })
 
 test('concurrent associate-plan requests reserve one open invoice and reuse it across idempotency keys', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Concorrência Plano', email: `concurrent-${suffix}@gomove.local`, username: `concurrent-${suffix}`, password: 'senha-segura', cpf: '99000001455' }),
@@ -308,15 +315,15 @@ test('concurrent associate-plan requests reserve one open invoice and reuse it a
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
     const [first, competing] = await Promise.all([
-      fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `first-${suffix}` }) }),
-      fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `second-${suffix}` }) }),
+      fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `first-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000001455' }) }),
+      fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `second-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000001455' }) }),
     ])
     assert.ok([200, 201, 409].includes(first.status))
     assert.ok([200, 201, 409].includes(competing.status))
     assert.equal(provider.calls, 1)
     const open = readDb().invoices.filter((invoice: any) => invoice.userId === registration.user.id && invoice.productType === 'ASSOCIATE_PLAN' && ['INVOICE_CREATING', 'PENDING', 'PAID', 'CONFIRMED'].includes(invoice.paymentStatus))
     assert.equal(open.length, 1)
-    const retry = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `third-${suffix}` }) })
+    const retry = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `third-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000001455' }) })
     assert.equal(retry.status, 200)
     assert.equal(((await retry.json()) as { id: string }).id, open[0].id)
     assert.equal(provider.calls, 1)
@@ -324,19 +331,19 @@ test('concurrent associate-plan requests reserve one open invoice and reuse it a
 })
 
 test('an early completed webhook resolves the local invoice reference and checkout never downgrades confirmation', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Webhook Precoce', email: `early-${suffix}@gomove.local`, username: `early-${suffix}`, password: 'senha-segura', cpf: '99000001536' }),
     })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     provider.beforeResponse = async request => {
-      const rawBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: `cp-${request.invoiceId}`, state: 'Completed', customData: { investmentId: request.invoiceId }, items: [{ customId: request.invoiceId }], payments: [{ confirmations: 3 }] } })
-      const webhook = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(rawBody), body: rawBody })
+      const rawBody = webhookBody(request.transactionId, 'COMPLETED', '55.00')
+      const webhook = await fetch(webhookUrl(baseUrl, request.localId), { method: 'POST', headers: jsonHeaders, body: rawBody })
       assert.equal(webhook.status, 200)
     }
     const checkout = await fetch(`${baseUrl}/api/associate-plan`, {
-      method: 'POST', headers: { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `early-${suffix}` }),
+      method: 'POST', headers: { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `early-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000001536' }),
     })
     assert.equal(checkout.status, 201)
     const invoice = await checkout.json() as Record<string, any>
@@ -347,12 +354,12 @@ test('an early completed webhook resolves the local invoice reference and checko
 })
 
 test('a signed webhook for an unknown invoice is rejected without consuming its event key', async () => {
-  await withCoinPaymentsServers(async baseUrl => {
-    const before = readDb().coinPaymentsWebhookEvents.length
-    const rawBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: 'unknown-provider-id', state: 'Completed', customData: { investmentId: 'unknown-local-id' } } })
-    const webhook = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(rawBody), body: rawBody })
+  await withTwoPpServer(async baseUrl => {
+    const before = readDb().twoPpWebhookEvents.length
+    const rawBody = webhookBody('unknown-provider-id', 'COMPLETED', '55.00')
+    const webhook = await fetch(webhookUrl(baseUrl, 'unknown-local-id'), { method: 'POST', headers: jsonHeaders, body: rawBody })
     assert.equal(webhook.status, 404)
-    assert.equal(readDb().coinPaymentsWebhookEvents.length, before)
+    assert.equal(readDb().twoPpWebhookEvents.length, before)
   })
 })
 
@@ -447,8 +454,8 @@ test('registration rejects oversized passwords and login rate limiting returns a
   }
 })
 
-test('quota checkout rejects unsafe or over-precise values before contacting CoinPayments', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+test('quota checkout rejects unsafe or over-precise values before contacting the provider', async () => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Validação Cota', email: `amount-${suffix}@gomove.local`, username: `amount-${suffix}`, password: 'senha-segura', cpf: '99000001889' }),
@@ -523,52 +530,57 @@ test('MASTER investment create and patch reject unsafe amounts without mutating 
   }
 })
 
-test('webhook rejects provider-id conflicts and mismatched amount or currency without consuming events', async () => {
-  await withCoinPaymentsServers(async (baseUrl) => {
+test('webhook rejects provider-id conflicts, rail mismatch and wrong amounts without consuming events', async () => {
+  await withTwoPpServer(async (baseUrl) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Webhook Seguro', email: `secure-hook-${suffix}@gomove.local`, username: `secure-hook-${suffix}`, password: 'senha-segura', cpf: '99000002001' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
-    const checkoutResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers: { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `secure-${suffix}` }) })
+    const checkoutResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers: { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ idempotencyKey: `secure-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002001' }) })
     const checkout = await checkoutResponse.json() as Record<string, any>
-    const before = readDb().coinPaymentsWebhookEvents.length
+    const before = readDb().twoPpWebhookEvents.length
 
-    const conflictBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: 'different-provider-id', customData: { investmentId: checkout.id }, amount: { total: '55.00' }, currency: '5203' } })
-    const conflict = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(conflictBody), body: conflictBody })
-    assert.equal(conflict.status, 404)
-    const amountBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: checkout.paymentReference, customData: { investmentId: checkout.id }, amount: { total: '54.99' }, currency: '5203' } })
-    const amountMismatch = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(amountBody), body: amountBody })
+    const unauthorized = await fetch(webhookUrl(baseUrl, checkout.id).replace(encodeURIComponent(TWOPP_WEBHOOK_TOKEN), 'wrong'), { method: 'POST', headers: jsonHeaders, body: webhookBody(checkout.paymentReference, 'COMPLETED', '55.00') })
+    assert.equal(unauthorized.status, 401)
+    const unknownBody = webhookBody('unknown-provider-id', 'COMPLETED', '55.00')
+    const unknown = await fetch(webhookUrl(baseUrl), { method: 'POST', headers: jsonHeaders, body: unknownBody })
+    assert.equal(unknown.status, 404)
+    const conflictBody = webhookBody('different-provider-id', 'COMPLETED', '55.00')
+    const conflict = await fetch(webhookUrl(baseUrl, checkout.id), { method: 'POST', headers: jsonHeaders, body: conflictBody })
+    assert.equal(conflict.status, 409)
+    const railBody = webhookBody(checkout.paymentReference, 'COMPLETED', '55.00', 'crypto')
+    const railMismatch = await fetch(webhookUrl(baseUrl, checkout.id), { method: 'POST', headers: jsonHeaders, body: railBody })
+    assert.equal(railMismatch.status, 422)
+    const amountBody = webhookBody(checkout.paymentReference, 'COMPLETED', '54.99')
+    const amountMismatch = await fetch(webhookUrl(baseUrl, checkout.id), { method: 'POST', headers: jsonHeaders, body: amountBody })
     assert.equal(amountMismatch.status, 422)
-    const currencyBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: checkout.paymentReference, customData: { investmentId: checkout.id }, amount: { total: '55.00' }, currency: '9999' } })
-    const currencyMismatch = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(currencyBody), body: currencyBody })
-    assert.equal(currencyMismatch.status, 422)
-    assert.equal(readDb().coinPaymentsWebhookEvents.length, before)
+    assert.equal(readDb().twoPpWebhookEvents.length, before)
     assert.equal(readDb().users.find(user => user.id === registration.user.id)?.associatePlanStatus, 'PENDING')
   })
 })
 
 test('ambiguous provider failure is reconciled without creating a second invoice', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Reconciliação', email: `reconcile-${suffix}@gomove.local`, username: `reconcile-${suffix}`, password: 'senha-segura', cpf: '99000002184' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
     provider.beforeResponse = async request => {
-      const paidBody = JSON.stringify({ type: 'invoicePaid', invoice: { id: `cp-${request.invoiceId}`, customData: { investmentId: request.invoiceId }, amount: { total: '55.00' }, currency: '5203' } })
-      const paid = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(paidBody), body: paidBody })
-      assert.equal(paid.status, 200)
+      const pendingBody = webhookBody(request.transactionId, 'PENDING')
+      const pending = await fetch(webhookUrl(baseUrl, request.localId), { method: 'POST', headers: jsonHeaders, body: pendingBody })
+      assert.equal(pending.status, 200)
     }
     provider.dropConnection = true
-    const failed = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `reconcile-${suffix}` }) })
+    const failed = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `reconcile-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002184' }) })
     assert.equal(failed.status, 502)
     const invoice = readDb().invoices.find((item: any) => item.userId === registration.user.id && item.productType === 'ASSOCIATE_PLAN')
-    assert.equal(invoice.paymentStatus, 'PAID')
+    assert.equal(invoice.paymentStatus, 'PROVIDER_UNKNOWN')
     assert.equal(invoice.reconciliationRequired, true)
-    const retry = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `retry-${suffix}` }) })
+    const retry = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `retry-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002184' }) })
     assert.equal(retry.status, 409)
     assert.equal(provider.calls, 1)
 
-    const completedBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: `cp-${invoice.id}`, customData: { investmentId: invoice.id }, amount: { total: '55.00' }, currency: '5203' } })
-    const completed = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(completedBody), body: completedBody })
+    const completedBody = webhookBody(`2pp-${invoice.id}`, 'COMPLETED', '55.00')
+    const completed = await fetch(webhookUrl(baseUrl, invoice.id), { method: 'POST', headers: jsonHeaders, body: completedBody })
     assert.equal(completed.status, 200)
     assert.equal(readDb().users.find(user => user.id === registration.user.id)?.associatePlanStatus, 'ACTIVE')
     const reconciled = readDb().invoices.find((item: any) => item.id === invoice.id)
@@ -577,17 +589,17 @@ test('ambiguous provider failure is reconciled without creating a second invoice
   })
 })
 
-test('CoinPayments checkout requires a valid public HTTP URL before contacting the provider', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+test('2PP checkout requires a valid public HTTPS URL before contacting the provider', async () => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'URL Pública', email: `public-url-${suffix}@gomove.local`, username: `public-url-${suffix}`, password: 'senha-segura', cpf: '99000002265' }) })
     const { token } = await registrationResponse.json() as { token: string }
     const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' }
     delete process.env.APP_PUBLIC_URL
-    const missing = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `missing-${suffix}` }) })
+    const missing = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `missing-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002265' }) })
     assert.equal(missing.status, 503)
     process.env.APP_PUBLIC_URL = 'javascript:alert(1)'
-    const invalid = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `invalid-${suffix}` }) })
+    const invalid = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `invalid-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002265' }) })
     assert.equal(invalid.status, 503)
     assert.equal(provider.calls, 0)
     process.env.APP_PUBLIC_URL = 'https://gomove.example'
@@ -614,35 +626,35 @@ test('MASTER status and sponsor routes cannot mutate the ADMIN_MASTER account', 
 })
 
 test('associate-plan terminal idempotency preserves a cancelled invoice and requires a new key', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Plano Terminal', email: `plan-terminal-${suffix}@gomove.local`, username: `plan-terminal-${suffix}`, password: 'senha-segura', cpf: '99000002346' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
-    const firstResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-old-${suffix}` }) })
+    const firstResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-old-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002346' }) })
     assert.equal(firstResponse.status, 201)
     const first = await firstResponse.json() as Record<string, any>
     const providerId = first.paymentReference
-    const cancelledBody = JSON.stringify({ type: 'invoiceCancelled', invoice: { id: providerId, state: 'Cancelled', amount: { total: '55.00' }, currency: '5203' } })
-    const cancelled = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(cancelledBody), body: cancelledBody })
+    const cancelledBody = webhookBody(providerId, 'CANCELLED')
+    const cancelled = await fetch(webhookUrl(baseUrl, first.id), { method: 'POST', headers: jsonHeaders, body: cancelledBody })
     assert.equal(cancelled.status, 200)
 
-    const sameKey = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-old-${suffix}` }) })
+    const sameKey = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-old-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002346' }) })
     assert.equal(sameKey.status, 409)
     assert.equal(provider.calls, 1)
     const preserved = readDb().invoices.find((invoice: any) => invoice.id === first.id)
     assert.equal(preserved.paymentStatus, 'CANCELLED')
-    assert.equal(preserved.coinPaymentsInvoiceId, providerId)
+    assert.equal(preserved.twoPpTransactionId, providerId)
 
-    const newKeyResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-new-${suffix}` }) })
+    const newKeyResponse = await fetch(`${baseUrl}/api/associate-plan`, { method: 'POST', headers, body: JSON.stringify({ idempotencyKey: `plan-new-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002346' }) })
     assert.equal(newKeyResponse.status, 201)
     const replacement = await newKeyResponse.json() as Record<string, any>
     assert.notEqual(replacement.id, first.id)
     assert.equal(provider.calls, 2)
-    assert.equal(readDb().invoices.find((invoice: any) => invoice.id === first.id)?.coinPaymentsInvoiceId, providerId)
+    assert.equal(readDb().invoices.find((invoice: any) => invoice.id === first.id)?.twoPpTransactionId, providerId)
 
-    const lateCompletedBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: providerId, state: 'Completed', amount: { total: '55.00' }, currency: '5203' } })
-    const lateCompleted = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(lateCompletedBody), body: lateCompletedBody })
+    const lateCompletedBody = webhookBody(providerId, 'COMPLETED', '55.00')
+    const lateCompleted = await fetch(webhookUrl(baseUrl, first.id), { method: 'POST', headers: jsonHeaders, body: lateCompletedBody })
     assert.equal(lateCompleted.status, 200)
     assert.equal(readDb().invoices.find((invoice: any) => invoice.id === first.id)?.paymentStatus, 'CONFIRMED')
     assert.equal(readDb().users.find(user => user.id === registration.user.id)?.associatePlanStatus, 'ACTIVE')
@@ -650,34 +662,34 @@ test('associate-plan terminal idempotency preserves a cancelled invoice and requ
 })
 
 test('quota terminal idempotency preserves a timed-out acquisition and requires a new key', async () => {
-  await withCoinPaymentsServers(async (baseUrl, provider) => {
+  await withTwoPpServer(async (baseUrl, provider) => {
     const suffix = crypto.randomUUID().slice(0, 8)
     const registrationResponse = await fetch(`${baseUrl}/api/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Cota Terminal', email: `quota-terminal-${suffix}@gomove.local`, username: `quota-terminal-${suffix}`, password: 'senha-segura', cpf: '99000002427' }) })
     const registration = await registrationResponse.json() as { token: string; user: Record<string, any> }
     const headers = { authorization: `Bearer ${registration.token}`, 'content-type': 'application/json' }
-    const firstResponse = await fetch(`${baseUrl}/api/investments`, { method: 'POST', headers, body: JSON.stringify({ amount: 500, idempotencyKey: `quota-old-${suffix}` }) })
+    const firstResponse = await fetch(`${baseUrl}/api/investments`, { method: 'POST', headers, body: JSON.stringify({ amount: 500, idempotencyKey: `quota-old-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002427' }) })
     assert.equal(firstResponse.status, 201)
     const first = await firstResponse.json() as Record<string, any>
     const providerId = first.paymentReference
-    const timedOutBody = JSON.stringify({ type: 'invoiceTimedOut', invoice: { id: providerId, state: 'TimedOut', amount: { total: '500.00' }, currency: '5203' } })
-    const timedOut = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(timedOutBody), body: timedOutBody })
+    const timedOutBody = webhookBody(providerId, 'EXPIRED')
+    const timedOut = await fetch(webhookUrl(baseUrl, first.id), { method: 'POST', headers: jsonHeaders, body: timedOutBody })
     assert.equal(timedOut.status, 200)
 
-    const sameKey = await fetch(`${baseUrl}/api/investments`, { method: 'POST', headers, body: JSON.stringify({ amount: 500, idempotencyKey: `quota-old-${suffix}` }) })
+    const sameKey = await fetch(`${baseUrl}/api/investments`, { method: 'POST', headers, body: JSON.stringify({ amount: 500, idempotencyKey: `quota-old-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002427' }) })
     assert.equal(sameKey.status, 409)
     assert.equal(provider.calls, 1)
     const preserved = readDb().investments.find((investment: any) => investment.id === first.id)
     assert.equal(preserved.paymentStatus, 'TIMED_OUT')
-    assert.equal(preserved.coinPaymentsInvoiceId, providerId)
+    assert.equal(preserved.twoPpTransactionId, providerId)
 
-    const newKeyResponse = await fetch(`${baseUrl}/api/investments`, { method: 'POST', headers, body: JSON.stringify({ amount: 500, idempotencyKey: `quota-new-${suffix}` }) })
+    const newKeyResponse = await fetch(`${baseUrl}/api/investments`, { method: 'POST', headers, body: JSON.stringify({ amount: 500, idempotencyKey: `quota-new-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000002427' }) })
     assert.equal(newKeyResponse.status, 201)
     const replacement = await newKeyResponse.json() as Record<string, any>
     assert.notEqual(replacement.id, first.id)
     assert.equal(provider.calls, 2)
 
-    const lateCompletedBody = JSON.stringify({ type: 'invoiceCompleted', invoice: { id: providerId, state: 'Completed', amount: { total: '500.00' }, currency: '5203' } })
-    const lateCompleted = await fetch(`${baseUrl}/api/webhooks/coinpayments`, { method: 'POST', headers: signedWebhookHeaders(lateCompletedBody), body: lateCompletedBody })
+    const lateCompletedBody = webhookBody(providerId, 'COMPLETED', '500.00')
+    const lateCompleted = await fetch(webhookUrl(baseUrl, first.id), { method: 'POST', headers: jsonHeaders, body: lateCompletedBody })
     assert.equal(lateCompleted.status, 200)
     assert.equal(readDb().investments.find((investment: any) => investment.id === first.id)?.paymentStatus, 'CONFIRMED')
     assert.equal(readDb().users.find(user => user.id === registration.user.id)?.membershipType, 'SHAREHOLDER')
@@ -725,7 +737,7 @@ test('public registration collects a unique CPF that persists to the profile and
     let d2 = (s * 10) % 11; if (d2 === 10) d2 = 0
     return head + d2
   }
-  const cpf = cpfCheck(String(99000000 + Math.floor(Math.random() * 9000000)))
+  const cpf = cpfCheck(String(100000000 + Math.floor(Math.random() * 899999999)))
   try {
     const address = server.address()
     assert.ok(address && typeof address === 'object')

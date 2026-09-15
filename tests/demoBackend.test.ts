@@ -49,20 +49,26 @@ test('user-created ticket is visible to MASTER and protected by role', async () 
   assert.equal(tickets.items[0].subject, 'Teste integrado')
 })
 
-test('investment creates an idempotent CoinPayments checkout', async () => {
+test('investment creates an idempotent 2PP crypto checkout', async () => {
   localStorage.clear()
   const session = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
   await assert.rejects(() => demoRequest('/investments', 'POST', { pack: 'Cotas GoMove', amount: 500 }, session.token), /Identificador idempotente/)
-  const payload = { pack: 'Cotas GoMove', amount: 500, preferredPaymentAsset: 'BTC', idempotencyKey: 'checkout-test-1' }
+  await assert.rejects(
+    () => demoRequest('/investments', 'POST', { pack: 'Cotas GoMove', amount: 500, preferredPaymentAsset: 'BTC', idempotencyKey: 'checkout-invalid-asset' }, session.token),
+    /Forma de pagamento inválida/,
+  )
+  const payload = { pack: 'Cotas GoMove', amount: 500, preferredPaymentAsset: 'USDT-TRC20', idempotencyKey: 'checkout-test-1' }
   const investment = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
   const retry = await demoRequest<Record<string, any>>('/investments', 'POST', payload, session.token)
-  assert.equal(investment.paymentMethod, 'CoinPayments')
-  assert.equal(investment.paymentAsset, 'BTC')
-  assert.equal(investment.paymentProvider, 'COINPAYMENTS')
+  assert.equal(investment.paymentMethod, 'Cripto USDT-TRC20')
+  assert.equal(investment.paymentAsset, 'USDT-TRC20')
+  assert.equal(investment.paymentProvider, '2PP')
   assert.equal(investment.paymentStatus, 'PENDING')
   assert.equal(investment.status, 'Aguardando pagamento')
-  assert.match(investment.paymentReference, /^CP-/)
-  assert.equal(investment.paymentUrl, '/investments?demo-payment=pending')
+  assert.match(investment.paymentReference, /^2PP-/)
+  assert.equal(investment.payCurrency, 'usdt-trc20')
+  assert.ok(investment.payAddress)
+  assert.equal(investment.paymentUrl, null)
   assert.equal(retry.id, investment.id)
   const state = await demoRequest<{ investments: Record<string, any>[] }>('/state', 'GET', undefined, session.token)
   assert.equal(state.investments.filter(item => item.idempotencyKey === payload.idempotencyKey).length, 1)
@@ -262,7 +268,9 @@ test('associate choice creates one R$ 55 checkout per idempotency key', async ()
   const retry = await demoRequest<Record<string, any>>('/associate-plan', 'POST', { preferredPaymentAsset: 'USDT', idempotencyKey: 'associate-choice' }, registration.token)
   assert.equal(first.amount, 55)
   assert.equal(first.id, retry.id)
-  assert.ok(first.paymentUrl)
+  assert.equal(first.paymentProvider, '2PP')
+  assert.equal(first.payCurrency, 'usdt-trc20')
+  assert.ok(first.payAddress)
 })
 
 test('demo invite rejects an active account that has not chosen a financial product', async () => {
@@ -333,7 +341,7 @@ test('demo reserves the master alias and confirms the associate plan idempotentl
     /reservado/i,
   )
   const registration = await demoRequest<any>('/public/register', 'POST', { name: 'Plano Demo', username: `plan-demo-${suffix}`, email: `plan-demo-${suffix}@gomove.local`, password: 'senha-segura', cpf: '99000010870' })
-  const invoice = await demoRequest<any>('/associate-plan', 'POST', { idempotencyKey: `plan-demo-${suffix}` }, registration.token)
+  const invoice = await demoRequest<any>('/associate-plan', 'POST', { idempotencyKey: `plan-demo-${suffix}`, paymentMethod: 'PIX', customerDocument: '99000010870' }, registration.token)
   assert.equal(invoice.demo, true)
   const first = await demoRequest<any>(`/associate-plan/${invoice.id}/confirm-demo`, 'POST', {}, registration.token)
   const retry = await demoRequest<any>(`/associate-plan/${invoice.id}/confirm-demo`, 'POST', {}, registration.token)

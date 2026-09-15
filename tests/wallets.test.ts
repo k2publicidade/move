@@ -10,9 +10,9 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gomove-wallets-'))
 process.env.NODE_ENV = 'test'
 process.env.GOMOVE_DATA_FILE = path.join(dir, 'db.json')
 process.env.APP_PUBLIC_URL = 'https://gomove.example'
-process.env.PIXPAY_API_KEY = 'test'
-process.env.PIXPAY_API_SECRET = 'test'
-process.env.PIXPAY_WEBHOOK_TOKEN = 'wallet-test-token-with-at-least-32-characters'
+process.env.TWOPP_API_KEY = 'test'
+process.env.TWOPP_API_SECRET = 'test'
+process.env.TWOPP_WEBHOOK_TOKEN = 'wallet-test-token-with-at-least-32-characters'
 const { app, readDb, writeDb } = await import('../server/index.js')
 const server = app.listen(0)
 await new Promise<void>(resolve => server.listening ? resolve() : server.once('listening', resolve))
@@ -42,7 +42,7 @@ test('deposit webhook credits only purchase wallet; purchases, reservations and 
   const userId = session.user.id
   const provider = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: { transactionId: 'wallet-deposit-1', qrCode: '000201-wallet-test', status: 'PENDING' } })) }) })
   await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve))
-  process.env.PIXPAY_BASE_URL = `http://127.0.0.1:${(provider.address() as { port: number }).port}`
+  process.env.TWOPP_BASE_URL = `http://127.0.0.1:${(provider.address() as { port: number }).port}`
   try {
     const payload = { amount: 1000, paymentMethod: 'PIX', customerDocument: '12345678901', idempotencyKey: 'deposit-1' }
     const created = await request('/deposits', session.token, payload)
@@ -51,8 +51,8 @@ test('deposit webhook credits only purchase wallet; purchases, reservations and 
     assert.equal((await request('/deposits', session.token, { ...payload, amount: 100 })).status, 409)
     assert.equal((await request('/state', session.token)).body.business.wallets.balanceCents, 0)
     const event = { data: { transactionId: 'wallet-deposit-1', amount: '1000.00', status: 'COMPLETED', paymentMethod: 'pix' } }
-    assert.equal((await request('/webhooks/pixpay?token=wrong', undefined, event)).status, 401)
-    const hook = `/webhooks/pixpay?token=${process.env.PIXPAY_WEBHOOK_TOKEN}`
+    assert.equal((await request('/webhooks/2pp?token=wrong', undefined, event)).status, 401)
+    const hook = `/webhooks/2pp?token=${process.env.TWOPP_WEBHOOK_TOKEN}`
     assert.equal((await request(hook, undefined, { data: { ...event.data, amount: '100.00' } })).status, 422)
     assert.equal((await request(hook, undefined, event)).status, 200)
     assert.equal((await request(hook, undefined, event)).status, 200)

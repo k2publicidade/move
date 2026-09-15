@@ -44,6 +44,18 @@ const credentials: Record<string, string> = {
 
 const today = () => new Date().toISOString()
 const id = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+const demoCryptoCurrencies: Record<string, string> = { 'USDT-TRC20': 'usdt-trc20', 'USDT-BEP20': 'usdt-bep20', USDT: 'usdt-trc20' }
+const demoPaymentAssets: Record<string, string> = { 'USDT-TRC20': 'TDemo2ppUsdtTrc20', 'USDT-BEP20': '0xDemo2ppUsdtBep20', USDT: 'TDemo2ppUsdtTrc20' }
+const demoTwoPpCustomer = (body: Record<string, any>, user: User) => ({ customerName: String(user.name ?? user.username), customerDocument: String(body?.customerDocument ?? '').replace(/\D/g, '') })
+const demoTwoPpCheckout = (isPix: boolean, paymentAsset: string) => isPix
+  ? { twoPpTransactionId: id('2PP'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-2pp', pixQrCodeBase64: null, pixQrCodeUrl: null, paymentUrl: null, paymentProviderStatus: 'PENDING' }
+  : { twoPpTransactionId: id('2PP'), payAddress: demoPaymentAssets[paymentAsset] ?? 'TDemo2ppUsdtTrc20', payAmount: '9.26', payCurrency: demoCryptoCurrencies[paymentAsset] ?? 'usdt-trc20', paymentUrl: null, paymentProviderStatus: 'PENDING' }
+function demoPaymentSelection(body: Record<string, any>) {
+  const requestedAsset = String(body?.preferredPaymentAsset ?? body?.paymentMethod ?? '').trim().toUpperCase()
+  const isPix = !requestedAsset || requestedAsset === 'PIX'
+  if (!isPix && !demoCryptoCurrencies[requestedAsset]) throw new Error('Forma de pagamento inválida; escolha PIX ou USDT (TRC-20 ou BEP-20)')
+  return { isPix, paymentAsset: isPix ? 'PIX' : requestedAsset }
+}
 
 export function createDemoDatabase(): DemoDatabase {
   const users: User[] = [
@@ -388,10 +400,9 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
     const existing = db.invoices.find(item => item.userId === user.id && item.type === 'ASSOCIATE_PLAN' && item.idempotencyKey === body.idempotencyKey)
     if (existing) return existing as T
-    const isPix = String(body?.paymentMethod ?? body?.preferredPaymentAsset).toUpperCase() === 'PIX'
+    const { isPix, paymentAsset } = demoPaymentSelection(body)
     if (isPix && ![11, 14].includes(String(body?.customerDocument ?? '').replace(/\D/g, '').length)) throw new Error('Informe um CPF ou CNPJ válido para o pagamento PIX')
-    const paymentAsset = isPix ? 'PIX' : (['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER')
-    const invoice = { id: id('INV'), userId: user.id, type: 'ASSOCIATE_PLAN', description: 'Plano de Associado GoMove', amount: ASSOCIATE_PLAN_PRICE_CENTS / 100, remaining: ASSOCIATE_PLAN_PRICE_CENTS / 100, status: 'Pendente', paymentStatus: 'PENDING', paymentProvider: isPix ? 'PIXPAY' : 'COINPAYMENTS', paymentMethod: isPix ? 'PIX' : 'CoinPayments', paymentAsset, paymentReference: id(isPix ? 'PIX' : 'CP'), ...(isPix ? { pixPayTransactionId: id('PXT'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-pixpay', paymentUrl: null } : { coinPaymentsInvoiceId: id('CPI'), paymentUrl: '/activation?demo-associate-plan=pending' }), idempotencyKey: body.idempotencyKey, demo: true, createdAt: today() }
+    const invoice = { id: id('INV'), userId: user.id, type: 'ASSOCIATE_PLAN', description: 'Plano de Associado GoMove', amount: ASSOCIATE_PLAN_PRICE_CENTS / 100, remaining: ASSOCIATE_PLAN_PRICE_CENTS / 100, status: 'Pendente', paymentStatus: 'PENDING', paymentProvider: '2PP', paymentMethod: isPix ? 'PIX' : `Cripto ${paymentAsset}`, paymentAsset, paymentReference: id('2PP'), ...demoTwoPpCheckout(isPix, paymentAsset), ...demoTwoPpCustomer(body, user), idempotencyKey: body.idempotencyKey, demo: true, createdAt: today() }
     db.invoices.unshift(invoice)
     audit(db, user.id, 'ASSOCIATE_PLAN_CHECKOUT', 'INVOICE', invoice.id, { paymentAsset })
     save(db)
@@ -685,10 +696,9 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
       const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
       if (existing) return existing as T
-      const isPix = String(body?.paymentMethod ?? body?.preferredPaymentAsset).toUpperCase() === 'PIX'
+      const { isPix, paymentAsset } = demoPaymentSelection(body)
       if (isPix && ![11, 14].includes(String(body?.customerDocument ?? '').replace(/\D/g, '').length)) throw new Error('Informe um CPF ou CNPJ válido para o pagamento PIX')
-      const paymentAsset = isPix ? 'PIX' : (['BTC', 'USDT', 'OTHER'].includes(body?.preferredPaymentAsset) ? body.preferredPaymentAsset : 'OTHER')
-      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: isPix ? 'PIXPAY' : 'COINPAYMENTS', paymentMethod: isPix ? 'PIX' : 'CoinPayments', paymentAsset, paymentReference: id(isPix ? 'PIX' : 'CP'), ...(isPix ? { pixPayTransactionId: id('PXT'), pixQrCode: '00020126580014BR.GOV.BCB.PIX0136demo-gomove-pixpay', paymentUrl: null } : { coinPaymentsInvoiceId: id('INV'), paymentUrl: '/investments?demo-payment=pending' }) }
+      body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: '2PP', paymentMethod: isPix ? 'PIX' : `Cripto ${paymentAsset}`, paymentAsset, paymentReference: id('2PP'), ...demoTwoPpCheckout(isPix, paymentAsset), ...demoTwoPpCustomer(body, user) }
     }
     if (userCollection === 'withdrawals') {
       const wallet = body?.wallet === 'COTA' ? 'COTA' as const : 'REDE' as const
