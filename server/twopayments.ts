@@ -11,6 +11,15 @@ export type TwoPpTransaction = {
   payCurrency: string | null
 }
 
+export type TwoPpWithdrawal = {
+  id: string
+  status: string
+  amount: string | null
+  netAmount: string | null
+  pixKey: string
+  pixKeyType: 'cpf'
+}
+
 export class TwoPpConfigurationError extends Error {}
 
 /** Criptomoedas habilitadas na conta 2PP (GET /api/v1/currencies/crypto). */
@@ -122,6 +131,35 @@ export async function createTwoPpPixTransaction(input: {
     payAddress: null,
     payAmount: null,
     payCurrency: null,
+  }
+}
+
+export async function createTwoPpPixWithdrawal(input: {
+  localId: string
+  amount: number
+  pixKey: string
+  customerDocument: string
+  customerName: string
+  customerEmail: string
+  customerIp?: string
+}): Promise<TwoPpWithdrawal> {
+  const data = await createTransaction('/api/v1/withdrawals/pix', {
+    amount: Number(input.amount.toFixed(2)),
+    pixKey: input.pixKey,
+    pixKeyType: 'cpf',
+    customerDocument: normalizeCustomerDocument(input.customerDocument),
+    ...(input.customerIp?.trim() ? { customerIp: input.customerIp.trim() } : {}),
+    webhookUrl: twoPpWebhookUrl(input.localId),
+  }, 'Falha ao solicitar o saque PIX no 2PP')
+  const id = String(data?.transactionId ?? data?.id ?? '').trim()
+  if (!id) throw new Error('2PP não retornou um saque PIX válido')
+  return {
+    id,
+    status: String(data?.status ?? 'PENDING'),
+    amount: data?.amount == null ? null : String(data.amount),
+    netAmount: data?.netAmount == null ? null : String(data.netAmount),
+    pixKey: String(data?.pixKey ?? input.pixKey),
+    pixKeyType: 'cpf',
   }
 }
 

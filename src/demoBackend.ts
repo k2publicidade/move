@@ -704,7 +704,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       const wallet = body?.wallet === 'COTA' ? 'COTA' as const : 'REDE' as const
       const result = validateWithdrawal(db, user, body?.amount, wallet)
       const account = validatePixKey(body?.account, db.profiles[user.id]?.cpf)
-      body = { amount: result.amountCents / 100, account, method: 'PIX', status: 'Pendente', paidAt: '—', wallet, feeCents: result.feeCents, netCents: result.netCents }
+      body = { amount: result.amountCents / 100, amountCents: result.amountCents, account, method: 'PIX', status: 'Pendente', paidAt: '—', wallet, feeBps: result.feeBps, feeCents: result.feeCents, netCents: result.netCents }
     }
     const prefix = { investments: 'ATV', orders: 'PED', withdrawals: 'SAQ', tickets: 'TK' }[userCollection]
     const item = { ...body, id: id(prefix), userId: user.id, date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }

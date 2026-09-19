@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "find-skills": {
+      "source": "vercel-labs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/find-skills/SKILL.md",
+      "computedHash": "b146008599c31057cef1c145774cea5d5afb30e8f43fa802e47a4b461419aaaf"
+    },
+    "payment-async-flow": {
+      "source": "vtex/skills",
+      "sourceType": "github",
+      "skillPath": "skills/payment-async-flow/SKILL.md",
+      "computedHash": "443fe0c44d6dde88c5ba89389f206128aca21995736579b95198d6daa7fe5c43"
+    },
+    "payment-idempotency": {
+      "source": "vtex/skills",
+      "sourceType": "github",
+      "skillPath": "skills/payment-idempotency/SKILL.md",
+      "computedHash": "fed2a2fd29dd66edb3f00780373accd37c57618c165399c11f568904fbe6440d"
+    }
+  }
+}

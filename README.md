@@ -37,9 +37,20 @@ PIX e cripto usam a mesma API do 2PP. O contrato permanece aguardando pagamento 
 2. Copie `.env.example` para `.env` e preencha `TWOPP_API_KEY`, `TWOPP_API_SECRET` e `TWOPP_WEBHOOK_TOKEN` (segredo aleatório com pelo menos 32 caracteres).
 3. `TWOPP_BASE_URL` é o host da API mostrado no painel (padrão `https://webhookxxx.2pp.online`).
 4. `APP_PUBLIC_URL` precisa ser a URL HTTPS pública: cada cobrança informa `APP_PUBLIC_URL/api/webhooks/2pp/<identificador>?token=...` como URL de notificação.
-5. `POST /api/v1/transactions/pix` cria a cobrança PIX (QR Code e copia e cola) e `POST /api/v1/transactions/crypto` cria a cobrança em USDT. As moedas habilitadas na conta vêm de `GET /api/v1/currencies/crypto` (hoje `usdt-trc20` e `usdt-bep20`).
+5. Depósitos PIX/cripto usam `/api/v1/transactions/*`; saques PIX usam `/api/v1/withdrawals/pix` e só entram no extrato após webhook `COMPLETED`. Falhas do payout (`FAILED`, `CANCELLED`, `EXPIRED` ou `REFUNDED`) não debitam a carteira.
+6. Antes do deploy, configure também `TWOPP_API_KEY`, `TWOPP_API_SECRET`, `TWOPP_WEBHOOK_TOKEN` (segredo aleatório com pelo menos 32 caracteres), `APP_PUBLIC_URL` e `DATABASE_URL` no ambiente de produção. Nunca coloque esses valores no frontend ou no repositório.
+7. `POST /api/v1/transactions/pix` cria a cobrança PIX (QR Code e copia e cola) e `POST /api/v1/transactions/crypto` cria a cobrança em USDT. As moedas habilitadas na conta vêm de `GET /api/v1/currencies/crypto` (hoje `usdt-trc20` e `usdt-bep20`).
 
 A cobrança cripto devolve endereço e valor exato em USDT, exibidos no portal para o pagador. O webhook único `/api/webhooks/2pp` aceita `paymentMethod` `pix` e `crypto` e nunca rebaixa uma fatura já confirmada.
+
+### CPF e taxa de saque PIX
+
+- O cadastro exige CPF único, com formato e dígitos verificadores válidos. Isso não substitui uma consulta de situação cadastral ou verificação de identidade.
+- O servidor usa automaticamente o CPF do perfil como chave PIX; não aceita uma chave de outro titular. O participante precisa cadastrar essa chave no seu banco. Contas antigas sem CPF válido devem completar o perfil antes de sacar.
+- Novos saques das carteiras Cota e Rede têm taxa de **6%**, inclusive o primeiro saque, arredondada ao centavo mais próximo. A tela mostra o valor bruto, a taxa e o líquido para envio ao gateway.
+- Exemplo: R$ 100,00 solicitados reservam R$ 100,00 na carteira, geram R$ 6,00 de taxa e enviam R$ 94,00 ao 2PP. Eventuais tarifas próprias do provedor seguem o contrato da conta 2PP e não são validadas pelos testes locais.
+- O webhook valida `PAY_OUT`, `pix` e o valor efetivamente enviado (`payoutAmountCents`). Apenas a confirmação debita o valor bruto uma vez. Falhas definitivas liberam a reserva; respostas ambíguas mantêm o saque reservado para conciliação.
+- Saques anteriores preservam as condições gravadas e o valor originalmente enviado, sem aplicação retroativa da nova taxa. Mínimo, carência e calendário de saques permanecem inalterados.
 
 ## Funcionalidades
 

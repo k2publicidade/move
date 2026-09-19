@@ -1,4 +1,4 @@
-import { storeProducts, transactionWallet, walletLabels } from './wallets'
+import { storeProducts, transactionWallet, walletLabels, normalizeCpf, isValidCpfDigits, withdrawalAmounts, WITHDRAWAL_FEE_BPS } from './wallets'
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
@@ -265,7 +265,8 @@ function Registration({ setSession }: { setSession: (session: Session) => void }
     event.preventDefault()
     setBusy(true); setError('')
     try {
-      const session = await api.post<Session>('/public/register', { ...form, inviteCode: inviteCode || undefined })
+      const cpf = normalizeCpf(form.cpf)
+      const session = await api.post<Session>('/public/register', { ...form, cpf, inviteCode: inviteCode || undefined })
       saveSession(session)
       setSession(session)
       location.replace('/dashboard')
@@ -274,7 +275,7 @@ function Registration({ setSession }: { setSession: (session: Session) => void }
   const description = invited
     ? invite ? `Indicado por ${invite.sponsor.name}. Após o cadastro, escolha como deseja ativar sua participação.` : 'Verificando convite…'
     : 'Crie seu acesso. Dentro da plataforma, você poderá escolher entre o Plano de Associado ou a compra direta de cotas.'
-  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">NOVO ACESSO</span><h1>Crie sua <em>conta.</em></h1><p>{description}</p><form onSubmit={submit} aria-busy={busy}><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>CPF (do titular)<input required inputMode="numeric" autoComplete="off" pattern="[0-9]{11}" maxLength={11} title="Informe os 11 dígitos do CPF, somente números" placeholder="Somente números (11 dígitos)" value={form.cpf} onChange={event => setForm({ ...form, cpf: event.target.value })} /></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required minLength={3} pattern="[A-Za-z0-9._-]+" title="Use apenas letras, números, ponto, hífen ou sublinhado" autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" aria-describedby="password-hint" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /><small id="password-hint">Use pelo menos 6 caracteres.</small></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={busy || (invited && !invite)}>{busy ? 'Criando conta…' : 'Criar conta e continuar'}</button></form><p className="registration-prompt">Já possui uma conta? <a href="/">Entrar</a></p></div></section></main>
+  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">NOVO ACESSO</span><h1>Crie sua <em>conta.</em></h1><p>{description}</p><form onSubmit={submit} aria-busy={busy}><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>CPF (do titular)<input required inputMode="numeric" autoComplete="off" pattern="[0-9]{11}" maxLength={14} aria-describedby="registration-cpf-hint" title="Informe os 11 dígitos do CPF" placeholder="Somente números (11 dígitos)" value={form.cpf} onChange={event => setForm({ ...form, cpf: event.target.value.replace(/\D/g, '') })} /><small id="registration-cpf-hint">Seu CPF será usado automaticamente como chave PIX para saques. Cadastre essa chave no seu banco.</small></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required minLength={3} pattern="[A-Za-z0-9._-]+" title="Use apenas letras, números, ponto, hífen ou sublinhado" autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" aria-describedby="password-hint" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /><small id="password-hint">Use pelo menos 6 caracteres.</small></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={busy || (invited && !invite)}>{busy ? 'Criando conta…' : 'Criar conta e continuar'}</button></form><p className="registration-prompt">Já possui uma conta? <a href="/">Entrar</a></p></div></section></main>
 }
 
 const userLinks = [
@@ -499,7 +500,7 @@ function UserFinance({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [amount, setAmount] = useState('')
   const [withdrawWallet, setWithdrawWallet] = useState<'COTA' | 'REDE'>('REDE')
-  const [pixKey, setPixKey] = useState('')
+  const [withdrawalKey, setWithdrawalKey] = useState(() => crypto.randomUUID())
   const [depositAmount, setDepositAmount] = useState('100')
   const [document, setDocument] = useState('')
   const [depositKey, setDepositKey] = useState(() => crypto.randomUUID())
@@ -517,7 +518,7 @@ function UserFinance({ session }: { session: Session }) {
   }, [data, deposit])
   const withdraw = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setNotice(''); setActionError('')
-    try { await api.post('/withdrawals', { amount: Number(amount), wallet: withdrawWallet, account: pixKey }); setAmount(''); setPixKey(''); setNotice('Solicitação de saque enviada para análise.'); await load() }
+    try { await api.post('/withdrawals', { amount: Number(amount), wallet: withdrawWallet, idempotencyKey: withdrawalKey }); setAmount(''); setWithdrawalKey(crypto.randomUUID()); setNotice('Saque solicitado. Acompanhe o pagamento no histórico de saques.'); await load() }
     catch (reason: any) { setActionError(reason.message) } finally { setBusy(false) }
   }
   const createDeposit = async (event: FormEvent) => {
@@ -535,6 +536,10 @@ function UserFinance({ session }: { session: Session }) {
   const state = data || emptyState
   const wallets = state.business.wallets || { balanceCents: 0, cotaCents: 0, redeCents: 0, cotaWithdrawableCents: 0, redeWithdrawableCents: 0, reservedCents: 0, hasActivePackage: false }
   const selectedWithdrawable = withdrawWallet === 'COTA' ? wallets.cotaWithdrawableCents : wallets.redeWithdrawableCents
+  const registeredCpf = String(state.profile.cpf ?? '').replace(/[.\s-]/g, '')
+  const hasValidCpf = isValidCpfDigits(registeredCpf)
+  let withdrawalPreview: ReturnType<typeof withdrawalAmounts> | undefined
+  try { withdrawalPreview = withdrawalAmounts(amount) } catch { /* Empty or incomplete amount. */ }
   const pendingDeposits = state.invoices.filter(i => i.productType === 'DEPOSIT' && ['PENDING', 'PAID', 'INVOICE_CREATING', 'PROVIDER_UNKNOWN'].includes(i.paymentStatus))
   return <Page title="Carteiras e financeiro" subtitle="Carteira de Saldo para compras; Cota e Rede para saques, com regras próprias.">
     <ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}
@@ -557,18 +562,21 @@ function UserFinance({ session }: { session: Session }) {
         <h2>Solicitar saque</h2><p>Escolha a carteira de origem. É obrigatório ter um pacote ativo; o recebimento é via PIX com chave CPF do titular.</p>
         {!wallets.hasActivePackage && <p role="status">Saque bloqueado: adquira ou ative um pacote para sacar seus rendimentos.</p>}
         <div className="form-grid">
-          <label>Carteira de origem<select value={withdrawWallet} onChange={event => { setWithdrawWallet(event.target.value as 'COTA' | 'REDE'); setAmount('') }} disabled={!wallets.hasActivePackage}>
+          <label>Carteira de origem<select value={withdrawWallet} onChange={event => { setWithdrawWallet(event.target.value as 'COTA' | 'REDE'); setAmount(''); setWithdrawalKey(crypto.randomUUID()) }} disabled={!wallets.hasActivePackage}>
             <option value="COTA">Carteira Cota — {cents(wallets.cotaWithdrawableCents)} disponíveis</option>
             <option value="REDE">Carteira Rede — {cents(wallets.redeWithdrawableCents)} disponíveis</option>
           </select></label>
-          <label>Chave PIX (CPF do titular)<input required inputMode="numeric" maxLength={14} value={pixKey} onChange={event => setPixKey(event.target.value)} placeholder="Somente números" disabled={!wallets.hasActivePackage} /></label>
+          <label>Chave PIX — CPF cadastrado<input readOnly value={hasValidCpf ? registeredCpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : ''} placeholder="CPF não cadastrado" aria-describedby="withdrawal-cpf-hint" /></label>
         </div>
-        <label>Valor do saque (R$)<input required min="55" max={selectedWithdrawable / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => setAmount(event.target.value)} placeholder="R$ 0,00" disabled={!wallets.hasActivePackage} /></label>
-        <p>Disponível: {cents(selectedWithdrawable)}. Mínimo: R$ 55,00. {withdrawWallet === 'COTA' ? 'Saque nos dias 15 e 30: 1º do mês sem taxa e 2º com 8%, após 30 dias de cota ativa.' : 'Carteira Rede: até 1 saque por dia.'} O pedido será revisado pelo financeiro MASTER.</p>
-        <button className="primary-btn" disabled={busy || selectedWithdrawable < 5500}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button>
+        <p id="withdrawal-cpf-hint">{hasValidCpf ? 'O saque será enviado automaticamente para o CPF do seu cadastro. Cadastre esse CPF como chave PIX no seu banco.' : <>Para sacar, informe um CPF válido em <a href="/profile">Meu perfil</a>.</>}</p>
+        <label>Valor do saque (R$)<input required min="55" max={selectedWithdrawable / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => { setAmount(event.target.value); setWithdrawalKey(crypto.randomUUID()) }} placeholder="R$ 0,00" disabled={!wallets.hasActivePackage} /></label>
+        <p>Disponível: {cents(selectedWithdrawable)}. Mínimo: R$ 55,00. Taxa de {WITHDRAWAL_FEE_BPS / 100}% descontada do valor solicitado. {withdrawWallet === 'COTA' ? 'Saque nos dias 15 e 30, após 30 dias de cota ativa.' : 'Carteira Rede: até 1 saque por dia.'}</p>
+        {withdrawalPreview && <dl className="withdrawal-summary" aria-live="polite"><div><dt>Valor debitado da carteira</dt><dd>{cents(withdrawalPreview.amountCents)}</dd></div><div><dt>Taxa de saque ({WITHDRAWAL_FEE_BPS / 100}%)</dt><dd>{cents(withdrawalPreview.feeCents)}</dd></div><div><dt>Líquido para envio via PIX</dt><dd>{cents(withdrawalPreview.netCents)}</dd></div></dl>}
+        <button className="primary-btn" disabled={busy || !hasValidCpf || !wallets.hasActivePackage || selectedWithdrawable < 5500}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button>
       </form>
     </section>
     <h2 className="section-title">Faturas</h2><DataTable rows={state.invoices} columns={[["id", "FATURA"], ["due", "VENCIMENTO"], ["description", "DESCRIÇÃO"], ["remaining", "SALDO", row => brl(row.remaining)], ["status", "STATUS", row => status(row.status)]]} />
+    <h2 className="section-title">Meus saques</h2><DataTable rows={state.withdrawals} columns={[["date", "DATA"], ["amount", "VALOR SOLICITADO", row => brl(row.amount)], ["feeCents", "TAXA", row => row.feeCents == null ? '—' : cents(row.feeCents)], ["netCents", "LÍQUIDO PIX", row => row.netCents == null ? '—' : cents(row.netCents)], ["status", "STATUS", row => status(row.status)]]} />
     <h2 className="section-title">Extrato por carteira</h2><DataTable rows={state.transactions} columns={[["date", "DATA"], ["wallet", "CARTEIRA", row => walletLabels[transactionWallet(row)]], ["description", "DESCRIÇÃO"], ["status", "TIPO"], ["amount", "VALOR", row => <strong className={row.amount >= 0 ? 'positive-text' : ''}>{brl(row.amount)}</strong>]]} />
   </Page>
 }
@@ -730,7 +738,7 @@ const collectionConfig: Record<CollectionType, { title: string; singular: string
   investments: { title: 'Gestão de cotas', singular: 'aquisição de cotas', subtitle: `Controle aquisições a partir de ${cents(SHAREHOLDER_MIN_QUOTA_CENTS)} e o upgrade automático para Cotista.`, columns: [["id", "CONTRATO"], ["ownerName", "PARTICIPANTE"], ["pack", "PRODUTO"], ["amount", "VALOR", row => brl(row.amount)], ["paymentMethod", "PAGAMENTO", row => row.paymentMethod || '—'], ["paymentStatus", "STATUS PAG.", row => row.paymentStatus ? status(row.paymentStatus) : '—'], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Participante', type: 'user', required: true }, { key: 'pack', label: 'Produto', type: 'select', options: ['Cotas GoMove'], required: true }, { key: 'amount', label: 'Valor das cotas', type: 'number', min: SHAREHOLDER_MIN_QUOTA_CENTS / 100, step: '0.01', required: true }, { key: 'profit', label: 'Resultados financeiros acumulados', type: 'number', step: '0.01' }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Aguardando pagamento', 'Ativo', 'Encerrado', 'Cancelado'] }] },
   orders: { title: 'Gestão de pedidos', singular: 'pedido', subtitle: 'Inclua vendas, acompanhe entregas e mantenha o histórico do cliente.', columns: [["id", "PEDIDO"], ["ownerName", "USUÁRIO"], ["description", "ITEM"], ["quantity", "QTD."], ["total", "TOTAL", row => brl(row.total)], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Cliente', type: 'user', required: true }, { key: 'description', label: 'Item / descrição', required: true }, { key: 'quantity', label: 'Quantidade', type: 'number', required: true }, { key: 'total', label: 'Valor total', type: 'number', step: '0.01', required: true }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Processando', 'Separação', 'Em trânsito', 'Entregue', 'Cancelado'] }] },
   invoices: { title: 'Gestão de faturas', singular: 'fatura', subtitle: 'Crie cobranças e acompanhe recebimentos por usuário.', columns: [["id", "FATURA"], ["ownerName", "USUÁRIO"], ["description", "DESCRIÇÃO"], ["due", "VENCIMENTO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Cliente', type: 'user', required: true }, { key: 'description', label: 'Descrição', required: true }, { key: 'amount', label: 'Valor', type: 'number', step: '0.01', required: true }, { key: 'remaining', label: 'Saldo pendente', type: 'number', step: '0.01', required: true }, { key: 'due', label: 'Vencimento', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Pago', 'Vencido', 'Cancelado'] }] },
-  withdrawals: { title: 'Gestão de saques', singular: 'saque', subtitle: 'Registre e processe solicitações financeiras dos usuários.', columns: [["id", "SAQUE"], ["ownerName", "USUÁRIO"], ["date", "DATA"], ["method", "MÉTODO"], ["amount", "VALOR", row => brl(row.amount)], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Usuário', type: 'user', required: true }, { key: 'amount', label: 'Valor', type: 'number', step: '0.01', required: true }, { key: 'method', label: 'Método', type: 'select', required: true, options: ['PIX', 'TED', 'Transferência'] }, { key: 'account', label: 'Conta / chave', required: true }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'paidAt', label: 'Data do pagamento', placeholder: 'dd/mm/aaaa ou —' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Em análise', 'Pago', 'Recusado'] }] },
+  withdrawals: { title: 'Gestão de saques', singular: 'saque', subtitle: 'Registre e processe solicitações financeiras dos usuários.', columns: [["id", "SAQUE"], ["ownerName", "USUÁRIO"], ["date", "DATA"], ["method", "MÉTODO"], ["amount", "VALOR", row => brl(row.amount)], ["feeCents", "TAXA", row => row.feeCents == null ? '—' : cents(row.feeCents)], ["netCents", "LÍQUIDO PIX", row => row.netCents == null ? '—' : cents(row.netCents)], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Usuário', type: 'user', required: true }, { key: 'amount', label: 'Valor', type: 'number', step: '0.01', required: true }, { key: 'method', label: 'Método', type: 'select', required: true, options: ['PIX'] }, { key: 'date', label: 'Data', required: true, placeholder: 'dd/mm/aaaa' }, { key: 'paidAt', label: 'Data do pagamento', placeholder: 'dd/mm/aaaa ou —' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Pendente', 'Em análise', 'Pago', 'Recusado'] }] },
   tickets: { title: 'Central de suporte', singular: 'ticket', subtitle: 'Cadastre, atribua e resolva atendimentos integrados à conta.', columns: [["id", "TICKET"], ["ownerName", "USUÁRIO"], ["subject", "ASSUNTO"], ["department", "ÁREA"], ["priority", "PRIORIDADE"], ["status", "STATUS", row => status(row.status)]], fields: [{ key: 'userId', label: 'Usuário', type: 'user', required: true }, { key: 'subject', label: 'Assunto', required: true }, { key: 'department', label: 'Área', type: 'select', required: true, options: ['Atendimento', 'Financeiro', 'Operações', 'Cadastro'] }, { key: 'category', label: 'Categoria', required: true }, { key: 'priority', label: 'Prioridade', type: 'select', required: true, options: ['Baixa', 'Média', 'Alta'] }, { key: 'message', label: 'Mensagem / observações', type: 'textarea' }, { key: 'status', label: 'Status', type: 'select', required: true, options: ['Aberto', 'Em análise', 'Aguardando usuário', 'Resolvido'] }] },
 }
 function AdminCollection({ session, type }: { session: Session; type: CollectionType }) {
@@ -777,8 +785,16 @@ function AdminNetwork({ session }: { session: Session }) {
   const [depth, setDepth] = useState(5)
   useEffect(() => { api.get<ApiPage<User>>('/admin/associates?pageSize=100').then(value => setUsers(value.items)) }, [])
   useEffect(() => { api.get<TreeUser>(`/admin/network/tree?depth=${depth}${root ? `&rootUserId=${root}` : ''}`).then(setTreeData) }, [root, depth])
-  const flatten = (node: TreeUser, level = 0): Array<TreeUser & { level: number }> => [{ ...node, level }, ...node.children.flatMap(child => flatten(child, level + 1))]
-  return <Page title="Rede completa" subtitle="Explore a genealogia de qualquer usuário, com profundidade controlada."><div className="table-tools"><select value={root} onChange={event => setRoot(event.target.value)}><option value="">Raiz global MASTER</option>{users.map(user => <option value={user.id} key={user.id}>{user.name}</option>)}</select><select value={depth} onChange={event => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option value={value} key={value}>{value} níveis</option>)}</select></div>{treeData ? <div className="tree-panel">{flatten(treeData).map(user => <div className="person-node" style={{ marginLeft: `${user.level * 28}px` }} key={user.id}><span>{initials(user.name)}</span><div><b>{user.name}</b><small>@{user.username} · nível {user.level}</small></div>{status(user.status)}</div>)}</div> : <Loader />}</Page>
+  const TreeNode = ({ node, level = 0, isRoot = false }: { node: TreeUser; level?: number; isRoot?: boolean }) => <li className={`tree-branch${isRoot ? ' tree-branch-root' : ''}`}>
+    <article className={`person-node${isRoot ? ' tree-root' : ''}`}>
+      <span>{initials(node.name)}</span>
+      <div><b>{node.name}</b><small>@{node.username}</small></div>
+      <small className="tree-node-level">{isRoot ? 'Raiz da rede' : `Nível ${level}`}</small>
+      {status(node.status)}
+    </article>
+    {node.children.length > 0 && <ul className="tree-children">{node.children.map(child => <TreeNode key={child.id} node={child} level={level + 1} />)}</ul>}
+  </li>
+  return <Page title="Rede completa" subtitle="Explore a genealogia de qualquer usuário, com profundidade controlada."><div className="table-tools"><select value={root} onChange={event => setRoot(event.target.value)}><option value="">Raiz global MASTER</option>{users.map(user => <option value={user.id} key={user.id}>{user.name}</option>)}</select><select value={depth} onChange={event => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option value={value} key={value}>{value} níveis</option>)}</select></div>{treeData ? <div className="tree-panel"><div className="tree-scroll"><ul className="network-tree"><TreeNode node={treeData} isRoot /></ul></div><div className="tree-legend"><span><i className="legend-dot active" />Ativo</span><span><i className="legend-dot pending" />Pendente</span><span><i className="legend-dot blocked" />Bloqueado</span></div></div> : <Loader />}</Page>
 }
 
 function Commissions({ session }: { session: Session }) {

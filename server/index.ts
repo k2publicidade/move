@@ -8,9 +8,9 @@ import crypto from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { neon } from '@neondatabase/serverless'
 import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
-import { TwoPpConfigurationError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, normalizeCustomerDocument, verifyTwoPpWebhookToken, type TwoPpCryptoCurrency } from './twopayments.js'
+import { TwoPpConfigurationError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, createTwoPpPixWithdrawal, normalizeCustomerDocument, verifyTwoPpWebhookToken, type TwoPpCryptoCurrency } from './twopayments.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
-import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from '../src/wallets.js'
+import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, settleWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from '../src/wallets.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
 
 const root = path.resolve(process.env.GOMOVE_ROOT || process.cwd())
@@ -239,20 +239,28 @@ app.post(['/api/webhooks/2pp','/api/webhooks/2pp/:localId'],express.raw({type:'a
  const data=payload?.data??payload,transactionId=String(data?.transactionId??'').trim(),providerStatus=String(data?.status??'').trim().toUpperCase(),paymentMethod=String(data?.paymentMethod??'').trim().toLowerCase(),localId=String((req.params as any)?.localId??'').trim()
  if(!transactionId||!providerStatus)return res.status(422).json({error:'Notificação 2PP inválida'})
  const db=readDb(),isPlan=(item:any)=>['ASSOCIATE_PLAN','DEPOSIT'].includes(item.productType),matches=(item:any)=>item.paymentProvider==='2PP'&&item.twoPpTransactionId===transactionId
- let inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>isPlan(item)&&matches(item))
- if(!inv&&!planInvoice&&localId){inv=db.investments.find((item:any)=>item.id===localId);planInvoice=db.invoices.find((item:any)=>item.id===localId&&isPlan(item))}
- if(!inv&&!planInvoice)return res.status(404).json({error:'Cobrança 2PP não encontrada'})
- const target=inv??planInvoice
+ let inv=db.investments.find(matches),planInvoice=db.invoices.find((item:any)=>isPlan(item)&&matches(item)),withdrawal=db.withdrawals.find(matches)
+ if(!inv&&!planInvoice&&!withdrawal&&localId){inv=db.investments.find((item:any)=>item.id===localId);planInvoice=db.invoices.find((item:any)=>item.id===localId&&isPlan(item));withdrawal=db.withdrawals.find((item:any)=>item.id===localId&&item.paymentProvider==='2PP')}
+ if(!inv&&!planInvoice&&!withdrawal)return res.status(404).json({error:'Cobrança 2PP não encontrada'})
+ const target=inv??planInvoice??withdrawal
  if(target.twoPpTransactionId&&target.twoPpTransactionId!==transactionId)return res.status(409).json({error:'Cobrança já vinculada a outra transação do 2PP'})
- if(paymentMethod&&((paymentMethod==='pix')!==(String(target.paymentAsset)==='PIX')))return res.status(422).json({error:'Forma de pagamento da notificação não confere'})
- if(providerStatus==='COMPLETED'){const amountCents=parseWebhookAmountCents(data?.amount);if(amountCents===null||amountCents!==Number(target.amountCents))return res.status(422).json({error:'Valor da cobrança 2PP não confere'})}
+ if(paymentMethod&&((paymentMethod==='pix')!==(String(target.paymentAsset)==='PIX'||!!withdrawal)))return res.status(422).json({error:'Forma de pagamento da notificação não confere'})
+ if(withdrawal && (data?.type!=='PAY_OUT'||paymentMethod!=='pix'))return res.status(422).json({error:'Tipo de notificação do saque não confere'})
+ if(!withdrawal&&data?.type==='PAY_OUT')return res.status(422).json({error:'Notificação de saque não pode confirmar um depósito'})
+ // Older payouts sent the gross amount. New payouts persist the actual net sent.
+ if(providerStatus==='COMPLETED'){const amountCents=parseWebhookAmountCents(data?.amount),expectedCents=withdrawal?(withdrawal.payoutAmountCents??withdrawal.amountCents):target.amountCents;if(amountCents===null||amountCents!==Number(expectedCents))return res.status(422).json({error:'Valor da cobrança 2PP não confere'})}
  const eventKey=crypto.createHash('sha256').update(`${transactionId}:${providerStatus}:${rawBody}`).digest('hex')
  if(db.twoPpWebhookEvents.some(event=>event.id===eventKey))return res.json({received:true,idempotent:true})
  if(!target.twoPpTransactionId)target.twoPpTransactionId=transactionId
- if(['INVOICE_CREATING','PROVIDER_UNKNOWN'].includes(target.paymentStatus))target.paymentStatus='PENDING'
- target.paymentProviderStatus=providerStatus
+ if(['INVOICE_CREATING','WITHDRAWAL_CREATING','PROVIDER_UNKNOWN'].includes(target.paymentStatus))target.paymentStatus='PENDING'
+ if(target.paymentStatus!=='CONFIRMED')target.paymentProviderStatus=providerStatus
  if(providerStatus==='COMPLETED') {
   if(inv&&inv.paymentStatus!=='CONFIRMED')confirmInvestmentInDb(db,inv,'2pp-webhook')
+  if(withdrawal&&withdrawal.paymentStatus!=='CONFIRMED') {
+   try { settleWithdrawal(db,withdrawal,crypto.randomUUID) } catch(error:any) { return res.status(422).json({error:error.message}) }
+   Object.assign(withdrawal,{paymentStatus:'CONFIRMED',status:'Pago',reconciliationRequired:false,paymentProviderStatus:providerStatus})
+   delete withdrawal.paymentError
+  }
   if(planInvoice&&planInvoice.paymentStatus!=='CONFIRMED') {
    Object.assign(planInvoice,{paymentStatus:'CONFIRMED',status:'Pago',remaining:0,paidAt:now(),reconciliationRequired:false});delete planInvoice.paymentError
    const participant=db.users.find(user=>user.id===planInvoice.userId&&user.role==='ASSOCIATE')
@@ -261,9 +269,12 @@ app.post(['/api/webhooks/2pp','/api/webhooks/2pp/:localId'],express.raw({type:'a
   }
  } else if(['FAILED','CANCELLED','EXPIRED','REFUNDED'].includes(providerStatus)) {
   const terminal=providerStatus==='EXPIRED'?'TIMED_OUT':providerStatus==='FAILED'?'FAILED':'CANCELLED'
-  if(target.paymentStatus!=='CONFIRMED')Object.assign(target,{paymentStatus:terminal,status:'Cancelado',reconciliationRequired:false})
+  if(target.paymentStatus!=='CONFIRMED') {
+   if(withdrawal)Object.assign(target,{paymentStatus:terminal,status:'Recusado',reconciliationRequired:false,paidAt:'—'})
+   else Object.assign(target,{paymentStatus:terminal,status:'Cancelado',reconciliationRequired:false})
+  }
  } else if(target.paymentStatus!=='CONFIRMED') target.paymentStatus='PENDING'
- db.twoPpWebhookEvents.unshift({id:eventKey,transactionId,status:providerStatus,paymentMethod,investmentId:inv?.id??null,associatePlanInvoiceId:planInvoice?.id??null,createdAt:now()})
+ db.twoPpWebhookEvents.unshift({id:eventKey,transactionId,status:providerStatus,paymentMethod,investmentId:inv?.id??null,associatePlanInvoiceId:planInvoice?.id??null,withdrawalId:withdrawal?.id??null,createdAt:now()})
  if(db.twoPpWebhookEvents.length>10000)db.twoPpWebhookEvents.length=10000
  writeDb(db)
  return res.json({received:true,idempotent:false})
@@ -488,9 +499,42 @@ app.post('/api/investments',auth,async(req,res)=>{
   return res.status(status).json({error:status===503?`${provider} ainda não foi configurado pelo administrador`:`Não foi possível iniciar o pagamento no ${provider}`})
  }
 })
-for(const key of ['cart','orders','tickets','invoices','withdrawals'] as const) {
- app.post(`/api/${key}`,auth,(req,res)=>{const d=readDb(),b={...(req.body??{})} as any,userId=(req as any).user.id;if(key==='withdrawals'){try{const wallet=b.wallet==='COTA'?'COTA':'REDE';const result=validateWithdrawal(d,(req as any).user,b.amount,wallet);const account=validatePixKey(b.account,d.profiles?.[userId]?.cpf);Object.assign(b,{amount:result.amountCents/100,account,method:'PIX',status:'Pendente',paidAt:'—',wallet,feeCents:result.feeCents,netCents:result.netCents})}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='orders')return res.status(422).json({error:'Use a compra de produtos pela carteira'});if(key==='invoices')return res.status(403).json({error:'Faturas só podem ser geradas pelo checkout'});const item={...b,id:crypto.randomUUID(),userId,date:new Date().toLocaleDateString('pt-BR'),createdAt:now()};d[key].unshift(item);writeDb(d);res.status(201).json(item)})
- app.patch(`/api/${key}/:id`,auth,(req,res)=>{if(['withdrawals','invoices','orders'].includes(key))return res.status(403).json({error:'Esta movimentação só pode ser alterada pelo financeiro MASTER'});const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id&&x.userId===(req as any).user.id);if(!item)return res.status(404).json({error:'Registro não encontrado'});Object.assign(item,req.body??{}, {id:item.id,userId:item.userId});writeDb(d);res.json(item)})
+app.post('/api/withdrawals',auth,async(req,res)=>{
+ const user=(req as any).user as MlmUser,body={...(req.body??{})} as any
+ const idempotencyKey=String(body.idempotencyKey??'').trim()||`withdrawal-${crypto.randomUUID()}`
+ let d=readDb(),existing=d.withdrawals.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey)
+ if(existing){if(Number(body.amount)!==existing.amount||(body.wallet??'REDE')!==existing.wallet||(body.account!==undefined&&String(body.account).replace(/[.\s-]/g,'')!==existing.account))return res.status(409).json({error:'Identificador já utilizado para outro saque'});return res.json(existing)}
+ let result:ReturnType<typeof validateWithdrawal>,account:string
+ try {
+  if(body.wallet!==undefined&&!['COTA','REDE'].includes(body.wallet))throw new Error('Selecione uma carteira válida para saque (Cota ou Rede)')
+  const wallet=body.wallet==='COTA'?'COTA':'REDE'
+  result=validateWithdrawal(d,user,body.amount,wallet)
+  account=validatePixKey(body.account,d.profiles?.[user.id]?.cpf)
+ } catch(error:any) { return res.status(422).json({error:error.message}) }
+ const item:any={id:crypto.randomUUID(),userId:user.id,date:new Date().toLocaleDateString('pt-BR'),createdAt:now(),idempotencyKey,amount:result.amountCents/100,amountCents:result.amountCents,account,method:'PIX',status:'Em análise',paidAt:'—',wallet:result.wallet,feeBps:result.feeBps,feeCents:result.feeCents,netCents:result.netCents,payoutAmountCents:result.netCents,paymentProvider:'2PP',paymentMethod:'PIX',paymentAsset:'PIX',paymentStatus:'WITHDRAWAL_CREATING'}
+ d.withdrawals.unshift(item);writeDb(d)
+ try { await flushDb() } catch(error:any) { return res.status(/outra operação/.test(String(error?.message))?409:503).json({error:'Não foi possível registrar o saque; tente novamente'}) }
+ try {
+  const payout=await createTwoPpPixWithdrawal({localId:item.id,amount:item.payoutAmountCents/100,pixKey:account,customerDocument:account,customerName:String(user.name??user.username),customerEmail:String(user.email)})
+  d=await refreshDb();existing=d.withdrawals.find((candidate:any)=>candidate.id===item.id)
+  if(!existing)return res.status(409).json({error:'O saque foi removido durante a criação'})
+  if(existing.twoPpTransactionId&&existing.twoPpTransactionId!==payout.id)throw new Error('Referência de saque divergente')
+  Object.assign(existing,{twoPpTransactionId:payout.id,paymentReference:payout.id,providerAmount:payout.amount,providerNetAmount:payout.netAmount})
+  if(existing.paymentStatus==='WITHDRAWAL_CREATING')Object.assign(existing,{paymentProviderStatus:payout.status,paymentStatus:'PENDING',status:'Pendente'})
+  audit(d,user.id,'TWOPP_WITHDRAWAL_CREATE','WITHDRAWAL',existing.id,{twoPpTransactionId:payout.id,wallet:existing.wallet})
+  writeDb(d);await flushDb();return res.status(201).json(existing)
+ } catch(error:any) {
+  d=await refreshDb();existing=d.withdrawals.find((candidate:any)=>candidate.id===item.id)
+  if(existing&&['WITHDRAWAL_CREATING','PENDING'].includes(existing.paymentStatus)) { const configurationError=error instanceof TwoPpConfigurationError;Object.assign(existing,{paymentStatus:configurationError?'ERROR':'PROVIDER_UNKNOWN',status:configurationError?'Recusado':'Em análise',reconciliationRequired:!configurationError,paymentError:configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária'});writeDb(d);await flushDb() }
+  const status=error instanceof TwoPpConfigurationError?503:502
+  return res.status(status).json({error:status===503?'O gateway de saques ainda não foi configurado pelo administrador':'Não foi possível iniciar o saque no 2PP; ele ficou retido para conciliação'})
+ }
+})
+app.patch('/api/withdrawals/:id',auth,(_req,res)=>res.status(403).json({error:'Esta movimentação só pode ser alterada pelo financeiro MASTER'}))
+
+for(const key of ['cart','orders','tickets','invoices'] as const) {
+ app.post(`/api/${key}`,auth,(req,res)=>{const d=readDb(),b={...(req.body??{})} as any,userId=(req as any).user.id;if(key==='orders')return res.status(422).json({error:'Use a compra de produtos pela carteira'});if(key==='invoices')return res.status(403).json({error:'Faturas só podem ser geradas pelo checkout'});const item={...b,id:crypto.randomUUID(),userId,date:new Date().toLocaleDateString('pt-BR'),createdAt:now()};d[key].unshift(item);writeDb(d);res.status(201).json(item)})
+ app.patch(`/api/${key}/:id`,auth,(req,res)=>{if(['invoices','orders'].includes(key))return res.status(403).json({error:'Esta movimentação só pode ser alterada pelo financeiro MASTER'});const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id&&x.userId===(req as any).user.id);if(!item)return res.status(404).json({error:'Registro não encontrado'});Object.assign(item,req.body??{}, {id:item.id,userId:item.userId});writeDb(d);res.json(item)})
 }
 app.get('/api/state',auth,(req,res)=>{const d=readDb(),u=(req as any).user,owned=(rows:any[])=>rows.filter(item=>!item.userId||item.userId===u.id);res.json({vehicles:owned(d.vehicles),investments:owned(d.investments),orders:owned(d.orders),invoices:owned(d.invoices),transactions:owned(d.transactions),withdrawals:owned(d.withdrawals),tickets:owned(d.tickets),cart:owned(d.cart),profile:d.profiles[u.id]??{name:u.name,email:u.email},business:businessSummary(d,u)})})
 app.get('/api/health',(_req,res)=>res.json({ok:true,service:'GoMove API'}))

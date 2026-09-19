@@ -136,7 +136,11 @@ test('approved bonuses fund withdrawals and paid withdrawals debit the user ledg
   const credit = await demoRequest<Record<string, any>>('/admin/bonus-entries/manual-credit', 'POST', { userId: matheus.id, amountCents: 20_000, reason: 'Crédito de teste' }, master.token)
   await demoRequest(`/admin/bonus-entries/${credit.id}/approve`, 'POST', {}, master.token)
   const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
-  const withdrawal = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: '12345678901' }, user.token)
+  await demoRequest('/profile', 'PUT', { cpf: '99000000050' }, user.token)
+  const withdrawal = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX' }, user.token)
+  assert.equal(withdrawal.account, '99000000050')
+  assert.equal(withdrawal.feeCents, 600)
+  assert.equal(withdrawal.netCents, 9400)
   await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 1_000, method: 'PIX', account: '12345678901' }, user.token), /1 saque por dia/)
   await demoRequest(`/admin/withdrawals/${withdrawal.id}`, 'PATCH', { ...withdrawal, status: 'Pago' }, master.token)
   await demoRequest(`/admin/withdrawals/${withdrawal.id}`, 'PATCH', { ...withdrawal, status: 'Pago' }, master.token)
@@ -389,11 +393,12 @@ test('all MASTER operational collections support integrated create, update and d
   const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const userSession = await demoRequest<{ token: string; user: User }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
   const owner = userSession.user.id
+  await demoRequest('/profile', 'PUT', { cpf: '99000000050' }, userSession.token)
   const cases = [
     ['investments', { userId: owner, pack: 'Cotas GoMove', amount: 1000, profit: 0, date: '31/07/2026', status: 'Pendente' }],
     ['orders', { userId: owner, description: 'Pedido CRUD', quantity: 1, total: 99, date: '31/07/2026', status: 'Processando' }],
     ['invoices', { userId: owner, description: 'Fatura CRUD', amount: 199, remaining: 199, due: '10/08/2026', status: 'Pendente' }],
-    ['withdrawals', { userId: owner, amount: 55, method: 'PIX', account: 'teste@pix', date: '31/07/2026', status: 'Pendente' }],
+    ['withdrawals', { userId: owner, amount: 55, method: 'PIX', date: '31/07/2026', status: 'Pendente' }],
     ['tickets', { userId: owner, subject: 'Ticket CRUD', department: 'Atendimento', category: 'Teste', priority: 'Média', status: 'Aberto' }],
   ] as const
 
@@ -433,7 +438,7 @@ test('payout key must match the CPF collected at registration', async () => {
   const credit = await demoRequest<Record<string, any>>('/admin/bonus-entries/manual-credit', 'POST', { userId: registration.user.id, amountCents: 20_000, reason: 'CPF titular' }, master.token)
   await demoRequest(`/admin/bonus-entries/${credit.id}/approve`, 'POST', {}, master.token)
   await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: '12345678901' }, registration.token), /titular/)
-  const paid = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX', account: '99000020247' }, registration.token)
+  const paid = await demoRequest<Record<string, any>>('/withdrawals', 'POST', { amount: 100, method: 'PIX' }, registration.token)
   assert.ok(paid.id)
   assert.equal(paid.account, '99000020247')
 })
