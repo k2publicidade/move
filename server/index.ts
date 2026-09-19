@@ -8,7 +8,7 @@ import crypto from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { neon } from '@neondatabase/serverless'
 import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
-import { TwoPpConfigurationError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, createTwoPpPixWithdrawal, normalizeCustomerDocument, verifyTwoPpWebhookToken, type TwoPpCryptoCurrency } from './twopayments.js'
+import { TwoPpConfigurationError, TwoPpRequestError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, createTwoPpPixWithdrawal, normalizeCustomerDocument, verifyTwoPpWebhookToken, type TwoPpCryptoCurrency } from './twopayments.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
 import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, settleWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from '../src/wallets.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
@@ -134,6 +134,40 @@ async function refreshDb():Promise<Db> {
  return context.db
 }
 const audit=(db:Db, actorId:string, action:string, targetType:string, targetId:string, details:any={}) => db.auditLogs.unshift({id:crypto.randomUUID(),actorId,action,targetType,targetId,details,createdAt:now()})
+async function respondTwoPpFailure(res:Response,collection:'invoices'|'investments'|'withdrawals',localId:string,error:unknown) {
+ const details=error instanceof TwoPpRequestError?error.details:undefined
+ const configurationError=error instanceof TwoPpConfigurationError
+ const message=configurationError?error.message:error instanceof TwoPpRequestError?error.message:'Não foi possível confirmar a resposta da 2PP; conciliação necessária'
+ for(let attempt=0;attempt<3;attempt++) {
+  const db=await refreshDb(),item=db[collection].find((entry:any)=>entry.id===localId)
+  // A webhook can settle or reject the charge before the create request finishes.
+  if(item?.paymentStatus==='CONFIRMED')return res.json(item)
+  const evidenceOfPayment=item?.paymentStatus==='PAID'||!!(item?.twoPpTransactionId||item?.pixQrCode||item?.payAddress)
+  const definitive=!evidenceOfPayment&&(configurationError||details?.outcome==='rejected')
+  if(item&&['INVOICE_CREATING','WITHDRAWAL_CREATING','PENDING','PAID'].includes(item.paymentStatus)) {
+   Object.assign(item,{
+    paymentStatus:definitive?'ERROR':item.paymentStatus==='PAID'?'PAID':'PROVIDER_UNKNOWN',
+    status:definitive?(collection==='withdrawals'?'Recusado':'Cancelado'):item.status,
+    reconciliationRequired:!definitive,paymentError:message,
+    paymentErrorCode:configurationError?'CONFIGURATION':details?.code??'UNAVAILABLE',
+    paymentProviderHttpStatus:details?.httpStatus,
+   })
+   if(details?.transactionId&&!item.twoPpTransactionId)Object.assign(item,{twoPpTransactionId:details.transactionId,paymentReference:details.transactionId})
+   if(details?.providerStatus)item.paymentProviderStatus=details.providerStatus
+   writeDb(db)
+   try{await flushDb()}catch(persistError:any){if(/outra operação/.test(String(persistError?.message))&&attempt<2)continue;throw persistError}
+  }
+  const retryable=!!item&&['ERROR','FAILED','CANCELLED','TIMED_OUT'].includes(item.paymentStatus)
+  const status=configurationError||details?.code==='AUTHENTICATION'?503:details?.code==='RATE_LIMITED'?429:details?.httpStatus===422||details?.httpStatus===400?422:502
+  console.error('2PP_PAYMENT_FAILED',JSON.stringify({localId,collection,code:configurationError?'CONFIGURATION':details?.code??'UNAVAILABLE',httpStatus:details?.httpStatus,transactionId:details?.transactionId,message,reconciliationRequired:!retryable}))
+  if(details?.retryAfter)res.setHeader('retry-after',String(details.retryAfter))
+  return res.status(status).json({
+   error:configurationError?'A configuração do gateway 2PP está incompleta. Contate o suporte.':details?.code==='AUTHENTICATION'?'A 2PP recusou as credenciais da integração. Contate o suporte.':`2PP: ${message}${retryable?'':' A tentativa está em conciliação; não faça outro pagamento.'}`,
+   code:configurationError?'CONFIGURATION':details?.code??'UNAVAILABLE',retryable,paymentId:localId,
+   ...(details?.retryAfter?{retryAfter:details.retryAfter}:{}),
+  })
+ }
+}
 async function mergeTwoPpTransaction(collection:'invoices'|'investments',localId:string,transaction:{id:string;status:string;paymentMethod:'pix'|'crypto';pixQrCode:string|null;pixQrCodeBase64:string|null;pixQrCodeUrl:string|null;paymentUrl:string|null;payAddress:string|null;payAmount:string|null;payCurrency:string|null},onMerge:(db:Db,item:any)=>void) {
  for(let attempt=0;attempt<3;attempt++) {
   const db=await refreshDb(),item=db[collection].find((candidate:any)=>candidate.id===localId)
@@ -148,7 +182,7 @@ async function mergeTwoPpTransaction(collection:'invoices'|'investments',localId
 function parseQuotaAmount(input:unknown) { const amount=Number(input),rawCents=amount*100,amountCents=Math.round(rawCents),configuredMax=Number(process.env.GOMOVE_MAX_QUOTA_CENTS),maxCents=Number.isSafeInteger(configuredMax)&&configuredMax>=SHAREHOLDER_MIN_QUOTA_CENTS?configuredMax:100_000_000;if(!Number.isFinite(amount)||!Number.isSafeInteger(amountCents)||Math.abs(rawCents-amountCents)>0.000001||amountCents<SHAREHOLDER_MIN_QUOTA_CENTS||amountCents>maxCents)throw new Error(`A aquisição deve ficar entre R$ 500,00 e R$ ${(maxCents/100).toLocaleString('pt-BR',{minimumFractionDigits:2})}, com no máximo duas casas decimais`);return {amount,amountCents} }
 function parseWebhookAmountCents(value:unknown) { const raw=String(value??'').trim();if(!/^\d+(?:\.\d{1,2})?$/.test(raw))return null;const [units,decimals='']=raw.split('.'),cents=Number(units)*100+Number(decimals.padEnd(2,'0'));return Number.isSafeInteger(cents)?cents:null }
 const CRYPTO_ASSET_CURRENCIES:Record<string,TwoPpCryptoCurrency>={'USDT-TRC20':'usdt-trc20','USDT-BEP20':'usdt-bep20','USDT':'usdt-trc20'}
-const NON_RETRYABLE_CHECKOUT_STATUSES=new Set(['CANCELLED','TIMED_OUT','ERROR','SUPERSEDED'])
+const NON_RETRYABLE_CHECKOUT_STATUSES=new Set(['CANCELLED','TIMED_OUT','ERROR','SUPERSEDED','FAILED'])
 function confirmedQuotaCents(db:Db,userId:string) { return db.investments.filter((investment:any)=>investment.userId===userId&&(investment.status==='Ativo'||investment.paymentStatus==='CONFIRMED')).reduce((sum:number,investment:any)=>sum+Number(investment.amountCents||0),0) }
 function allocateEarning(db:Db,participant:MlmUser,amountCents:number) { return allocateEarningByBusinessPlan(participant,db.bonusEntries,db.dailyProfitabilities as any,confirmedQuotaCents(db,participant.id),amountCents) }
 function saoPauloDate(date=new Date()) { const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date),value=(type:string)=>parts.find(part=>part.type===type)?.value;return `${value('year')}-${value('month')}-${value('day')}` }
@@ -462,11 +496,7 @@ app.post(['/api/associate-plan','/api/deposits'],auth,async(req,res)=>{
   if(!invoice)return res.status(409).json({error:'A fatura foi removida durante a criação da cobrança'})
   return res.status(201).json(invoice)
  } catch(error:any) {
-  d=await refreshDb();invoice=d.invoices.find((item:any)=>item.id===targetInvoiceId)
-  const configurationError=error instanceof TwoPpConfigurationError
-  if(invoice&&['INVOICE_CREATING','PENDING','PAID'].includes(invoice.paymentStatus)){if(invoice.paymentStatus!=='PAID')invoice.paymentStatus=configurationError?'ERROR':'PROVIDER_UNKNOWN';invoice.reconciliationRequired=!configurationError;invoice.paymentError=configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
-  const status=configurationError?503:502,provider='2PP'
-  return res.status(status).json({error:status===503?`${provider} ainda não foi configurado pelo administrador`:`Não foi possível iniciar o pagamento no ${provider}`})
+  return respondTwoPpFailure(res,'invoices',targetInvoiceId,error)
  }
 })
 app.post('/api/investments',auth,async(req,res)=>{
@@ -492,11 +522,7 @@ app.post('/api/investments',auth,async(req,res)=>{
   if(!investment)return res.status(409).json({error:'O investimento foi removido durante a criação da cobrança'})
   return res.status(201).json(investment)
  } catch(error:any) {
-  d=await refreshDb();investment=d.investments.find((item:any)=>item.id===targetInvestmentId)
-  const configurationError=error instanceof TwoPpConfigurationError
-  if(investment&&['INVOICE_CREATING','PENDING','PAID'].includes(investment.paymentStatus)){if(investment.paymentStatus!=='PAID')investment.paymentStatus=configurationError?'ERROR':'PROVIDER_UNKNOWN';investment.reconciliationRequired=!configurationError;investment.paymentError=configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária';writeDb(d);await flushDb()}
-  const status=configurationError?503:502,provider='2PP'
-  return res.status(status).json({error:status===503?`${provider} ainda não foi configurado pelo administrador`:`Não foi possível iniciar o pagamento no ${provider}`})
+  return respondTwoPpFailure(res,'investments',targetInvestmentId,error)
  }
 })
 app.post('/api/withdrawals',auth,async(req,res)=>{
@@ -524,10 +550,7 @@ app.post('/api/withdrawals',auth,async(req,res)=>{
   audit(d,user.id,'TWOPP_WITHDRAWAL_CREATE','WITHDRAWAL',existing.id,{twoPpTransactionId:payout.id,wallet:existing.wallet})
   writeDb(d);await flushDb();return res.status(201).json(existing)
  } catch(error:any) {
-  d=await refreshDb();existing=d.withdrawals.find((candidate:any)=>candidate.id===item.id)
-  if(existing&&['WITHDRAWAL_CREATING','PENDING'].includes(existing.paymentStatus)) { const configurationError=error instanceof TwoPpConfigurationError;Object.assign(existing,{paymentStatus:configurationError?'ERROR':'PROVIDER_UNKNOWN',status:configurationError?'Recusado':'Em análise',reconciliationRequired:!configurationError,paymentError:configurationError?String(error?.message??'Configuração inválida'):'Resposta do provedor não confirmada; conciliação necessária'});writeDb(d);await flushDb() }
-  const status=error instanceof TwoPpConfigurationError?503:502
-  return res.status(status).json({error:status===503?'O gateway de saques ainda não foi configurado pelo administrador':'Não foi possível iniciar o saque no 2PP; ele ficou retido para conciliação'})
+  return respondTwoPpFailure(res,'withdrawals',item.id,error)
  }
 })
 app.patch('/api/withdrawals/:id',auth,(_req,res)=>res.status(403).json({error:'Esta movimentação só pode ser alterada pelo financeiro MASTER'}))

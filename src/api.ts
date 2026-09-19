@@ -3,6 +3,16 @@ export type Session = { token:string; user:User; supportActor?:{id:string;name:s
 const key='gomove-session'
 export const authHeaders=(token:string|null):Record<string,string>=>token?{Authorization:`Bearer ${token}`}:{ }
 export const apiErrorMessage=(body:unknown,fallback:string)=>typeof body==='object'&&body&&'error' in body&&typeof (body as {error:unknown}).error==='string'?(body as {error:string}).error:fallback
+export class ApiError extends Error {
+  readonly retryable: boolean
+  readonly retryAfter: number
+  constructor(message:string, readonly status:number, body:unknown) {
+    super(message)
+    const details=body&&typeof body==='object'?body as Record<string,unknown>:{}
+    this.retryable=details.retryable===true
+    this.retryAfter=typeof details.retryAfter==='number'&&details.retryAfter>0?details.retryAfter:0
+  }
+}
 export function loadSession():Session|null { try { const value=sessionStorage.getItem('gomove-support-session')||localStorage.getItem(key); return value?JSON.parse(value):null } catch { return null } }
 export function saveSession(session:Session) { session.supportActor?sessionStorage.setItem('gomove-support-session',JSON.stringify(session)):localStorage.setItem(key,JSON.stringify(session)) }
 export function clearSession() { sessionStorage.getItem('gomove-support-session')?sessionStorage.removeItem('gomove-support-session'):localStorage.removeItem(key) }
@@ -16,9 +26,9 @@ export class ApiClient {
       const body=contentType.includes('application/json')?await response.json().catch(()=>null):null
       if(response.status===401){ clearSession(); this.onUnauthorized?.() }
       if(response.ok&&body!==null) return body as T
-      throw new Error(apiErrorMessage(body,`Erro ${response.status}`))
+      throw new ApiError(apiErrorMessage(body,`Erro ${response.status}`),response.status,body)
     } catch(error) {
-      if(error instanceof Error&&!/fetch|network|failed/i.test(error.message)) throw error
+      if(error instanceof ApiError||(error instanceof Error&&!/fetch|network|failed/i.test(error.message))) throw error
       throw new Error('Serviço temporariamente indisponível. Tente novamente em instantes.')
     }
   }

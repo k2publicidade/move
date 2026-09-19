@@ -14,12 +14,12 @@ process.env.TWOPP_API_KEY = 'twop-test-key'
 process.env.TWOPP_API_SECRET = 'twop-test-secret'
 process.env.TWOPP_WEBHOOK_TOKEN = WEBHOOK_TOKEN
 
-const { TWO_PP_CRYPTO_CURRENCIES, createTwoPpCryptoTransaction, createTwoPpPixTransaction, isTwoPpCryptoCurrency } = await import('../server/twopayments.js')
+const { TWO_PP_CRYPTO_CURRENCIES, TwoPpRequestError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, isTwoPpCryptoCurrency } = await import('../server/twopayments.js')
 const { app, readDb, writeDb } = await import('../server/index.js')
 
 after(() => fs.rmSync(testDir, { recursive: true, force: true }))
 
-async function withProvider(respond: (body: Record<string, any>) => Record<string, any>, run: (requests: Array<{ url: string; headers: http.IncomingHttpHeaders; body: Record<string, any> }>) => Promise<void>) {
+async function withProvider(respond: (body: Record<string, any>) => Record<string, any>, run: (requests: Array<{ url: string; headers: http.IncomingHttpHeaders; body: Record<string, any> }>) => Promise<void>, options: { status?: number; raw?: boolean } = {}) {
   const requests: Array<{ url: string; headers: http.IncomingHttpHeaders; body: Record<string, any> }> = []
   const provider = http.createServer((request, response) => {
     let raw = ''
@@ -28,8 +28,8 @@ async function withProvider(respond: (body: Record<string, any>) => Record<strin
     request.on('end', () => {
       const body = JSON.parse(raw) as Record<string, any>
       requests.push({ url: String(request.url), headers: request.headers, body })
-      response.writeHead(201, { 'content-type': 'application/json' })
-      response.end(JSON.stringify({ status: 'success', data: respond(body) }))
+      response.writeHead(options.status ?? 201, { 'content-type': 'application/json' })
+      response.end(JSON.stringify(options.raw ? respond(body) : { status: 'success', data: respond(body) }))
     })
   })
   await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve))
@@ -78,6 +78,49 @@ test('crypto charge prices in BRL, returns the wallet address and rejects unsupp
     assert.equal(isTwoPpCryptoCurrency('usdt-bep20'), true)
     assert.equal(isTwoPpCryptoCurrency('btc'), false)
   })
+})
+
+const pixInput = { localId: 'pix-error-tests', amount: 100, customerName: 'Cliente GoMove', customerEmail: 'cliente@example.com', customerDocument: '12345678901' }
+
+test('PIX uses a copia-e-cola paymentUrl when qrCode is empty, without treating a checkout URL as PIX', async () => {
+  await withProvider(() => ({ transactionId: 'pix-fallback', qrCode: '', paymentUrl: '000201-fallback-pix', status: 'PENDING' }), async () => {
+    const result = await createTwoPpPixTransaction(pixInput)
+    assert.equal(result.pixQrCode, '000201-fallback-pix')
+    assert.equal(result.paymentUrl, null)
+  })
+  await withProvider(() => ({ transactionId: 'pix-no-code', paymentUrl: 'https://example.com/checkout', status: 'PENDING' }), async () => {
+    await assert.rejects(createTwoPpPixTransaction(pixInput), error => error instanceof TwoPpRequestError && error.details.outcome === 'unknown' && error.details.transactionId === 'pix-no-code')
+  })
+})
+
+test('gateway rejection preserves a redacted reason and never retries the POST', async () => {
+  await withProvider(body => ({ message: `Documento inválido: ${body.customerDocument}, ${body.customerEmail}, ${body.customerName}; twop-test-secret ${body.webhookUrl}` }), async requests => {
+    await assert.rejects(createTwoPpPixTransaction(pixInput), error => {
+      assert.ok(error instanceof TwoPpRequestError)
+      assert.equal(error.details.outcome, 'rejected')
+      assert.equal(error.details.httpStatus, 422)
+      assert.match(error.message, /Documento inválido/)
+      for (const secret of [pixInput.customerDocument, pixInput.customerEmail, pixInput.customerName, 'twop-test-secret', WEBHOOK_TOKEN]) assert.ok(!error.message.includes(secret))
+      return true
+    })
+    assert.equal(requests.length, 1)
+  }, { status: 422, raw: true })
+})
+
+test('failed transactions keep their reference; a generic 500 remains uncertain', async () => {
+  await withProvider(() => ({ message: 'Provedor recusou a cobrança', data: { transactionId: 'failed-pix', status: 'FAILED' } }), async () => {
+    await assert.rejects(createTwoPpPixTransaction(pixInput), error => error instanceof TwoPpRequestError && error.details.outcome === 'rejected' && error.details.transactionId === 'failed-pix')
+  }, { status: 500, raw: true })
+  await withProvider(() => ({ message: 'Gateway indisponível' }), async () => {
+    await assert.rejects(createTwoPpPixTransaction(pixInput), error => error instanceof TwoPpRequestError && error.details.outcome === 'unknown')
+  }, { status: 500, raw: true })
+})
+
+test('rate limiting preserves the provider wait time without retrying automatically', async () => {
+  await withProvider(() => ({ status: 'error', message: 'Rate limit exceeded', retryAfter: 42 }), async requests => {
+    await assert.rejects(createTwoPpPixTransaction(pixInput), error => error instanceof TwoPpRequestError && error.details.outcome === 'rejected' && error.details.retryAfter === 42)
+    assert.equal(requests.length, 1)
+  }, { status: 429, raw: true })
 })
 
 test('completed PIX webhook confirms a quota once and rejects a wrong token or mismatched amount', async () => {

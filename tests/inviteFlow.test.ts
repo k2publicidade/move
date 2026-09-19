@@ -39,7 +39,7 @@ test('financially inactive accounts are routed to activation inside the authenti
 test('activation offers either the R$55 associate plan or direct quotas from R$500', () => {
   assert.match(activation, /Escolha como ativar sua conta/)
   assert.match(activation, /Plano de Associado/)
-  assert.match(activation, /const \[planCheckoutKey\] = useState\(\(\) => crypto\.randomUUID\(\)\)/)
+  assert.match(activation, /const \[planCheckoutKey, setPlanCheckoutKey\] = useState\(\(\) => crypto\.randomUUID\(\)\)/)
   assert.match(activation, /api\.post<Row>\('\/associate-plan', \{ idempotencyKey: planCheckoutKey, preferredPaymentAsset: planPaymentAsset, paymentMethod: planPaymentAsset/)
   assert.match(activation, /<option value="PIX">PIX<\/option>/)
   assert.match(activation, /Compra direta de cotas/)
@@ -70,7 +70,7 @@ test('MASTER sponsor selector excludes active accounts without a financial produ
 })
 
 test('demo associate checkout can be explicitly confirmed and refreshes the saved session', () => {
-  assert.match(activation, /if \(result\.demo\) setCheckout\(result\)/)
+  assert.match(activation, /setCheckout\(result\)/)
   assert.match(activation, /api\.post<\{ user: User \}>\(`\/associate-plan\/\$\{checkout\.id\}\/confirm-demo`, \{\}\)/)
   assert.match(activation, /const nextSession = \{ \.\.\.session, user: result\.user \}/)
   assert.match(activation, /saveSession\(nextSession\)/)

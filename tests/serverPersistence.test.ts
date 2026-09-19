@@ -26,6 +26,8 @@ type ProviderHarness = {
   requests: Array<Record<string, any>>
   beforeResponse?: (request: Record<string, any>) => Promise<void>
   dropConnection?: boolean
+  responseStatus?: number
+  responseBody?: Record<string, unknown>
 }
 
 const TWOPP_WEBHOOK_TOKEN = 'twop-test-token-with-at-least-32-characters'
@@ -45,6 +47,7 @@ async function withTwoPpServer(run: (baseUrl: string, provider: ProviderHarness)
       await harness.beforeResponse?.(request)
       if (harness.dropConnection) { req.socket.destroy(); return }
       res.setHeader('content-type', 'application/json')
+      if (harness.responseBody) { res.statusCode=harness.responseStatus??500;res.end(JSON.stringify(harness.responseBody));return }
       res.end(JSON.stringify(String(req.url).includes('/crypto')
         ? { status: 'success', data: { transactionId: request.transactionId, payAddress: 'TDemo2ppUsdtAddressTrc20', payAmount: '9.26', payCurrency: request.payCurrency, status: 'PENDING' } }
         : { status: 'success', data: { transactionId: request.transactionId, qrCode: '000201-2pp-copy-paste', paymentUrl: '000201-2pp-copy-paste', status: 'PENDING' } }))
@@ -603,6 +606,42 @@ test('2PP checkout requires a valid public HTTPS URL before contacting the provi
     assert.equal(invalid.status, 503)
     assert.equal(provider.calls, 0)
     process.env.APP_PUBLIC_URL = 'https://gomove.example'
+  })
+})
+
+test('deposits, plans and quotas allow a new attempt only after an explicit gateway rejection', async () => {
+  await withTwoPpServer(async (baseUrl, provider) => {
+    const login=await fetch(`${baseUrl}/api/auth/login`,{method:'POST',headers:jsonHeaders,body:JSON.stringify({username:'admin',password:'gomove2026'})})
+    const {token,user}=await login.json() as {token:string;user:{id:string}}
+    const headers={...jsonHeaders,authorization:`Bearer ${token}`}
+    for(const route of ['deposits','associate-plan','investments']) {
+      provider.responseStatus=422
+      provider.responseBody={status:'error',message:'Documento recusado pelo provedor'}
+      const requestBody={amount:500,customerDocument:'99000002265',paymentMethod:'PIX',idempotencyKey:`rejected-${route}`}
+      const request=(body:Record<string,unknown>)=>fetch(`${baseUrl}/api/${route}`,{method:'POST',headers,body:JSON.stringify(body)})
+      const rejected=await request(requestBody)
+      assert.equal(rejected.status,422)
+      const error=await rejected.json() as {error:string;retryable:boolean;paymentId:string}
+      assert.match(error.error,/Documento recusado/)
+      assert.equal(error.retryable,true)
+      const collection=route==='investments'?'investments':'invoices'
+      const saved=readDb()[collection].find((item:any)=>item.id===error.paymentId)
+      assert.equal(saved.paymentStatus,'ERROR')
+      assert.equal(saved.reconciliationRequired,false)
+      const calls=provider.calls
+      assert.equal((await request(requestBody)).status,409)
+      assert.equal(provider.calls,calls)
+      provider.responseBody=undefined
+      const retry=await request({...requestBody,idempotencyKey:`new-${route}`})
+      assert.equal(retry.status,201)
+      const created=await retry.json() as Record<string,any>
+      assert.ok(created.pixQrCode)
+      assert.equal(created.paymentStatus,'PENDING')
+      assert.equal(provider.calls,calls+1)
+      assert.equal((await request({...requestBody,idempotencyKey:`new-${route}`})).status,200)
+      assert.equal(provider.calls,calls+1)
+    }
+    assert.equal(readDb().transactions.filter((item:any)=>item.userId===user.id).length,0)
   })
 })
 
