@@ -1,7 +1,7 @@
 import { summarizeAdminMetrics } from './adminMetrics'
 import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, creditDeposit, debitPurchase, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from './wallets'
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
-import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from './businessPlan'
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, SHAREHOLDER_TOTAL_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from './businessPlan'
 import { summarizeBonusPeriods } from './bonusPeriods'
 
 type Row = Record<string, any> & { id: string }
@@ -303,12 +303,13 @@ function businessSummary(db: DemoDatabase, user: User) {
   const dailyEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.creditedAmountCents || 0), 0)
   const cappedEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.cappedAmountCents || 0), 0) + bonuses.filter(entry => entry.status === 'CAPPED_250_PERCENT').reduce((sum, entry) => sum + entry.amountCents, 0)
   const earningCapCents = user.membershipType === 'SHAREHOLDER' ? Math.floor(quotaAmountCents * SHAREHOLDER_EARNING_CAP_BPS / 10_000) : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
+  const earningCapTotalCents = user.membershipType === 'SHAREHOLDER' ? Math.floor(quotaAmountCents * SHAREHOLDER_TOTAL_CAP_BPS / 10_000) : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
   const earningCapConsumedCents = approvedBonusCents + pendingBonusCents + dailyEarningCents
   const earningCapRemainingCents = Math.max(0, earningCapCents - earningCapConsumedCents)
   const registrationAudit = db.auditLogs.find(entry => entry.action === 'REGISTER' && entry.targetId === user.id)
   const createdViaInvite = Boolean(user.registrationSource === 'INVITE' || registrationAudit?.details?.source === 'INVITE')
   const bonusPeriods = summarizeBonusPeriods(user.id, db.bonusEntries, db.transactions)
-  return { ...publicUser(user), createdViaInvite, bonusPeriods, approvedBonusCents, pendingBonusCents, blockedBonusCents, dailyEarningCents, cappedEarningCents, earningCapCents, earningCapConsumedCents, earningCapRemainingCents, bonusCapRemainingCents: earningCapRemainingCents, quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
+  return { ...publicUser(user), createdViaInvite, bonusPeriods, approvedBonusCents, pendingBonusCents, blockedBonusCents, dailyEarningCents, cappedEarningCents, earningCapCents, earningCapTotalCents, earningCapConsumedCents, earningCapRemainingCents, bonusCapRemainingCents: earningCapRemainingCents, quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
 }
 
 export async function demoRequest<T>(path: string, method = 'GET', body?: any, token: string | null = null): Promise<T> {

@@ -106,6 +106,10 @@ test('ingresso direto como Cotista a partir de R$ 60 e upgrade obrigatório com 
   assert.equal(direct.status, 201, JSON.stringify(direct.body))
   assert.equal((await request(`/admin/investments/${direct.body.id}/confirm`, {}, master)).status, 200)
   assert.equal(readDb().users.find((user: Row) => user.id === ana.id).membershipType, 'SHAREHOLDER')
+  // O painel exibe o teto de 250% incluindo os 100% investidos (R$ 60 -> R$ 150).
+  const anaSummary = (await request('/network/summary', undefined, await login('ana'))).body
+  assert.equal(anaSummary.earningCapCents, 9_000)
+  assert.equal(anaSummary.earningCapTotalCents, 15_000)
 
   const bruno = users.find(user => user.username === 'bruno')!
   const credit = await request('/admin/bonus-entries/manual-credit', { userId: bruno.id, amountCents: 55_000, reason: 'Teto de bonificação do Associado' }, master)

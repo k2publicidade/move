@@ -5,6 +5,9 @@ export const SHAREHOLDER_MIN_QUOTA_CENTS = 6_000
 // Upgrade obrigatório do Associado que atingiu o teto de R$ 500 em bonificações.
 export const ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS = 30_000
 export const SHAREHOLDER_EARNING_CAP_BPS = 15_000
+// Teto total de 250% do pacote, já incluindo os 100% investidos: é o número exibido
+// ao participante; a parcela que ainda pode ser creditada é SHAREHOLDER_EARNING_CAP_BPS.
+export const SHAREHOLDER_TOTAL_CAP_BPS = 25_000
 export const DIRECT_REFERRAL_BPS = 1_000
 export const UNILEVEL_LEVELS = [
   { level: 1, bps: 1_000 },

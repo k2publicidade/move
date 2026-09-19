@@ -6,6 +6,8 @@ import {
   ASSOCIATE_PLAN_PRICE_CENTS,
   ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS,
   SHAREHOLDER_MIN_QUOTA_CENTS,
+  SHAREHOLDER_EARNING_CAP_BPS,
+  SHAREHOLDER_TOTAL_CAP_BPS,
   UNILEVEL_LEVELS,
   allocateBonusByBusinessPlan,
   allocateEarningByBusinessPlan,
@@ -41,6 +43,14 @@ test('commission plan uses 10% direct referral and six descending unilevel level
 test('associate bonus is split at the accumulated R$ 500 cap', () => {
   const entries = [{ userId: associate.id, amountCents: 45_000, status: 'APPROVED' }]
   assert.deepEqual(allocateBonusByBusinessPlan(associate, entries, 10_000), { availableCents: 5_000, blockedCents: 5_000 })
+})
+
+test('o teto exibido é o total de 250% (investido + 150% de rendimento)', () => {
+  assert.equal(SHAREHOLDER_EARNING_CAP_BPS, 15_000)
+  assert.equal(SHAREHOLDER_TOTAL_CAP_BPS, 25_000)
+  // Cota de R$ 65,00 -> rendimento adicional máximo de R$ 97,50 e teto total de R$ 162,50.
+  assert.equal(Math.floor(6_500 * SHAREHOLDER_EARNING_CAP_BPS / 10_000), 9_750)
+  assert.equal(Math.floor(6_500 * SHAREHOLDER_TOTAL_CAP_BPS / 10_000), 16_250)
 })
 
 test('shareholder earnings are limited to 150% additional (250% total) of confirmed quotas', () => {
