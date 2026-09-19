@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeCpf, validatePixKey, validateWithdrawal, withdrawalAmounts, updateWithdrawal } from '../src/wallets.js'
+import { cotaWithdrawalWeekKey, normalizeCpf, validatePixKey, validateWithdrawal, walletSummary, withdrawalAmounts, updateWithdrawal } from '../src/wallets.js'
 
 test('CPF validation accepts formatting and rejects missing, repeated, invalid check digits and letters', () => {
   assert.equal(normalizeCpf('529.982.247-25'), '52998224725')
@@ -50,4 +50,39 @@ test('MASTER uses the registered CPF and computes fees; editing preserves existi
   updateWithdrawal(db, old, { status: 'Em análise' }, () => 'ledger')
   assert.equal(old.feeCents, 0)
   assert.equal(old.netCents, 10000)
+})
+
+test('Carteira Cota libera 1 saque por semana a partir do domingo 18h', () => {
+  const user = { id: 'u', status: 'ACTIVE', associatePlanStatus: 'ACTIVE', shareholderSince: '2026-08-01T12:00:00-03:00' }
+  const db: any = { users: [user], investments: [], withdrawals: [], transactions: [{ userId: 'u', wallet: 'COTA', amount: 300 }, { userId: 'u', wallet: 'REDE', amount: 100 }] }
+  const monday = new Date('2026-09-14T10:00:00-03:00')
+  assert.equal(validateWithdrawal(db, user, 100, 'COTA', undefined, monday).netCents, 9400)
+  db.withdrawals.push({ id: 'w1', userId: 'u', wallet: 'COTA', amount: 100, status: 'Pendente', createdAt: new Date('2026-09-14T10:00:00-03:00').toISOString() })
+  assert.throws(() => validateWithdrawal(db, user, 100, 'COTA', undefined, monday), /1 saque por semana/)
+  assert.throws(() => validateWithdrawal(db, user, 100, 'COTA', undefined, new Date('2026-09-20T17:59:00-03:00')), /1 saque por semana/)
+  assert.equal(validateWithdrawal(db, user, 100, 'COTA', undefined, new Date('2026-09-20T18:00:00-03:00')).feeCents, 600)
+  assert.equal(validateWithdrawal(db, user, 100, 'COTA', undefined, new Date('2026-09-24T09:00:00-03:00')).feeCents, 600)
+  // Um saque recusado não consome a janela da semana seguinte.
+  db.withdrawals.push({ id: 'w2', userId: 'u', wallet: 'COTA', amount: 100, status: 'Recusado', createdAt: new Date('2026-09-21T10:00:00-03:00').toISOString() })
+  assert.equal(validateWithdrawal(db, user, 100, 'COTA', undefined, new Date('2026-09-21T11:00:00-03:00')).feeCents, 600)
+  // Domingos antes das 18h ainda pertencem à semana anterior.
+  assert.equal(cotaWithdrawalWeekKey(new Date('2026-09-20T17:59:00-03:00')), cotaWithdrawalWeekKey(new Date('2026-09-14T10:00:00-03:00')))
+  assert.notEqual(cotaWithdrawalWeekKey(new Date('2026-09-20T18:00:00-03:00')), cotaWithdrawalWeekKey(new Date('2026-09-14T10:00:00-03:00')))
+  assert.equal(walletSummary(db, user, undefined, monday).cotaWithdrawalUsedThisWeek, true)
+  assert.equal(walletSummary(db, user, undefined, monday).cotaWithdrawalOpen, false)
+  assert.equal(walletSummary(db, user, undefined, new Date('2026-09-20T18:00:00-03:00')).cotaWithdrawalOpen, true)
+})
+
+test('Carteira Rede aceita quantos saques quiser no mesmo dia, sem somar as carteiras', () => {
+  const user = { id: 'u', status: 'ACTIVE', associatePlanStatus: 'ACTIVE', shareholderSince: '2026-08-01T12:00:00-03:00' }
+  const db: any = { users: [user], investments: [], withdrawals: [], transactions: [{ userId: 'u', wallet: 'COTA', amount: 100 }, { userId: 'u', wallet: 'REDE', amount: 300 }] }
+  const day = new Date('2026-09-14T10:00:00-03:00')
+  assert.equal(validateWithdrawal(db, user, 100, 'REDE', undefined, day).feeCents, 600)
+  db.withdrawals.push({ id: 'r1', userId: 'u', wallet: 'REDE', amount: 100, status: 'Pendente', createdAt: day.toISOString() })
+  assert.equal(validateWithdrawal(db, user, 100, 'REDE', undefined, day).feeCents, 600)
+  db.withdrawals.push({ id: 'r2', userId: 'u', wallet: 'REDE', amount: 100, status: 'Pendente', createdAt: day.toISOString() })
+  // Saldos de carteiras diferentes não se somam para atingir o mínimo nem o disponível.
+  assert.throws(() => validateWithdrawal(db, user, 150, 'REDE', undefined, day), /Valor indisponível/)
+  assert.throws(() => validateWithdrawal(db, user, 150, 'COTA', undefined, day), /Valor indisponível/)
+  assert.throws(() => validateWithdrawal(db, user, 50, 'REDE', undefined, day), /mínimo para saque/)
 })

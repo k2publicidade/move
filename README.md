@@ -50,7 +50,8 @@ A cobrança cripto devolve endereço e valor exato em USDT, exibidos no portal p
 - Novos saques das carteiras Cota e Rede têm taxa de **6%**, inclusive o primeiro saque, arredondada ao centavo mais próximo. A tela mostra o valor bruto, a taxa e o líquido para envio ao gateway.
 - Exemplo: R$ 100,00 solicitados reservam R$ 100,00 na carteira, geram R$ 6,00 de taxa e enviam R$ 94,00 ao 2PP. Eventuais tarifas próprias do provedor seguem o contrato da conta 2PP e não são validadas pelos testes locais.
 - O webhook valida `PAY_OUT`, `pix` e o valor efetivamente enviado (`payoutAmountCents`). Apenas a confirmação debita o valor bruto uma vez. Falhas definitivas liberam a reserva; respostas ambíguas mantêm o saque reservado para conciliação.
-- Saques anteriores preservam as condições gravadas e o valor originalmente enviado, sem aplicação retroativa da nova taxa. Mínimo, carência e calendário de saques permanecem inalterados.
+- Saques anteriores preservam as condições gravadas e o valor originalmente enviado, sem aplicação retroativa da nova taxa. Mínimo de R$ 55,00 e carência de 30 dias de cota ativa continuam valendo.
+- Calendário vigente: **Carteira Rede** permite saques todos os dias, sem limite de quantidade, respeitando saldo disponível e mínimo de R$ 55,00; **Carteira Cota** permite **1 saque por semana**, liberado todo domingo às 18h (horário de São Paulo). Cota e Rede não somam saldos, e todos os ganhos creditados nas duas contam para o teto único de 250% das cotas confirmadas.
 
 ## Funcionalidades
 
@@ -80,9 +81,9 @@ A cobrança cripto devolve endereço e valor exato em USDT, exibidos no portal p
 ### Diário e teto de ganhos
 
 - O MASTER cadastra uma data e um percentual do Diário em **Comissões**.
-- Às 09:00 no horário de São Paulo, o cron aplica o percentual somente às cotas financeiras confirmadas; o Plano de Associado de R$ 55,00 não recebe Diário nem gera Unilevel.
+- Todas as noites (horário de São Paulo, sem horário exato fixado) o cron aplica o percentual somente às cotas financeiras confirmadas; se o percentual do dia não for cadastrado, o processamento repete o último percentual. O Plano de Associado de R$ 55,00 não recebe Diário, não gera Indicação Direta nem Unilevel.
 - O Unilevel incide sobre o Diário efetivamente creditado ao cotista, usando os níveis configurados no sistema.
-- Diário, indicação direta, Unilevel e créditos financeiros compartilham um teto de 200% do total de cotas confirmadas. Novas cotas ampliam essa capacidade; valores acima do teto não são creditados retroativamente.
+- Diário, indicação direta e Unilevel compartilham o teto único de 250% do total de cotas confirmadas (150% além dos 100% investidos), somando os ganhos das duas carteiras. Saques não reiniciam esse limite. Novas cotas ampliam a capacidade; valores acima do teto não são creditados retroativamente.
 - Na Vercel, configure `CRON_SECRET` com pelo menos 16 caracteres. O agendamento `0 12 * * *` usa UTC e corresponde a 09:00 em `America/Sao_Paulo`.
 
 ## Arquitetura
@@ -116,9 +117,9 @@ As novas rotas são implementadas em `server/index.ts`, usado pelo servidor Node
 ## Carteira de Saldo e Carteira de Rendimentos
 
 - Depósitos confirmados entram na **Carteira de Saldo** e servem exclusivamente para comprar produtos, Plano de Associado e cotas. Não podem ser sacados.
-- Bônus aprovados, indicações e rendimentos creditados entram na **Carteira de Rendimentos**. Estornos de ganhos e saques pagos são debitados dessa mesma carteira.
+- Bônus aprovados, indicações e Unilevel entram na **Carteira Rede**; os rendimentos do Diário entram na **Carteira Cota**. Estornos de ganhos e saques pagos são debitados na carteira de origem.
 - Saques exigem conta ativa e Plano de Associado ativo ou cotas com pagamento confirmado e status Ativo (sem expiração vencida, quando informada). Apenas a classificação Cotista não basta.
-- O mínimo de saque continua em R$ 50. Solicitações Pendente/Em análise reservam rendimentos; Recusado libera a reserva; Pago debita uma única vez. A elegibilidade é revalidada ao solicitar, editar e pagar, inclusive pelo MASTER.
+- O mínimo de saque é de R$ 55,00 por carteira. Solicitações Pendente/Em análise reservam os rendimentos da carteira de origem; Recusado libera a reserva; Pago debita uma única vez. A elegibilidade é revalidada ao solicitar, editar e pagar, inclusive pelo MASTER.
 - O financeiro oferece depósito PIX e cripto pelo 2PP. Apenas confirmação autenticada do gateway ou conciliação MASTER credita o depósito, com deduplicação por fatura.
 - Compras pela carteira usam `/api/wallet/purchases`, chave idempotente e preços conferidos no servidor. Não usam rendimentos nem valores reservados para saques.
 - Ajustes MASTER exigem carteira explícita na interface; integrações antigas que omitem `wallet` usam `BALANCE`. Nunca registrar um depósito como `EARNINGS`.

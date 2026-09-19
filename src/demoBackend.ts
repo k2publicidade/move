@@ -1,7 +1,7 @@
 import { summarizeAdminMetrics } from './adminMetrics'
 import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, creditDeposit, debitPurchase, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from './wallets'
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
-import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from './businessPlan'
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from './businessPlan'
 import { summarizeBonusPeriods } from './bonusPeriods'
 
 type Row = Record<string, any> & { id: string }
@@ -29,11 +29,15 @@ export interface DemoDatabase {
 const databaseKey = 'gomove-demo-database-v4'
 const canSponsorDemoRegistration = (user: User) => user.status === 'ACTIVE'
   && (user.role === 'ADMIN_MASTER' || isBonusEligibleParticipant(user))
+const brlCents = (cents: number) => `R$ ${(cents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const minimumQuotaMessage = (requiredCents: number) => requiredCents >= ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS
+  ? `Upgrade obrigatório: você atingiu o limite de ${brlCents(ASSOCIATE_BONUS_CAP_CENTS)} em bonificações; adquira no mínimo ${brlCents(ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS)} em cotas para se tornar Cotista`
+  : `A aquisição mínima de cotas é de ${brlCents(SHAREHOLDER_MIN_QUOTA_CENTS)}`
 const parseDemoQuotaAmount = (input: unknown) => {
   const amount = Number(input), rawCents = amount * 100, amountCents = Math.round(rawCents)
   const configuredMax = Number((globalThis as any).process?.env?.GOMOVE_MAX_QUOTA_CENTS)
   const maxCents = Number.isSafeInteger(configuredMax) && configuredMax >= SHAREHOLDER_MIN_QUOTA_CENTS ? configuredMax : 100_000_000
-  if (!Number.isFinite(amount) || !Number.isSafeInteger(amountCents) || Math.abs(rawCents - amountCents) > 0.000001 || amountCents < SHAREHOLDER_MIN_QUOTA_CENTS || amountCents > maxCents) throw new Error(`A aquisição deve ficar entre R$ 500,00 e R$ ${(maxCents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}, com no máximo duas casas decimais`)
+  if (!Number.isFinite(amount) || !Number.isSafeInteger(amountCents) || Math.abs(rawCents - amountCents) > 0.000001 || amountCents < SHAREHOLDER_MIN_QUOTA_CENTS || amountCents > maxCents) throw new Error(`A aquisição deve ficar entre ${brlCents(SHAREHOLDER_MIN_QUOTA_CENTS)} e R$ ${(maxCents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}, com no máximo duas casas decimais`)
   return { amount, amountCents }
 }
 const credentials: Record<string, string> = {
@@ -382,7 +386,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       item = { ...base, type: 'ASSOCIATE_PLAN', productType: 'ASSOCIATE_PLAN', amount: 55, amountCents: ASSOCIATE_PLAN_PRICE_CENTS, description: 'Plano de Associado GoMove', remaining: 0, status: 'Pago' }; db.invoices.unshift(item)
       Object.assign(user, { associatePlanStatus: 'ACTIVE', associatePlanPaidAt: today() })
     } else if (body.productType === 'INVESTMENT') {
-      const amounts = parseDemoQuotaAmount(body.amount)
+      const amounts = parseDemoQuotaAmount(body.amount), upgradeQuotaCents = requiredUpgradeQuotaCents(user, db.bonusEntries)
+      if (amounts.amountCents < upgradeQuotaCents) throw new Error(minimumQuotaMessage(upgradeQuotaCents))
       debitPurchase(db, user, amounts.amountCents, base.id, 'Compra de cotas GoMove', () => id('MOV'))
       item = { ...base, ...amounts, pack: 'Cotas GoMove', profit: 0, status: 'Ativo' }; db.investments.unshift(item)
       confirmDemoInvestment(db, item, user.id)
@@ -527,8 +532,10 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     if (adminCollection === 'withdrawals') { const requestedStatus = body?.status ?? 'Pendente'; Object.assign(item, { userId: owner!.id, status: 'Pendente' }); updateWithdrawal(db, item, { ...body, status: requestedStatus }, () => id('MOV')) }
     if (adminCollection === 'vehicles') item.driver = owner?.name ?? '—'
     if (adminCollection === 'investments') {
+      const parsedQuota = parseDemoQuotaAmount(item.amount), requiredQuotaCents = requiredUpgradeQuotaCents(owner!, db.bonusEntries)
+      if (parsedQuota.amountCents < requiredQuotaCents) throw new Error(minimumQuotaMessage(requiredQuotaCents))
       item.pack = 'Cotas GoMove'
-      Object.assign(item, parseDemoQuotaAmount(item.amount))
+      Object.assign(item, parsedQuota)
     }
     ;(db[adminCollection] as Row[]).unshift(item)
     audit(db, user.id, 'RECORD_CREATE', String(adminCollection).toUpperCase(), item.id, item)
@@ -692,7 +699,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'POST' && userCollection) {
     if (userCollection === 'orders') throw new Error('Use a compra de produtos pela carteira')
     if (userCollection === 'investments') {
-      const { amount, amountCents } = parseDemoQuotaAmount(body?.amount)
+      const { amount, amountCents } = parseDemoQuotaAmount(body?.amount), requiredQuotaCents = requiredUpgradeQuotaCents(user, db.bonusEntries)
+      if (amountCents < requiredQuotaCents) throw new Error(minimumQuotaMessage(requiredQuotaCents))
       if (!body?.idempotencyKey) throw new Error('Identificador idempotente ausente')
       const existing = db.investments.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
       if (existing) return existing as T
@@ -738,7 +746,9 @@ function confirmDemoInvestment(db: DemoDatabase, investment: Row, actorId: strin
     if (existing) return { event: existing, bonuses: db.bonusEntries.filter(item => item.eventId === existing.id), idempotent: true }
     const investor = db.users.find(item => item.id === investment.userId && item.status === 'ACTIVE')
     if (!investor || !Number.isInteger(investment.amountCents) || investment.amountCents <= 0) throw new Error('Investimento precisa estar vinculado a uma conta ativa e possuir valor válido')
-    if (investment.amountCents < SHAREHOLDER_MIN_QUOTA_CENTS) throw new Error('A aquisição mínima para o upgrade de Cotista é de R$ 500,00 em cotas')
+    const upgradeRequirementCents = requiredUpgradeQuotaCents(investor, db.bonusEntries)
+    if (investment.amountCents < SHAREHOLDER_MIN_QUOTA_CENTS) throw new Error(minimumQuotaMessage(SHAREHOLDER_MIN_QUOTA_CENTS))
+    if (upgradeRequirementCents > SHAREHOLDER_MIN_QUOTA_CENTS && investment.amountCents < upgradeRequirementCents) throw new Error(minimumQuotaMessage(upgradeRequirementCents))
     const rule = db.commissionRules.find(item => item.active && item.eventType === 'INVESTMENT_CONFIRMED')
     if (!rule) throw new Error('Ative uma regra de comissão antes da confirmação')
     const plan = validatedPlan(rule.levels, rule.directReferralBps)
@@ -756,7 +766,7 @@ function confirmDemoInvestment(db: DemoDatabase, investment: Row, actorId: strin
     investment.status = 'Ativo'
     investment.confirmedAt = today()
     let releasedBonusCents = 0
-    if (canUpgradeToShareholder(investor, investment.amountCents)) {
+    if (canUpgradeToShareholder(investor, confirmedQuotaCents(db, investor.id), db.bonusEntries)) {
       if (investor.membershipType !== 'SHAREHOLDER') { investor.membershipType = 'SHAREHOLDER'; investor.shareholderSince = today() }
       const capacity = allocateEarning(db, investor, 1)
       releasedBonusCents = releaseBlockedBonuses(db.bonusEntries, investor.id, Math.max(0, capacity.capCents - capacity.consumedCents), () => id('BON'))

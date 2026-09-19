@@ -1,6 +1,9 @@
 export const ASSOCIATE_PLAN_PRICE_CENTS = 5_500
 export const ASSOCIATE_BONUS_CAP_CENTS = 50_000
-export const SHAREHOLDER_MIN_QUOTA_CENTS = 50_000
+// Pacote mínimo do Cotista (ingresso direto, sem passar pelo Plano de Associado).
+export const SHAREHOLDER_MIN_QUOTA_CENTS = 6_000
+// Upgrade obrigatório do Associado que atingiu o teto de R$ 500 em bonificações.
+export const ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS = 30_000
 export const SHAREHOLDER_EARNING_CAP_BPS = 15_000
 export const DIRECT_REFERRAL_BPS = 1_000
 export const UNILEVEL_LEVELS = [
@@ -56,15 +59,19 @@ export function isBonusEligibleParticipant(participant: BusinessParticipant): bo
     && (normalized.membershipType === 'SHAREHOLDER' || normalized.associatePlanStatus === 'ACTIVE')
 }
 
+function allocatedBonusCents(participant: BusinessParticipant, entries: BonusLike[]): number {
+  const normalized = withBusinessPlanDefaults(participant)
+  return entries
+    .filter(entry => entry.userId === normalized.id && entry.amountCents > 0 && ['PENDING', 'APPROVED'].includes(entry.status))
+    .reduce((sum, entry) => sum + entry.amountCents, 0)
+}
+
 export function allocateBonusByBusinessPlan(participant: BusinessParticipant, entries: BonusLike[], amountCents: number) {
   if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error('O valor da bonificação deve ser positivo e informado em centavos')
   const normalized = withBusinessPlanDefaults(participant)
   if (normalized.membershipType === 'SHAREHOLDER') return { availableCents: amountCents, blockedCents: 0 }
 
-  const allocatedCents = entries
-    .filter(entry => entry.userId === normalized.id && entry.amountCents > 0 && ['PENDING', 'APPROVED'].includes(entry.status))
-    .reduce((sum, entry) => sum + entry.amountCents, 0)
-  const remainingCents = Math.max(0, normalized.bonusCapCents - allocatedCents)
+  const remainingCents = Math.max(0, normalized.bonusCapCents - allocatedBonusCents(normalized, entries))
   const availableCents = Math.min(amountCents, remainingCents)
   return { availableCents, blockedCents: amountCents - availableCents }
 }
@@ -73,9 +80,7 @@ export function allocateEarningByBusinessPlan(participant: BusinessParticipant, 
   if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error('O valor do ganho deve ser positivo e informado em centavos')
   if (!Number.isInteger(quotaAmountCents) || quotaAmountCents < 0) throw new Error('O valor das cotas deve ser informado em centavos')
   const normalized = withBusinessPlanDefaults(participant)
-  const bonusCents = entries
-    .filter(entry => entry.userId === normalized.id && entry.amountCents > 0 && ['PENDING', 'APPROVED'].includes(entry.status))
-    .reduce((sum, entry) => sum + entry.amountCents, 0)
+  const bonusCents = allocatedBonusCents(normalized, entries)
   const dailyCents = dailyEarnings
     .filter(entry => entry.userId === normalized.id && entry.creditedAmountCents > 0)
     .reduce((sum, entry) => sum + entry.creditedAmountCents, 0)
@@ -87,9 +92,21 @@ export function allocateEarningByBusinessPlan(participant: BusinessParticipant, 
   return { availableCents, cappedCents: amountCents - availableCents, capCents, consumedCents }
 }
 
-export function canUpgradeToShareholder(participant: BusinessParticipant, quotaAmountCents: number): boolean {
+// O Associado que já esgotou o teto de bonificações só evolui a Cotista com uma
+// cota mínima de R$ 300 (upgrade obrigatório); o ingresso direto segue em R$ 60.
+export function associateBonusCapReached(participant: BusinessParticipant, entries: BonusLike[] = []): boolean {
   const normalized = withBusinessPlanDefaults(participant)
-  return normalized.role === 'ASSOCIATE' && normalized.status === 'ACTIVE' && Number.isInteger(quotaAmountCents) && quotaAmountCents >= SHAREHOLDER_MIN_QUOTA_CENTS
+  if (normalized.membershipType === 'SHAREHOLDER') return false
+  return allocatedBonusCents(normalized, entries) >= normalized.bonusCapCents
+}
+
+export function requiredUpgradeQuotaCents(participant: BusinessParticipant, entries: BonusLike[] = []): number {
+  return associateBonusCapReached(participant, entries) ? ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS : SHAREHOLDER_MIN_QUOTA_CENTS
+}
+
+export function canUpgradeToShareholder(participant: BusinessParticipant, quotaAmountCents: number, entries: BonusLike[] = []): boolean {
+  const normalized = withBusinessPlanDefaults(participant)
+  return normalized.role === 'ASSOCIATE' && normalized.status === 'ACTIVE' && Number.isInteger(quotaAmountCents) && quotaAmountCents >= requiredUpgradeQuotaCents(normalized, entries)
 }
 
 export function releaseBlockedBonuses<T extends BonusLike & { id?: string; reason?: string }>(entries: T[], userId: string, maxReleaseCents = Number.POSITIVE_INFINITY, idFactory?: () => string): number {

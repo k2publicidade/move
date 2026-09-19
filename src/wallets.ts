@@ -3,9 +3,11 @@ type Row = Record<string, any>
 export type WalletType = 'BALANCE' | 'COTA' | 'REDE'
 export const walletLabels: Record<WalletType, string> = { BALANCE: 'Carteira de Saldo', COTA: 'Carteira Cota', REDE: 'Carteira Rede' }
 export const WITHDRAWAL_MIN_CENTS = 5_500
-export const COTA_WITHDRAWAL_WINDOW_DAYS = [15, 30]
 export const COTA_CARENCIA_DAYS = 30
 export const WITHDRAWAL_FEE_BPS = 600
+// Carteira Cota: 1 saque por semana, liberado todo domingo às 18h (America/Sao_Paulo).
+export const COTA_WITHDRAWAL_WEEKDAY = 0
+export const COTA_WITHDRAWAL_HOUR = 18
 
 export const storeProducts = [
   { id: 'PROD-01', name: 'Capacete Urban Carbon', price: 289, category: 'Segurança' },
@@ -21,11 +23,28 @@ export function moneyCents(value: unknown): number {
 
 // São Paulo calendar helpers — withdrawal windows/carência follow the project timezone.
 function saoPauloParts(date: Date) {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date)
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(date)
   const get = (type: string) => Number(parts.find(p => p.type === type)?.value)
-  return { year: get('year'), month: get('month'), day: get('day') }
+  return { year: get('year'), month: get('month'), day: get('day'), hour: get('hour') }
 }
-const saoPauloDateKey = (date: Date) => { const { year, month, day } = saoPauloParts(date); return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` }
+
+// Weekly boundary of the Cota wallet: the most recent Sunday 18:00 (São Paulo) at or
+// before `date`. Every withdrawal inside that week consumes the single weekly slot.
+export function cotaWithdrawalWeekKey(date = new Date()): string {
+  const { year, month, day, hour } = saoPauloParts(date)
+  const dayStartMs = Date.UTC(year, month - 1, day)
+  const daysSinceSunday = (new Date(dayStartMs).getUTCDay() - COTA_WITHDRAWAL_WEEKDAY + 7) % 7
+  let weekStartMs = dayStartMs - daysSinceSunday * 24 * 60 * 60 * 1000
+  if (daysSinceSunday === 0 && hour < COTA_WITHDRAWAL_HOUR) weekStartMs -= 7 * 24 * 60 * 60 * 1000
+  return new Date(weekStartMs + COTA_WITHDRAWAL_HOUR * 60 * 60 * 1000).toISOString()
+}
+
+// Next Sunday 18:00 (São Paulo) release, shown to the participant when the weekly
+// Cota withdrawal was already used.
+export function nextCotaWithdrawalRelease(date = new Date()): string {
+  const currentMs = Date.parse(cotaWithdrawalWeekKey(date))
+  return new Date(currentMs + 7 * 24 * 60 * 60 * 1000).toISOString()
+}
 
 // A withdrawal belongs to exactly one earnings wallet: COTA (own quota yield) or REDE (network bonuses).
 export function withdrawalWallet(withdrawal: Row): WalletType {
@@ -46,7 +65,7 @@ export function transactionWallet(transaction: Row): WalletType {
   return 'BALANCE'
 }
 
-export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string) {
+export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string, date = new Date()) {
   let balanceCents = 0, cotaCents = 0, redeCents = 0
   for (const transaction of db.transactions as Row[]) {
     if (transaction.userId !== user.id) continue
@@ -63,6 +82,7 @@ export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string) 
   const hasActivePackage = user.status === 'ACTIVE' && (user.associatePlanStatus === 'ACTIVE' || (db.investments as Row[]).some(i => i.userId === user.id && i.status === 'Ativo' && i.paymentStatus === 'CONFIRMED' && (!i.expiresAt || Date.parse(i.expiresAt) > Date.now())))
   const cotaWithdrawableCents = hasActivePackage ? Math.max(0, cotaCents - reservedCotaCents) : 0
   const redeWithdrawableCents = hasActivePackage ? Math.max(0, redeCents - reservedRedeCents) : 0
+  const cotaWithdrawalUsedThisWeek = hasCotaWithdrawalThisWeek(db, user, excludeWithdrawalId, date)
   return {
     balanceCents,
     cotaCents,
@@ -75,11 +95,11 @@ export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string) 
     cotaWithdrawableCents,
     redeWithdrawableCents,
     withdrawableCents: cotaWithdrawableCents + redeWithdrawableCents,
+    // Cota wallet is released every Sunday 18:00 (São Paulo) for a single withdrawal.
+    cotaWithdrawalOpen: !cotaWithdrawalUsedThisWeek,
+    cotaWithdrawalUsedThisWeek,
+    cotaWithdrawalReleasedAt: hasQuotaMatured(user, date) && !cotaWithdrawalUsedThisWeek ? cotaWithdrawalWeekKey(date) : nextCotaWithdrawalRelease(date),
   }
-}
-
-export function isCotaWithdrawalWindow(date = new Date()): boolean {
-  return COTA_WITHDRAWAL_WINDOW_DAYS.includes(saoPauloParts(date).day)
 }
 
 export function hasQuotaMatured(user: Row, date = new Date()): boolean {
@@ -102,12 +122,15 @@ export function withdrawalAmounts(amount: unknown) {
   return { amountCents, feeBps: WITHDRAWAL_FEE_BPS, feeCents, netCents: amountCents - feeCents }
 }
 
-// Carteira Rede: at most one withdrawal per day.
-export function hasRedeWithdrawalToday(db: Row, user: Row, excludeId?: string, date = new Date()): boolean {
-  const today = saoPauloDateKey(date)
-  return nonRefusedWithdrawals(db, user, 'REDE', excludeId).some(w => {
-    if (w.createdAt) { const wd = new Date(w.createdAt); if (Number.isFinite(wd.getTime())) return saoPauloDateKey(wd) === today }
-    return false
+// Carteira Rede: saques todos os dias, sem limite de quantidade (valida saldo e mínimo).
+// Carteira Cota: 1 saque por semana, dentro da janela aberta todo domingo às 18h.
+export function hasCotaWithdrawalThisWeek(db: Row, user: Row, excludeId?: string, date = new Date()): boolean {
+  const currentWeek = cotaWithdrawalWeekKey(date)
+  return nonRefusedWithdrawals(db, user, 'COTA', excludeId).some(w => {
+    if (!w.createdAt) return false
+    const created = new Date(w.createdAt)
+    if (!Number.isFinite(created.getTime())) return false
+    return cotaWithdrawalWeekKey(created) === currentWeek
   })
 }
 
@@ -164,11 +187,10 @@ export function validateWithdrawal(db: Row, user: Row, amount: unknown, wallet: 
   if (cents < WITHDRAWAL_MIN_CENTS) throw new Error('O valor mínimo para saque é de R$ 55,00')
   if (wallet === 'COTA') {
     if (!hasQuotaMatured(user, date)) throw new Error('A Carteira Cota exige 30 dias de cota ativa para o primeiro saque')
-    if (!isCotaWithdrawalWindow(date)) throw new Error('A Carteira Cota permite saque apenas nos dias 15 e 30 de cada mês')
+    if (hasCotaWithdrawalThisWeek(db, user, excludeId, date)) throw new Error('A Carteira Cota permite 1 saque por semana; a próxima liberação é no domingo, às 18h')
     if (cents > wallets.cotaWithdrawableCents) throw new Error('Valor indisponível para saque na Carteira Cota')
     return { ...amounts, wallet }
   }
-  if (hasRedeWithdrawalToday(db, user, excludeId, date)) throw new Error('A Carteira Rede permite apenas 1 saque por dia')
   if (cents > wallets.redeWithdrawableCents) throw new Error('Valor indisponível para saque na Carteira Rede')
   return { ...amounts, wallet }
 }

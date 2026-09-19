@@ -12,10 +12,11 @@ Fonte de verdade: `Plano_de_Negocios_GoMove_Associado_e_Cotista.pdf`, versão an
 | Bonificação direta e indireta | O nível 1 é identificado como indicação direta; níveis posteriores são identificados como indiretos. Percentuais continuam configuráveis pelo MASTER. |
 | Associado não participa dos resultados das cotas | O painel do Associado não apresenta resultados financeiros como direito disponível. Esse direito aparece somente para Cotistas. |
 | Limite acumulado de R$ 500,00 em bonificações | O motor soma bônus aprovados e pendentes do Associado. A parcela que exceder R$ 500,00 recebe o estado `BLOCKED_UPGRADE` e não pode ser aprovada ou sacada. |
-| Upgrade com aquisição mínima de R$ 500,00 em cotas | O checkout e a confirmação administrativa rejeitam aquisições inferiores a R$ 500,00. A confirmação promove automaticamente o participante a Cotista. |
+| Upgrade do Associado com aquisição mínima de R$ 300,00 em cotas | Quando o Associado atinge o teto de R$ 500,00 em bonificações, o checkout e a confirmação administrativa exigem cota de no mínimo R$ 300,00. A confirmação promove automaticamente o participante a Cotista e libera os valores bloqueados dentro do novo teto. |
+| Ingresso direto como Cotista a partir de R$ 60,00 | A aquisição mínima de cotas é de R$ 60,00, sem exigir o Plano de Associado. A confirmação em uma única cota promove o participante a Cotista. |
 | Manutenção do Plano de Associado ativo | Aquisição de cotas, ativação de conta e elegibilidade para novos bônus exigem plano ativo. |
 | Liberação do excedente após upgrade | Ao confirmar a primeira aquisição elegível, todos os bônus `BLOCKED_UPGRADE` do participante passam automaticamente para `PENDING`, preservando a etapa de aprovação financeira. |
-| Cotista sem o limite anterior | O motor não aplica o teto de R$ 500,00 a participantes da modalidade Cotista. |
+| Cotista sem o limite anterior | O motor não aplica o teto de R$ 500,00 a participantes da modalidade Cotista; aplica o teto de 250% do valor das cotas confirmadas. |
 
 ## Parâmetros não definidos no anexo
 

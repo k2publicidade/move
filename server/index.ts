@@ -9,7 +9,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { neon } from '@neondatabase/serverless'
 import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
 import { TwoPpConfigurationError, TwoPpRequestError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, createTwoPpPixWithdrawal, normalizeCustomerDocument, verifyTwoPpWebhookToken, type TwoPpCryptoCurrency } from './twopayments.js'
-import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, withBusinessPlanDefaults } from '../src/businessPlan.js'
+import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from '../src/businessPlan.js'
 import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, settleWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from '../src/wallets.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
 
@@ -179,13 +179,18 @@ async function mergeTwoPpTransaction(collection:'invoices'|'investments',localId
  }
  return null
 }
-function parseQuotaAmount(input:unknown) { const amount=Number(input),rawCents=amount*100,amountCents=Math.round(rawCents),configuredMax=Number(process.env.GOMOVE_MAX_QUOTA_CENTS),maxCents=Number.isSafeInteger(configuredMax)&&configuredMax>=SHAREHOLDER_MIN_QUOTA_CENTS?configuredMax:100_000_000;if(!Number.isFinite(amount)||!Number.isSafeInteger(amountCents)||Math.abs(rawCents-amountCents)>0.000001||amountCents<SHAREHOLDER_MIN_QUOTA_CENTS||amountCents>maxCents)throw new Error(`A aquisição deve ficar entre R$ 500,00 e R$ ${(maxCents/100).toLocaleString('pt-BR',{minimumFractionDigits:2})}, com no máximo duas casas decimais`);return {amount,amountCents} }
+const brlCents=(cents:number)=>`R$ ${(cents/100).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`
+function minimumQuotaMessage(requiredCents:number) { return requiredCents>=ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS?`Upgrade obrigatório: você atingiu o limite de ${brlCents(ASSOCIATE_BONUS_CAP_CENTS)} em bonificações; adquira no mínimo ${brlCents(ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS)} em cotas para se tornar Cotista`:`A aquisição mínima de cotas é de ${brlCents(SHAREHOLDER_MIN_QUOTA_CENTS)}` }
+function parseQuotaAmount(input:unknown) { const amount=Number(input),rawCents=amount*100,amountCents=Math.round(rawCents),configuredMax=Number(process.env.GOMOVE_MAX_QUOTA_CENTS),maxCents=Number.isSafeInteger(configuredMax)&&configuredMax>=SHAREHOLDER_MIN_QUOTA_CENTS?configuredMax:100_000_000;if(!Number.isFinite(amount)||!Number.isSafeInteger(amountCents)||Math.abs(rawCents-amountCents)>0.000001||amountCents<SHAREHOLDER_MIN_QUOTA_CENTS||amountCents>maxCents)throw new Error(`A aquisição deve ficar entre ${brlCents(SHAREHOLDER_MIN_QUOTA_CENTS)} e R$ ${(maxCents/100).toLocaleString('pt-BR',{minimumFractionDigits:2})}, com no máximo duas casas decimais`);return {amount,amountCents} }
 function parseWebhookAmountCents(value:unknown) { const raw=String(value??'').trim();if(!/^\d+(?:\.\d{1,2})?$/.test(raw))return null;const [units,decimals='']=raw.split('.'),cents=Number(units)*100+Number(decimals.padEnd(2,'0'));return Number.isSafeInteger(cents)?cents:null }
 const CRYPTO_ASSET_CURRENCIES:Record<string,TwoPpCryptoCurrency>={'USDT-TRC20':'usdt-trc20','USDT-BEP20':'usdt-bep20','USDT':'usdt-trc20'}
 const NON_RETRYABLE_CHECKOUT_STATUSES=new Set(['CANCELLED','TIMED_OUT','ERROR','SUPERSEDED','FAILED'])
 function confirmedQuotaCents(db:Db,userId:string) { return db.investments.filter((investment:any)=>investment.userId===userId&&(investment.status==='Ativo'||investment.paymentStatus==='CONFIRMED')).reduce((sum:number,investment:any)=>sum+Number(investment.amountCents||0),0) }
 function allocateEarning(db:Db,participant:MlmUser,amountCents:number) { return allocateEarningByBusinessPlan(participant,db.bonusEntries,db.dailyProfitabilities as any,confirmedQuotaCents(db,participant.id),amountCents) }
 function saoPauloDate(date=new Date()) { const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date),value=(type:string)=>parts.find(part=>part.type===type)?.value;return `${value('year')}-${value('month')}-${value('day')}` }
+// Processamento diário dos rendimentos: todas as noites, sem horário exato fixado.
+const NIGHTLY_PROCESSING_START_HOUR=18,NIGHTLY_PROCESSING_END_HOUR=5
+function saoPauloHour(date=new Date()) { const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/Sao_Paulo',hour:'2-digit',hourCycle:'h23'}).formatToParts(date);return Number(parts.find(part=>part.type==='hour')?.value) }
 function processDailyProfitabilityRun(db:Db,run:any,actorId:string) {
  if(run.status==='PROCESSED')return {run,earnings:db.dailyProfitabilities.filter(item=>item.runId===run.id),bonuses:db.bonusEntries.filter(item=>item.dailyProfitabilityRunId===run.id),idempotent:true}
  if(run.status!=='SCHEDULED')throw new Error('O Diário não está disponível para processamento')
@@ -212,7 +217,9 @@ function confirmInvestmentInDb(db:Db, inv:any, actorId:string) {
  if(existing)return {event:existing,bonuses:db.bonusEntries.filter(b=>b.eventId===existing.id),idempotent:true}
  const investor=db.users.find(u=>u.id===inv.userId&&u.status==='ACTIVE')
  if(!investor||!Number.isInteger(inv.amountCents)||inv.amountCents<=0)throw new Error('Investimento precisa estar vinculado a uma conta ativa e possuir valor válido')
- if(inv.amountCents<SHAREHOLDER_MIN_QUOTA_CENTS)throw new Error('A aquisição mínima para o upgrade de Cotista é de R$ 500,00 em cotas')
+ const upgradeRequirementCents=requiredUpgradeQuotaCents(investor,db.bonusEntries)
+ if(inv.amountCents<SHAREHOLDER_MIN_QUOTA_CENTS)throw new Error(minimumQuotaMessage(SHAREHOLDER_MIN_QUOTA_CENTS))
+ if(upgradeRequirementCents>SHAREHOLDER_MIN_QUOTA_CENTS&&inv.amountCents<upgradeRequirementCents)throw new Error(minimumQuotaMessage(upgradeRequirementCents))
  const rule=db.commissionRules.find(r=>r.active&&r.eventType==='INVESTMENT_CONFIRMED')
  if(!rule)throw new Error('Ative uma regra de comissão antes da confirmação')
  const plan=validateCommissionPlan(rule.levels,rule.directReferralBps),event={id:crypto.randomUUID(),investmentId:inv.id,investorId:investor.id,amountCents:inv.amountCents,ruleSnapshot:{id:rule.id,name:rule.name,...plan},createdAt:now()}
@@ -227,7 +234,7 @@ function confirmInvestmentInDb(db:Db, inv:any, actorId:string) {
  }
  inv.paymentStatus='CONFIRMED';inv.status='Ativo';inv.confirmedAt=now()
  let releasedBonusCents=0
- if(canUpgradeToShareholder(investor,inv.amountCents)) {
+ if(canUpgradeToShareholder(investor,confirmedQuotaCents(db,investor.id),db.bonusEntries)) {
   if(investor.membershipType!=='SHAREHOLDER'){investor.membershipType='SHAREHOLDER';investor.shareholderSince=now()}
   const capacity=allocateEarning(db,investor,1)
   releasedBonusCents=releaseBlockedBonuses(db.bonusEntries as any,investor.id,Math.max(0,capacity.capCents-capacity.consumedCents),()=>crypto.randomUUID())
@@ -314,7 +321,22 @@ app.post(['/api/webhooks/2pp','/api/webhooks/2pp/:localId'],express.raw({type:'a
  return res.json({received:true,idempotent:false})
 })
 app.use(express.json())
-app.get('/api/cron/daily-profitability',(req,res)=>{const secret=String(process.env.CRON_SECRET??'');if(secret.length<16)return res.status(503).json({error:'CRON_SECRET não configurado'});if(req.header('authorization')!==`Bearer ${secret}`)return res.status(401).json({error:'Cron não autorizado'});const d=readDb(),date=saoPauloDate(),run=d.dailyProfitabilityRuns.find(item=>item.date===date);if(!run)return res.json({processed:false,date,reason:'Nenhum Diário cadastrado para hoje'});try{const result=processDailyProfitabilityRun(d,run,'SYSTEM_CRON');if(!result.idempotent)writeDb(d);res.json({processed:true,...result})}catch(error:any){res.status(422).json({error:error.message})}})
+app.get('/api/cron/daily-profitability',(req,res)=>{
+ const secret=String(process.env.CRON_SECRET??'');if(secret.length<16)return res.status(503).json({error:'CRON_SECRET não configurado'});if(req.header('authorization')!==`Bearer ${secret}`)return res.status(401).json({error:'Cron não autorizado'})
+ const d=readDb(),date=saoPauloDate(),hour=saoPauloHour()
+ let run=d.dailyProfitabilityRuns.find((item:any)=>item.date===date),autoScheduled=false
+ if(!run){
+  // Sem Diário cadastrado para hoje o processamento noturno repete o último percentual,
+  // para que todos os dias sejam apurados sem exigir um horário exato de disparo.
+  if(!(hour>=NIGHTLY_PROCESSING_START_HOUR||hour<=NIGHTLY_PROCESSING_END_HOUR))return res.json({processed:false,date,hour,reason:'Fora da janela noturna de processamento'})
+  const previous=d.dailyProfitabilityRuns.filter((item:any)=>item.date<date&&Number.isInteger(item.rateBps)&&item.rateBps>0).sort((a:any,b:any)=>a.date<b.date?1:-1)[0]
+  if(!previous)return res.json({processed:false,date,hour,reason:'Nenhum Diário cadastrado para hoje'})
+  run={id:crypto.randomUUID(),date,rateBps:previous.rateBps,description:`Repetição automática do Diário de ${previous.date}`,status:'SCHEDULED',createdBy:'SYSTEM_NIGHTLY',createdAt:now()}
+  d.dailyProfitabilityRuns.unshift(run);autoScheduled=true
+  audit(d,'SYSTEM_NIGHTLY','DAILY_PROFITABILITY_SCHEDULE','DAILY_PROFITABILITY',run.id,{date,rateBps:run.rateBps,source:'NIGHTLY_AUTO'})
+ }
+ try{const result=processDailyProfitabilityRun(d,run,'SYSTEM_CRON');if(!result.idempotent)writeDb(d);res.json({processed:true,date,hour,autoScheduled,...result})}catch(error:any){res.status(422).json({error:error.message})}
+})
 function auth(req:Request,res:Response,next:NextFunction) {
  const token=req.header('authorization')?.replace(/^Bearer\s+/i,''),db=readDb(),session=token?db.sessions[token]:undefined
  const user=session&&Date.parse(session.expiresAt)>Date.now()?db.users.find(u=>u.id===session.userId):undefined
@@ -435,7 +457,7 @@ app.post('/api/admin/investments/:id/confirm',auth,admin,(req,res)=>{const d=rea
 app.get('/api/admin/audit-logs',auth,admin,(req,res)=>res.json(page(readDb().auditLogs,req)))
 for(const key of ['vehicles','investments','orders','invoices','withdrawals','tickets'] as const) {
  app.get(`/api/admin/${key}`,auth,admin,(req,res)=>res.json(page(readDb()[key],req)))
- app.post(`/api/admin/${key}`,auth,admin,(req,res)=>{const b=req.body??{},d=readDb(),owner=b.userId?d.users.find((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'):undefined;if(key!=='vehicles'&&!owner)return res.status(422).json({error:'Selecione uma conta de usuário válida'});if(b.userId&&!owner)return res.status(422).json({error:'Usuário inválido'});const prefixes:any={vehicles:'VEI',investments:'ATV',orders:'PED',invoices:'INV',withdrawals:'SAQ',tickets:'TK'},item:any={...b,id:`${prefixes[key]}-${Date.now().toString(36)}`,createdAt:now()};if(!item.date&&key!=='vehicles'&&key!=='invoices')item.date=new Date().toLocaleDateString('pt-BR');if(key==='withdrawals'){try{const requestedStatus=b.status??'Pendente';Object.assign(item,{userId:owner!.id,status:'Pendente',paidAt:'—',wallet:'EARNINGS'});updateWithdrawal(d,item,{...b,status:requestedStatus},crypto.randomUUID)}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='vehicles')item.driver=owner?.name??'—';if(key==='investments'){try{Object.assign(item,parseQuotaAmount(b.amount),{pack:'Cotas GoMove'})}catch(error:any){return res.status(422).json({error:error.message})}}d[key].unshift(item);audit(d,(req as any).user.id,'RECORD_CREATE',key.toUpperCase(),item.id,item);writeDb(d);res.status(201).json(item)})
+ app.post(`/api/admin/${key}`,auth,admin,(req,res)=>{const b=req.body??{},d=readDb(),owner=b.userId?d.users.find((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'):undefined;if(key!=='vehicles'&&!owner)return res.status(422).json({error:'Selecione uma conta de usuário válida'});if(b.userId&&!owner)return res.status(422).json({error:'Usuário inválido'});const prefixes:any={vehicles:'VEI',investments:'ATV',orders:'PED',invoices:'INV',withdrawals:'SAQ',tickets:'TK'},item:any={...b,id:`${prefixes[key]}-${Date.now().toString(36)}`,createdAt:now()};if(!item.date&&key!=='vehicles'&&key!=='invoices')item.date=new Date().toLocaleDateString('pt-BR');if(key==='withdrawals'){try{const requestedStatus=b.status??'Pendente';Object.assign(item,{userId:owner!.id,status:'Pendente',paidAt:'—',wallet:'EARNINGS'});updateWithdrawal(d,item,{...b,status:requestedStatus},crypto.randomUUID)}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='vehicles')item.driver=owner?.name??'—';if(key==='investments'){try{const parsed=parseQuotaAmount(b.amount),upgradeQuotaCents=requiredUpgradeQuotaCents(owner!,d.bonusEntries);if(parsed.amountCents<upgradeQuotaCents)throw new Error(minimumQuotaMessage(upgradeQuotaCents));Object.assign(item,parsed,{pack:'Cotas GoMove'})}catch(error:any){return res.status(422).json({error:error.message})}}d[key].unshift(item);audit(d,(req as any).user.id,'RECORD_CREATE',key.toUpperCase(),item.id,item);writeDb(d);res.status(201).json(item)})
  app.patch(`/api/admin/${key}/:id`,auth,admin,(req,res)=>{const d=readDb(),item=d[key].find((x:any)=>x.id===req.params.id),b={...(req.body??{})} as any;if(!item)return res.status(404).json({error:'Registro não encontrado'});if(b.userId&&!d.users.some((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'))return res.status(422).json({error:'Usuário inválido'});if(key==='withdrawals'){try{updateWithdrawal(d,item,b,crypto.randomUUID);audit(d,(req as any).user.id,'RECORD_UPDATE','WITHDRAWALS',item.id,b);writeDb(d);return res.json(item)}catch(error:any){return res.status(422).json({error:error.message})}}let parsedInvestment:any;if(key==='investments'&&b.amount!==undefined){try{parsedInvestment=parseQuotaAmount(b.amount)}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='investments')delete b.amountCents;Object.assign(item,b,{id:item.id},parsedInvestment??{});if(key==='vehicles')item.driver=d.users.find((u:any)=>u.id===item.userId)?.name??'—';audit(d,(req as any).user.id,'RECORD_UPDATE',key.toUpperCase(),item.id,b);writeDb(d);res.json(item)})
  app.delete(`/api/admin/${key}/:id`,auth,admin,(req,res)=>{const d=readDb(),index=d[key].findIndex((x:any)=>x.id===req.params.id);if(index<0)return res.status(404).json({error:'Registro não encontrado'});const item=d[key][index];if(key==='withdrawals'&&(item.status==='Pago'||d.transactions.some((t:any)=>t.withdrawalId===item.id)))return res.status(422).json({error:'Um saque pago não pode ser excluído'});d[key].splice(index,1);audit(d,(req as any).user.id,'RECORD_DELETE',key.toUpperCase(),item.id);writeDb(d);res.json({id:item.id})})
 }
@@ -456,7 +478,8 @@ app.post('/api/wallet/purchases',auth,(req,res)=>{
    item={...base,productType:'ASSOCIATE_PLAN',description:'Plano de Associado GoMove',amount:ASSOCIATE_PLAN_PRICE_CENTS/100,amountCents:ASSOCIATE_PLAN_PRICE_CENTS,remaining:0,status:'Pago',paidAt:now()};d.invoices.unshift(item)
    Object.assign(user,{associatePlanStatus:'ACTIVE',associatePlanAmountCents:ASSOCIATE_PLAN_PRICE_CENTS,associatePlanPaidAt:now()})
   }else if(b.productType==='INVESTMENT'){
-   const {amount,amountCents}=parseQuotaAmount(b.amount)
+   const {amount,amountCents}=parseQuotaAmount(b.amount),upgradeQuotaCents=requiredUpgradeQuotaCents(user,d.bonusEntries)
+   if(amountCents<upgradeQuotaCents)throw new Error(minimumQuotaMessage(upgradeQuotaCents))
    if(walletSummary(d,user).balanceCents<amountCents)throw new Error('Saldo insuficiente na Carteira de Saldo')
    item={...base,amount,amountCents,pack:'Cotas GoMove',profit:0,status:'Pendente',paymentStatus:'PENDING'}
    d.investments.unshift(item);confirmInvestmentInDb(d,item,user.id)
@@ -504,7 +527,10 @@ app.post('/api/investments',auth,async(req,res)=>{
  let amount:number,amountCents:number;try{({amount,amountCents}=parseQuotaAmount(b.amount))}catch(error:any){return res.status(422).json({error:error.message})}
  const idempotencyKey=String(b.idempotencyKey??'').trim()
  if(!idempotencyKey)return res.status(422).json({error:'Identificador idempotente ausente'})
- let d=readDb(),investment=d.investments.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey)
+ let d=readDb()
+ const requiredQuotaCents=requiredUpgradeQuotaCents(user,d.bonusEntries)
+ if(amountCents<requiredQuotaCents)return res.status(422).json({error:minimumQuotaMessage(requiredQuotaCents)})
+ let investment=d.investments.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey)
  if(investment&&NON_RETRYABLE_CHECKOUT_STATUSES.has(investment.paymentStatus))return res.status(409).json({error:'Esta tentativa de pagamento foi encerrada; inicie outra com uma nova chave'})
  if(investment?.paymentUrl||investment?.pixQrCode||investment?.payAddress||investment?.paymentStatus==='CONFIRMED')return res.json(investment)
  if(investment)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})

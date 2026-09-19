@@ -4,11 +4,14 @@ import {
   ASSOCIATE_BONUS_CAP_CENTS,
   DIRECT_REFERRAL_BPS,
   ASSOCIATE_PLAN_PRICE_CENTS,
+  ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS,
   SHAREHOLDER_MIN_QUOTA_CENTS,
   UNILEVEL_LEVELS,
   allocateBonusByBusinessPlan,
   allocateEarningByBusinessPlan,
+  associateBonusCapReached,
   canUpgradeToShareholder,
+  requiredUpgradeQuotaCents,
   isBonusEligibleParticipant,
   releaseBlockedBonuses,
 } from '../src/businessPlan.js'
@@ -26,7 +29,8 @@ const associate = {
 test('business plan constants match the attached document', () => {
   assert.equal(ASSOCIATE_PLAN_PRICE_CENTS, 5_500)
   assert.equal(ASSOCIATE_BONUS_CAP_CENTS, 50_000)
-  assert.equal(SHAREHOLDER_MIN_QUOTA_CENTS, 50_000)
+  assert.equal(SHAREHOLDER_MIN_QUOTA_CENTS, 6_000)
+  assert.equal(ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, 30_000)
 })
 
 test('commission plan uses 10% direct referral and six descending unilevel levels', () => {
@@ -47,12 +51,21 @@ test('shareholder earnings are limited to 150% additional (250% total) of confir
   assert.deepEqual(allocateEarningByBusinessPlan(shareholder, bonuses, dailyEarnings, 100_000, 2_000), { availableCents: 2_000, cappedCents: 0, capCents: 150_000, consumedCents: 99_000 })
 })
 
-test('shareholder upgrade requires at least R$ 500 in quotas but not an associate plan', () => {
-  assert.equal(canUpgradeToShareholder(associate, 49_999), false)
-  assert.equal(canUpgradeToShareholder(associate, 50_000), true)
-  assert.equal(canUpgradeToShareholder({ ...associate, associatePlanStatus: 'INACTIVE' }, 50_000), true)
-  assert.equal(canUpgradeToShareholder({ ...associate, associatePlanStatus: 'PENDING' }, 50_000), true)
-  assert.equal(canUpgradeToShareholder({ ...associate, status: 'BLOCKED' }, 50_000), false)
+test('direct entry as Cotista starts at R$ 60 and the mandatory upgrade at the cap requires R$ 300', () => {
+  assert.equal(associateBonusCapReached(associate), false)
+  assert.equal(requiredUpgradeQuotaCents(associate), 6_000)
+  assert.equal(canUpgradeToShareholder(associate, 5_999), false)
+  assert.equal(canUpgradeToShareholder(associate, 6_000), true)
+  assert.equal(canUpgradeToShareholder({ ...associate, associatePlanStatus: 'INACTIVE' }, 6_000), true)
+  assert.equal(canUpgradeToShareholder({ ...associate, status: 'BLOCKED' }, 6_000), false)
+
+  const capped = [{ userId: associate.id, amountCents: 45_000, status: 'APPROVED' }, { userId: associate.id, amountCents: 5_000, status: 'PENDING' }]
+  assert.equal(associateBonusCapReached(associate, capped), true)
+  assert.equal(associateBonusCapReached(associate, [{ userId: associate.id, amountCents: 49_999, status: 'APPROVED' }]), false)
+  assert.equal(associateBonusCapReached(associate, [{ userId: associate.id, amountCents: 60_000, status: 'BLOCKED_UPGRADE' }]), false)
+  assert.equal(requiredUpgradeQuotaCents(associate, capped), 30_000)
+  assert.equal(canUpgradeToShareholder(associate, 29_999, capped), false)
+  assert.equal(canUpgradeToShareholder(associate, 30_000, capped), true)
 })
 
 test('upgrade releases every blocked bonus for the participant', () => {
