@@ -1,6 +1,6 @@
 import type { AssociatePlanStatus, MembershipType } from './businessPlan'
 
-export type Role = 'ADMIN_MASTER' | 'ASSOCIATE'
+export type Role = 'ADMIN_MASTER' | 'ADMIN_VIEWER' | 'ASSOCIATE'
 export type UserStatus = 'ACTIVE' | 'PENDING' | 'BLOCKED'
 export interface User { id:string; name:string; username:string; role:Role; status:UserStatus; sponsorId:string|null; inviteCode:string; email?:string; registrationSource?:'INVITE'|'DIRECT'; membershipType?:MembershipType; associatePlanStatus?:AssociatePlanStatus; associatePlanAmountCents?:number; bonusCapCents?:number; associatePlanPaidAt?:string; shareholderSince?:string }
 export interface Page<T> { items:T[]; page:number; pageSize:number; total:number }

@@ -3,6 +3,7 @@ import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal,
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, SHAREHOLDER_TOTAL_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from './businessPlan'
 import { summarizeBonusPeriods } from './bonusPeriods'
+import { FINANCIAL_RESET_PHRASE, matchesFinancialResetPhrase, resetFinancialState } from './financialReset'
 
 type Row = Record<string, any> & { id: string }
 
@@ -356,7 +357,9 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   }
 
   const user = requireUser(db, token)
-  const isAdmin = user.role === 'ADMIN_MASTER'
+  // Perfil de visualização: consulta todo o sistema e nunca altera dados.
+  if (user.role === 'ADMIN_VIEWER' && !['GET', 'HEAD'].includes(method)) throw Object.assign(new Error('Perfil de visualização: esta conta só pode consultar os dados'), { status: 403 })
+  const isAdmin = user.role === 'ADMIN_MASTER' || user.role === 'ADMIN_VIEWER'
   if (route.startsWith('/admin/') && !isAdmin) throw Object.assign(new Error('Acesso administrativo obrigatório'), { status: 403 })
   if (method === 'GET' && route === '/auth/me') return { user: publicUser(user) } as T
 
@@ -520,6 +523,58 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'GET' && route === '/admin/bonus-entries') return paged(db.bonusEntries) as T
   if (method === 'GET' && route === '/admin/daily-profitabilities') return paged(db.dailyProfitabilityRuns) as T
   if (method === 'GET' && route === '/admin/audit-logs') return paged(db.auditLogs) as T
+  if (method === 'GET' && route === '/admin/viewers') return paged(db.users.filter(item => item.role === 'ADMIN_VIEWER').map(publicUser)) as T
+
+  if (method === 'POST' && route === '/admin/viewers') {
+    const name = String(body?.name ?? '').trim()
+    const username = String(body?.username ?? '').trim().toLowerCase()
+    const email = String(body?.email ?? '').trim().toLowerCase()
+    const password = String(body?.password ?? '')
+    if (!name || !username || !email || password.length < 6 || password.length > 128) throw new Error('Informe nome, usuário, e-mail e uma senha entre 6 e 128 caracteres')
+    if (!/^[a-z0-9._-]{3,32}$/.test(username)) throw new Error('Usuário inválido: use de 3 a 32 caracteres (letras, números, ponto, hífen ou sublinhado)')
+    if (db.users.some(item => item.username.toLowerCase() === username || String(item.email ?? '').toLowerCase() === email)) throw new Error('Usuário ou e-mail já cadastrado')
+    const viewer: User & { demoPassword: string } = { id: id('USR'), name, username, email, role: 'ADMIN_VIEWER', status: 'ACTIVE', sponsorId: null, inviteCode: `vis-${Math.floor(100000 + Math.random() * 899999)}`, demoPassword: password }
+    db.users.push(viewer)
+    db.profiles[viewer.id] = { name, email, country: 'Brasil' }
+    audit(db, user.id, 'VIEWER_ADMIN_CREATE', 'USER', viewer.id, { username })
+    save(db)
+    return publicUser(viewer) as T
+  }
+
+  const viewerRoute = route.match(/^\/admin\/viewers\/([^/]+)$/)
+  if (viewerRoute) {
+    const target = db.users.find(item => item.id === viewerRoute[1] && item.role === 'ADMIN_VIEWER') as (User & { demoPassword?: string }) | undefined
+    if (!target) throw new Error('Administrador de visualização não encontrado')
+    if (method === 'PATCH') {
+      if (body?.name !== undefined && String(body.name).trim()) target.name = String(body.name).trim()
+      if (body?.password !== undefined) {
+        const password = String(body.password)
+        if (password.length < 6 || password.length > 128) throw new Error('A senha deve ter entre 6 e 128 caracteres')
+        target.demoPassword = password
+      }
+      audit(db, user.id, 'VIEWER_ADMIN_UPDATE', 'USER', target.id, { name: target.name, passwordChanged: body?.password !== undefined })
+      save(db)
+      return publicUser(target) as T
+    }
+    if (method === 'DELETE') {
+      db.users = db.users.filter(item => item.id !== target.id)
+      delete db.profiles[target.id]
+      audit(db, user.id, 'VIEWER_ADMIN_DELETE', 'USER', target.id, { username: target.username })
+      save(db)
+      return { id: target.id } as T
+    }
+  }
+
+  if (method === 'POST' && route === '/admin/financial-reset') {
+    if (!matchesFinancialResetPhrase(body?.confirmation)) throw new Error(`Digite ${FINANCIAL_RESET_PHRASE} para confirmar a limpeza dos saldos`)
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backup = `${databaseKey}:backup:${stamp}`
+    localStorage.setItem(backup, JSON.stringify(db))
+    const summary = resetFinancialState(db)
+    audit(db, user.id, 'FINANCIAL_RESET', 'SYSTEM', 'gomove', { backup, accountsReset: summary.accountsReset, collections: summary.collections, clearedTransactionCents: summary.clearedTransactionCents, clearedWallets: summary.clearedWallets })
+    save(db)
+    return { backup, reset: summary } as T
+  }
 
   const adminCollection = route.match(/^\/admin\/(vehicles|investments|orders|invoices|withdrawals|tickets)$/)?.[1] as keyof DemoDatabase | undefined
   if (method === 'GET' && adminCollection) return paged(db[adminCollection] as Row[]) as T

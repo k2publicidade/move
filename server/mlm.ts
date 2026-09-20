@@ -1,6 +1,6 @@
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, DIRECT_REFERRAL_BPS, isBonusEligibleParticipant, type AssociatePlanStatus, type MembershipType } from '../src/businessPlan.js'
 
-export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; registrationSource?: 'INVITE' | 'DIRECT'; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
+export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ADMIN_VIEWER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; registrationSource?: 'INVITE' | 'DIRECT'; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
 export type RuleLevel = { level: number; bps: number }
 export type BonusLedgerEntry = { id: string; userId: string; amountCents: number; status: string; type: string; reversalOfId?: string; reason?: string; createdAt?: string; [key: string]: unknown }
 export type NetworkTree = MlmUser & { children: NetworkTree[] }

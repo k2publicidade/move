@@ -24,7 +24,7 @@ export type AssociatePlanStatus = 'PENDING' | 'ACTIVE' | 'INACTIVE'
 
 export type BusinessParticipant = {
   id: string
-  role: 'ADMIN_MASTER' | 'ASSOCIATE'
+  role: 'ADMIN_MASTER' | 'ADMIN_VIEWER' | 'ASSOCIATE'
   status: 'PENDING' | 'ACTIVE' | 'BLOCKED'
   membershipType?: MembershipType
   associatePlanStatus?: AssociatePlanStatus

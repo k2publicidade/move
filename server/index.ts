@@ -12,6 +12,8 @@ import { TwoPpConfigurationError, TwoPpRequestError, createTwoPpCryptoTransactio
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, SHAREHOLDER_TOTAL_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from '../src/businessPlan.js'
 import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, settleWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from '../src/wallets.js'
 import { summarizeBonusPeriods } from '../src/bonusPeriods.js'
+import { FINANCIAL_RESET_PHRASE, matchesFinancialResetPhrase, resetFinancialState } from '../src/financialReset.js'
+import { VIEWER_ADMIN_ENV, ensureConfiguredViewerAdmins, parseViewerAdminConfig } from '../src/viewerAdmins.js'
 
 const root = path.resolve(process.env.GOMOVE_ROOT || process.cwd())
 const dataFile = process.env.GOMOVE_DATA_FILE ? path.resolve(process.env.GOMOVE_DATA_FILE) : path.join(root, '.data', 'db.json')
@@ -33,6 +35,9 @@ function demoSeeded(): Db {
  return { accountOnboardingVersion:ACCOUNT_ONBOARDING_VERSION, commissionPlanVersion:COMMISSION_PLAN_VERSION, users:[admin,matheus,ana,bruno], commissionRules:[{ id:crypto.randomUUID(), name:'Indicação direta + Unilevel GoMove', eventType:'INVESTMENT_CONFIRMED', active:true, directReferralBps:DIRECT_REFERRAL_BPS, levels:UNILEVEL_LEVELS.map(level=>({...level})), createdAt:now() }], commissionEvents:[], dailyProfitabilityRuns:[], dailyProfitabilities:[], bonusEntries:[], auditLogs:[], twoPpWebhookEvents:[], sessions:{}, invoices:[], orders:[], investments:[], transactions:[], withdrawals:[], tickets:[], cart:[], profiles:{} }
 }
 function ensureDemoContent(db: Db) {
+ // Depois de zerar os saldos o conteúdo de demonstração não volta: a auditoria guarda
+ // o registro da limpeza e é ela que impede o reseed (produção nunca semeia demo).
+ if(db.auditLogs.some((entry:any)=>entry.action==='FINANCIAL_RESET'))return
  const matheus=db.users.find(user=>user.username==='matheus'), ana=db.users.find(user=>user.username==='ana')
  if(!Array.isArray(db.vehicles)||!db.vehicles.length) db.vehicles=[
   {id:'VEI-1248',userId:matheus?.id,plate:'GOM-1248',model:'Scooter Urban E2',category:'Scooter',status:'Em operação',battery:78,driver:'Matheus Oliveira',location:'São Paulo - SP'},
@@ -74,6 +79,7 @@ function normalizeDb(db:any,persisted?:string): Db {
  if (!db.users.length) Object.assign(db, initialDatabase(), db)
  if(db.accountOnboardingVersion!==ACCOUNT_ONBOARDING_VERSION){const legacyRegistrationIds=new Set(db.auditLogs.filter((entry:any)=>entry.action==='REGISTER'&&entry.targetType==='USER').map((entry:any)=>entry.targetId));db.users.filter((user:any)=>user.role==='ASSOCIATE'&&user.status==='PENDING'&&user.membershipType==='ASSOCIATE'&&user.associatePlanStatus==='PENDING'&&legacyRegistrationIds.has(user.id)).forEach((user:any)=>{user.status='ACTIVE'});db.accountOnboardingVersion=ACCOUNT_ONBOARDING_VERSION}
  if(db.commissionPlanVersion!==COMMISSION_PLAN_VERSION){db.commissionRules.forEach((rule:any)=>rule.active=false);db.commissionRules.push({id:crypto.randomUUID(),name:'Indicação direta + Unilevel GoMove',eventType:'INVESTMENT_CONFIRMED',active:true,directReferralBps:DIRECT_REFERRAL_BPS,levels:UNILEVEL_LEVELS.map(level=>({...level})),createdAt:now()});db.commissionPlanVersion=COMMISSION_PLAN_VERSION}
+ if(!databaseUrl)ensureViewerAdmins(db)
  if(process.env.NODE_ENV==='test')ensureDemoContent(db)
  for (const user of db.users) {
   if (user.role !== 'ASSOCIATE') continue
@@ -115,7 +121,13 @@ async function loadPostgresDb():Promise<{db:Db;version:number}> {
  await sql`create table if not exists gomove_state (id text primary key, payload jsonb not null, version bigint not null default 1, updated_at timestamptz not null default now())`
  let rows=await sql`select payload,version from gomove_state where id='production'`
  if(!rows.length){const seeded=initialDatabase();await sql`insert into gomove_state(id,payload) values ('production',${JSON.stringify(seeded)}::jsonb) on conflict (id) do nothing`;rows=await sql`select payload,version from gomove_state where id='production'`}
- return {db:normalizeDb(rows[0].payload),version:Number(rows[0].version)}
+ const db=normalizeDb(rows[0].payload),version=Number(rows[0].version)
+ if(ensureViewerAdmins(db).length) {
+  try { const context:DbRequestContext={db,dirty:true,version};await savePostgresDb(context);return {db,version:context.version} }
+  // Corrida entre requisições: outra instância já gravou os acessos; recarrega o estado atual.
+  catch { const current=await sql`select payload,version from gomove_state where id='production'`;return {db:normalizeDb(current[0].payload),version:Number(current[0].version)} }
+ }
+ return {db,version}
 }
 async function savePostgresDb(context:DbRequestContext) {
  const sql=neon(databaseUrl),rows=await sql`update gomove_state set payload=${JSON.stringify(context.db)}::jsonb,version=version+1,updated_at=now() where id='production' and version=${context.version} returning version`
@@ -125,6 +137,31 @@ async function savePostgresDb(context:DbRequestContext) {
 async function flushDb() {
  const context=dbRequestContext.getStore()
  if(databaseUrl&&context?.dirty)await savePostgresDb(context)
+}
+// Acessos administrativos de visualização declarados em ambiente (GOMOVE_VIEWER_ADMINS):
+// criados uma vez, nunca sobrescrevem senha existente.
+function ensureViewerAdmins(db:Db):Array<{id:string;username:string}> {
+ let config
+ try { config=parseViewerAdminConfig(process.env[VIEWER_ADMIN_ENV]) }
+ catch(error:any) { console.error('VIEWER_ADMINS_CONFIG_INVALID',String(error?.message??error)); return [] }
+ if(!config.length)return []
+ const created=ensureConfiguredViewerAdmins(db as any,config,{createId:crypto.randomUUID,hashPassword:hash})
+ if(created.length)console.log('VIEWER_ADMINS_CREATED',JSON.stringify(created.map(item=>item.username)))
+ return created
+}
+// Cópia integral do estado antes de qualquer limpeza destrutiva: uma linha extra em
+// gomove_state (produção) ou um arquivo ao lado do db.json (execução local).
+async function backupDatabaseState(db:Db):Promise<string> {
+ const stamp=new Date().toISOString().replace(/[:.]/g,'-'),backupId=`backup-${stamp}`
+ if(databaseUrl) {
+  const sql=neon(databaseUrl)
+  await sql`insert into gomove_state(id,payload,version) values (${backupId},${JSON.stringify(db)}::jsonb,1) on conflict (id) do nothing`
+  return backupId
+ }
+ const target=`${dataFile}.${backupId}.json`
+ fs.mkdirSync(path.dirname(dataFile),{recursive:true})
+ fs.writeFileSync(target,JSON.stringify(db,null,2),'utf8')
+ return target
 }
 async function refreshDb():Promise<Db> {
  if(!databaseUrl)return readDb()
@@ -345,10 +382,13 @@ function auth(req:Request,res:Response,next:NextFunction) {
  const support=!!actor&&!!parent&&parent.userId===actor.id&&!parent.actorId&&Date.parse(parent.expiresAt)>Date.now()
  if(!user||(session?.actorId?!support:user.status!=='ACTIVE'))return res.status(401).json({error:'Sessão inválida ou conta inativa'})
  ;(req as any).user=user;(req as any).supportActor=actor
+ // O perfil de visualização (ADMIN_VIEWER) consulta tudo e não altera nada. As rotas de
+ // saída seguem liberadas para a sessão poder ser encerrada.
+ if(user.role==='ADMIN_VIEWER'&&!['GET','HEAD'].includes(req.method)&&!['/api/auth/logout','/api/logout'].includes(req.path))return res.status(403).json({error:'Perfil de visualização: esta conta só pode consultar os dados'})
  if(actor&&!['GET','HEAD'].includes(req.method)){audit(db,actor.id,'SUPPORT_ACTION_ATTEMPT','USER',user.id,{method:req.method,path:req.path});writeDb(db)}
  next()
 }
-function admin(req:Request,res:Response,next:NextFunction) { if((req as any).supportActor||(req as any).user.role!=='ADMIN_MASTER') return res.status(403).json({error:'Acesso administrativo obrigatório'}); next() }
+function admin(req:Request,res:Response,next:NextFunction) { const role=(req as any).user?.role; if((req as any).supportActor||!['ADMIN_MASTER','ADMIN_VIEWER'].includes(role)) return res.status(403).json({error:'Acesso administrativo obrigatório'}); next() }
 function page<T>(items:T[], req:Request) { const p=Math.max(1,Number(req.query.page)||1), size=Math.min(100,Math.max(1,Number(req.query.pageSize)||20)); return {items:items.slice((p-1)*size,p*size),page:p,pageSize:size,total:items.length} }
 function createSession(db:Db,user:MlmUser) { const token=crypto.randomBytes(32).toString('base64url');db.sessions[token]={userId:user.id,expiresAt:new Date(Date.now()+12*60*60*1000).toISOString()};for(const [key,session] of Object.entries(db.sessions))if(Date.parse(session.expiresAt)<=Date.now())delete db.sessions[key];return {token,user:publicUser(user)} }
 app.post(['/api/auth/login','/api/login'],publicRateLimit,(req,res)=>{ const {username,password}=req.body??{},plainPassword=String(password??''),login=String(username).trim().toLowerCase(),db=readDb();let u=db.users.find(x=>x.username.toLowerCase()===login||x.email.toLowerCase()===login);if(!u&&login==='master')u=db.users.find(x=>x.username.toLowerCase()==='admin'); if(plainPassword.length>128||!u||!verify(plainPassword,String(u.passwordHash))||u.status!=='ACTIVE') return res.status(401).json({error:'Usuário ou senha inválidos'}); const session=createSession(db,u);writeDb(db);res.json(session) })
@@ -455,6 +495,49 @@ app.post('/api/admin/bonus-entries/:id/reverse',auth,admin,(req,res)=>{const d=r
 app.post('/api/admin/bonus-entries/manual-credit',auth,admin,(req,res)=>{const b=req.body??{},d=readDb(),recipient=d.users.find(u=>u.id===b.userId&&isBonusEligibleParticipant(u));if(!recipient||!Number.isInteger(b.amountCents)||b.amountCents<=0||!String(b.reason??'').trim())return res.status(422).json({error:'Selecione uma conta financeiramente elegível, valor e justificativa válidos'});const allocation=allocateEarning(d,recipient,b.amountCents),created:any[]=[];if(allocation.availableCents)created.push({id:crypto.randomUUID(),userId:recipient.id,amountCents:allocation.availableCents,status:'PENDING',type:'MANUAL',reason:String(b.reason).trim(),createdAt:now()});if(allocation.cappedCents)created.push({id:crypto.randomUUID(),userId:recipient.id,amountCents:allocation.cappedCents,status:recipient.membershipType==='SHAREHOLDER'?'CAPPED_250_PERCENT':'BLOCKED_UPGRADE',type:'MANUAL',reason:recipient.membershipType==='SHAREHOLDER'?'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite':'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista',createdAt:now()});d.bonusEntries.push(...created);audit(d,(req as any).user.id,'BONUS_MANUAL','BONUS',created[0].id,{userId:recipient.id,amountCents:b.amountCents,cappedCents:allocation.cappedCents,capCents:allocation.capCents});writeDb(d);res.status(201).json(created[0])})
 app.post('/api/admin/investments/:id/confirm',auth,admin,(req,res)=>{const d=readDb(),inv=d.investments.find(x=>x.id===req.params.id);if(!inv)return res.status(404).json({error:'Investimento não encontrado'});try{const result=confirmInvestmentInDb(d,inv,(req as any).user.id);if(!result.idempotent)writeDb(d);res.json(result)}catch(error:any){res.status(422).json({error:error.message})}})
 app.get('/api/admin/audit-logs',auth,admin,(req,res)=>res.json(page(readDb().auditLogs,req)))
+// Administradores de visualização: consultam todo o sistema e não editam nada.
+app.get('/api/admin/viewers',auth,admin,(req,res)=>res.json(page(readDb().users.filter(u=>u.role==='ADMIN_VIEWER').map(publicUser),req)))
+app.post('/api/admin/viewers',auth,admin,(req,res)=>{
+ const b=req.body??{},name=String(b.name??'').trim(),username=String(b.username??'').trim().toLowerCase(),email=String(b.email??'').trim().toLowerCase(),password=String(b.password??'')
+ if(!name||!username||!email||password.length<6||password.length>128)return res.status(422).json({error:'Informe nome, usuário, e-mail e uma senha entre 6 e 128 caracteres'})
+ if(!/^[a-z0-9._-]{3,32}$/.test(username))return res.status(422).json({error:'Usuário inválido: use de 3 a 32 caracteres (letras, números, ponto, hífen ou sublinhado)'})
+ const d=readDb()
+ if(d.users.some(u=>u.username.toLowerCase()===username||String(u.email??'').toLowerCase()===email))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
+ const viewer={id:crypto.randomUUID(),username,email,name,passwordHash:hash(password),role:'ADMIN_VIEWER' as const,status:'ACTIVE' as const,sponsorId:null,inviteCode:`vis-${crypto.randomBytes(3).toString('hex')}`}
+ d.users.push(viewer);if(!d.profiles)d.profiles={};d.profiles[viewer.id]={name,email,country:'Brasil'}
+ audit(d,(req as any).user.id,'VIEWER_ADMIN_CREATE','USER',viewer.id,{username})
+ writeDb(d);res.status(201).json(publicUser(viewer))
+})
+app.patch('/api/admin/viewers/:id',auth,admin,(req,res)=>{
+ const d=readDb(),viewer=d.users.find(u=>u.id===req.params.id&&u.role==='ADMIN_VIEWER'),b=req.body??{}
+ if(!viewer)return res.status(404).json({error:'Administrador de visualização não encontrado'})
+ const name=b.name===undefined?undefined:String(b.name).trim()
+ if(name!==undefined)viewer.name=name||viewer.name
+ if(b.password!==undefined){const password=String(b.password);if(password.length<6||password.length>128)return res.status(422).json({error:'A senha deve ter entre 6 e 128 caracteres'});viewer.passwordHash=hash(password);for(const [token,session] of Object.entries(d.sessions as Record<string,any>))if(session.userId===viewer.id)delete (d.sessions as Record<string,any>)[token]}
+ audit(d,(req as any).user.id,'VIEWER_ADMIN_UPDATE','USER',viewer.id,{name:viewer.name,passwordChanged:b.password!==undefined})
+ writeDb(d);res.json(publicUser(viewer))
+})
+app.delete('/api/admin/viewers/:id',auth,admin,(req,res)=>{
+ const d=readDb(),viewer=d.users.find(u=>u.id===req.params.id&&u.role==='ADMIN_VIEWER')
+ if(!viewer)return res.status(404).json({error:'Administrador de visualização não encontrado'})
+ for(const [token,session] of Object.entries(d.sessions as Record<string,any>))if(session.userId===viewer.id)delete (d.sessions as Record<string,any>)[token]
+ d.users=d.users.filter(u=>u.id!==viewer.id);if(d.profiles)delete d.profiles[viewer.id]
+ audit(d,(req as any).user.id,'VIEWER_ADMIN_DELETE','USER',viewer.id,{username:viewer.username})
+ writeDb(d);res.json({id:viewer.id})
+})
+// Zera os saldos de todas as contas. Exige a frase de confirmação, gera backup do estado
+// antes de apagar e registra a operação na auditoria. Configuração do gateway 2PP (variáveis
+// de ambiente) e cadastros/rede/configuração permanecem intactos.
+app.post('/api/admin/financial-reset',auth,admin,async(req,res)=>{
+ const d=readDb()
+ if(!matchesFinancialResetPhrase((req.body??{}).confirmation))return res.status(422).json({error:`Digite ${FINANCIAL_RESET_PHRASE} para confirmar a limpeza dos saldos`})
+ let backup:string
+ try{backup=await backupDatabaseState(d)}catch(error:any){return res.status(503).json({error:`Não foi possível gerar o backup do estado; a limpeza foi cancelada: ${String(error?.message??error)}`})}
+ const summary=resetFinancialState(d)
+ audit(d,(req as any).user.id,'FINANCIAL_RESET','SYSTEM','gomove',{backup,accountsReset:summary.accountsReset,collections:summary.collections,clearedTransactionCents:summary.clearedTransactionCents,clearedWallets:summary.clearedWallets})
+ writeDb(d)
+ res.json({backup,reset:summary})
+})
 for(const key of ['vehicles','investments','orders','invoices','withdrawals','tickets'] as const) {
  app.get(`/api/admin/${key}`,auth,admin,(req,res)=>res.json(page(readDb()[key],req)))
  app.post(`/api/admin/${key}`,auth,admin,(req,res)=>{const b=req.body??{},d=readDb(),owner=b.userId?d.users.find((u:any)=>u.id===b.userId&&u.role==='ASSOCIATE'):undefined;if(key!=='vehicles'&&!owner)return res.status(422).json({error:'Selecione uma conta de usuário válida'});if(b.userId&&!owner)return res.status(422).json({error:'Usuário inválido'});const prefixes:any={vehicles:'VEI',investments:'ATV',orders:'PED',invoices:'INV',withdrawals:'SAQ',tickets:'TK'},item:any={...b,id:`${prefixes[key]}-${Date.now().toString(36)}`,createdAt:now()};if(!item.date&&key!=='vehicles'&&key!=='invoices')item.date=new Date().toLocaleDateString('pt-BR');if(key==='withdrawals'){try{const requestedStatus=b.status??'Pendente';Object.assign(item,{userId:owner!.id,status:'Pendente',paidAt:'—',wallet:'EARNINGS'});updateWithdrawal(d,item,{...b,status:requestedStatus},crypto.randomUUID)}catch(error:any){return res.status(422).json({error:error.message})}}if(key==='vehicles')item.driver=owner?.name??'—';if(key==='investments'){try{const parsed=parseQuotaAmount(b.amount),upgradeQuotaCents=requiredUpgradeQuotaCents(owner!,d.bonusEntries);if(parsed.amountCents<upgradeQuotaCents)throw new Error(minimumQuotaMessage(upgradeQuotaCents));Object.assign(item,parsed,{pack:'Cotas GoMove'})}catch(error:any){return res.status(422).json({error:error.message})}}d[key].unshift(item);audit(d,(req as any).user.id,'RECORD_CREATE',key.toUpperCase(),item.id,item);writeDb(d);res.status(201).json(item)})
