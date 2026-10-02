@@ -283,7 +283,7 @@ test('associate choice creates one R$ 55 checkout per idempotency key', async ()
   assert.ok(first.payAddress)
 })
 
-test('demo invite rejects an active account that has not chosen a financial product', async () => {
+test('demo invite accepts an active account before choosing a financial product', async () => {
   const suffix = Math.random().toString(36).slice(2, 8)
   const registration = await demoRequest<any>('/public/register', 'POST', {
     name: 'Sem Produto',
@@ -293,10 +293,8 @@ test('demo invite rejects an active account that has not chosen a financial prod
     cpf: '99000010527',
   })
 
-  await assert.rejects(
-    () => demoRequest(`/public/invites/${registration.user.inviteCode}`),
-    /Convite indisponível/,
-  )
+  const invite = await demoRequest<any>(`/public/invites/${registration.user.inviteCode}`)
+  assert.equal(invite.sponsor.inviteCode, registration.user.inviteCode)
 })
 
 test('demo admin follows the same activation, sponsor and quota safety rules as production', async () => {
@@ -314,10 +312,8 @@ test('demo admin follows the same activation, sponsor and quota safety rules as 
     () => demoRequest('/admin/bonus-entries/manual-credit', 'POST', { userId: unpaid.id, amountCents: 100, reason: 'Não permitido' }, master.token),
     /financeiramente elegível/i,
   )
-  await assert.rejects(
-    () => demoRequest('/admin/associates', 'POST', { name: 'Filho', username: `child-${suffix}`, email: `child-${suffix}@gomove.local`, password: 'senha-segura', sponsorId: unpaid.id }, master.token),
-    /patrocinador/i,
-  )
+  const child = await demoRequest<User>('/admin/associates', 'POST', { name: 'Filho', username: `child-${suffix}`, email: `child-${suffix}@gomove.local`, password: 'senha-segura', cpf: '99000001706', sponsorId: unpaid.id }, master.token)
+  assert.equal(child.sponsorId, unpaid.id)
 
   const quota = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: unpaid.id, amount: 500, status: 'Aguardando pagamento' }, master.token)
   assert.equal(quota.amountCents, 50_000)

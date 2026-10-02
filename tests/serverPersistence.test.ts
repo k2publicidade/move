@@ -230,8 +230,8 @@ test('public registration creates an active authenticated session directly or th
     const stateResponse = await fetch(`${baseUrl}/api/state`, { headers: { authorization: `Bearer ${direct.token}` } })
     assert.equal(stateResponse.status, 200)
     assert.equal(((await stateResponse.json()) as { business: { canReceiveFinancialResults: boolean } }).business.canReceiveFinancialResults, false)
-    const inactiveInvite = await fetch(`${baseUrl}/api/public/invites/${direct.user.inviteCode}`)
-    assert.equal(inactiveInvite.status, 404)
+    const activeInvite = await fetch(`${baseUrl}/api/public/invites/${direct.user.inviteCode}`)
+    assert.equal(activeInvite.status, 200)
 
     const adminLogin = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'gomove2026' }),
@@ -396,7 +396,7 @@ test('a signed webhook for an unknown invoice is rejected without consuming its 
   })
 })
 
-test('MASTER can keep an account ACTIVE with a pending plan but cannot assign it as sponsor', async () => {
+test('an ACTIVE account with a pending plan can invite and be assigned as sponsor', async () => {
   const server = app.listen(0)
   try {
     const address = server.address()
@@ -419,17 +419,21 @@ test('MASTER can keep an account ACTIVE with a pending plan but cannot assign it
     })
     assert.equal(invalidChild.status, 422)
 
-    const childResponse = await fetch(`${baseUrl}/api/admin/associates`, {
-      method: 'POST', headers, body: JSON.stringify({ name: 'Filho Válido', username: `valid-child-${suffix}`, email: `valid-child-${suffix}@gomove.local`, password: 'senha-segura', cpf: '99000001706', sponsorId: master.id, status: 'PENDING', associatePlanStatus: 'PENDING' }),
+    const inviteResponse = await fetch(`${baseUrl}/api/public/invites/${unpaid.inviteCode}`)
+    assert.equal(inviteResponse.status, 200)
+    const childResponse = await fetch(`${baseUrl}/api/public/register`, {
+      method: 'POST', headers, body: JSON.stringify({ name: 'Filho Válido', username: `valid-child-${suffix}`, email: `valid-child-${suffix}@gomove.local`, password: 'senha-segura', cpf: '99000001706', inviteCode: unpaid.inviteCode }),
     })
     assert.equal(childResponse.status, 201)
-    const child = await childResponse.json() as Record<string, any>
+    const { user: child } = await childResponse.json() as { user: Record<string, any> }
+    assert.equal(child.sponsorId, unpaid.id)
+    assert.equal(child.associatePlanStatus, 'PENDING')
     const activation = await fetch(`${baseUrl}/api/admin/associates/${child.id}`, { method: 'PATCH', headers, body: JSON.stringify({ status: 'ACTIVE', associatePlanStatus: 'PENDING', sponsorId: master.id }) })
     assert.equal(activation.status, 200)
     const invalidSponsorEdit = await fetch(`${baseUrl}/api/admin/associates/${child.id}`, { method: 'PATCH', headers, body: JSON.stringify({ sponsorId: unpaid.id }) })
-    assert.equal(invalidSponsorEdit.status, 422)
+    assert.equal(invalidSponsorEdit.status, 200)
     const invalidSponsorRoute = await fetch(`${baseUrl}/api/admin/associates/${child.id}/sponsor`, { method: 'PATCH', headers, body: JSON.stringify({ sponsorId: unpaid.id, reason: 'Teste de elegibilidade' }) })
-    assert.equal(invalidSponsorRoute.status, 422)
+    assert.equal(invalidSponsorRoute.status, 200)
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }

@@ -70,7 +70,7 @@ test('manual MASTER credits list only financially eligible participants', () => 
 
 test('MASTER sponsor selector excludes active accounts without a financial product', () => {
   assert.match(associates, /const masterSponsorEligible = session\.user\.role === 'ADMIN_MASTER' && session\.user\.status === 'ACTIVE'/)
-  assert.match(associates, /const eligibleSponsors = rows\.filter\(item => item\.id !== selected\?\.id && isBonusEligibleParticipant\(item\)\)/)
+  assert.match(associates, /const eligibleSponsors = rows\.filter\(item => item\.id !== selected\?\.id && item\.role === 'ASSOCIATE' && item\.status === 'ACTIVE'\)/)
   assert.match(associates, /\{masterSponsorEligible && <option value="__MASTER__">Administrador MASTER<\/option>\}/)
   assert.match(associates, /\{eligibleSponsors\.map\(item => <option/)
   assert.doesNotMatch(associates, /rows\.filter\(item => item\.id !== selected\?\.id\)\.map/)

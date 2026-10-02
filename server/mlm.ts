@@ -6,7 +6,7 @@ export type BonusLedgerEntry = { id: string; userId: string; amountCents: number
 export type NetworkTree = MlmUser & { children: NetworkTree[] }
 
 export function canSponsorRegistrations(user: MlmUser): boolean {
-  return user.status === 'ACTIVE' && (user.role === 'ADMIN_MASTER' || isBonusEligibleParticipant(user))
+  return user.status === 'ACTIVE' && (user.role === 'ADMIN_MASTER' || user.role === 'ASSOCIATE')
 }
 
 export function validateCommissionLevels(input: unknown): RuleLevel[] {

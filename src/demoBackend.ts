@@ -29,7 +29,7 @@ export interface DemoDatabase {
 
 const databaseKey = 'gomove-demo-database-v4'
 const canSponsorDemoRegistration = (user: User) => user.status === 'ACTIVE'
-  && (user.role === 'ADMIN_MASTER' || isBonusEligibleParticipant(user))
+  && (user.role === 'ADMIN_MASTER' || user.role === 'ASSOCIATE')
 const brlCents = (cents: number) => `R$ ${(cents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const minimumQuotaMessage = (requiredCents: number) => requiredCents >= ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS
   ? `Upgrade obrigatório: você atingiu o limite de ${brlCents(ASSOCIATE_BONUS_CAP_CENTS)} em bonificações; adquira no mínimo ${brlCents(ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS)} em cotas para se tornar Cotista`
@@ -491,7 +491,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       if (cpfOwnerId(db.profiles, cpf, target.id)) throw new Error('CPF já cadastrado para outro usuário')
       db.profiles[target.id] = { ...(db.profiles[target.id] ?? {}), cpf }
     }
-    if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId && canSponsorDemoRegistration(item)) || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador precisa estar financeiramente elegível e não pode criar um ciclo')
+    if (requestedSponsorId && (!db.users.some(item => item.id === requestedSponsorId && canSponsorDemoRegistration(item)) || descendants(db, target.id).has(requestedSponsorId))) throw new Error('Patrocinador precisa ter uma conta ativa e não pode criar um ciclo')
     const previousName = target.name
     const nextPlanStatus = ['ACTIVE', 'PENDING', 'INACTIVE'].includes(body.associatePlanStatus) ? body.associatePlanStatus : target.associatePlanStatus
     const nextStatus = ['ACTIVE', 'PENDING', 'BLOCKED'].includes(body.status) ? body.status : target.status

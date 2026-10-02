@@ -27,12 +27,15 @@ test('direct registration uses the active MASTER as sponsor and remains financia
   assert.equal(isBonusEligibleParticipant(registered), false)
 })
 
-test('an unpaid associate cannot sponsor registrations before choosing a valid participation', () => {
+test('an active unpaid associate can invite without becoming eligible for bonuses', () => {
   const unpaid = { ...users[1], id: 'unpaid', username: 'unpaid', email: 'unpaid@gomove.local', inviteCode: 'unpaid01', membershipType: 'ASSOCIATE' as const, associatePlanStatus: 'PENDING' as const }
-  assert.throws(
-    () => createRegistration([...users, unpaid], { username: 'invitee', email: 'invitee@gomove.local', passwordHash: 'hash', name: 'Invitee', inviteCode: unpaid.inviteCode }),
-    /active sponsor not found/,
-  )
+  const invited = createRegistration([...users, unpaid], { username: 'invitee', email: 'invitee@gomove.local', passwordHash: 'hash', name: 'Invitee', inviteCode: unpaid.inviteCode })
+  assert.equal(invited.sponsorId, unpaid.id)
+  assert.equal(isBonusEligibleParticipant(unpaid), false)
+  assert.equal(isBonusEligibleParticipant(invited), false)
+  for (const changes of [{ status: 'BLOCKED' as const }, { status: 'PENDING' as const }, { role: 'ADMIN_VIEWER' as const }]) {
+    assert.throws(() => createRegistration([...users, { ...unpaid, ...changes }], { username: 'blocked-invitee', email: 'blocked-invitee@example.com', passwordHash: 'hash', name: 'Invitee', inviteCode: unpaid.inviteCode }), /active sponsor not found/)
+  }
 })
 
 test('master is a reserved username for public registrations', () => {

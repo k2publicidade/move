@@ -8,7 +8,7 @@ Fonte de verdade: `Plano_de_Negocios_GoMove_Associado_e_Cotista.pdf`, versão an
 | --- | --- |
 | Ingresso como Associado mediante Plano de R$ 55,00 | Todo novo cadastro nasce como Associado, com plano pendente. A conta não pode ser ativada enquanto o plano de R$ 55,00 não estiver confirmado como ativo. |
 | Associado participa da comunidade | A conta ativa mantém acesso ao painel, rede, atendimento, loja e financeiro. |
-| Associado pode indicar Associados e Cotistas | O convite continua disponível para todo participante ativo. A modalidade do indicado é exibida na rede e no painel MASTER. |
+| Associado pode indicar Associados e Cotistas | Conforme definição do responsável em 02/10/2026, o convite permite cadastro para toda conta de participante ACTIVE, mesmo com plano pendente. Elegibilidade financeira para bônus e saques continua independente. A modalidade do indicado é exibida na rede e no painel MASTER. |
 | Bonificação direta e indireta | O nível 1 é identificado como indicação direta; níveis posteriores são identificados como indiretos. Percentuais continuam configuráveis pelo MASTER. |
 | Associado não participa dos resultados das cotas | O painel do Associado não apresenta resultados financeiros como direito disponível. Esse direito aparece somente para Cotistas. |
 | Limite acumulado de R$ 500,00 em bonificações | O motor soma bônus aprovados e pendentes do Associado. A parcela que exceder R$ 500,00 recebe o estado `BLOCKED_UPGRADE` e não pode ser aprovada ou sacada. |
