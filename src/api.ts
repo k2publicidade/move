@@ -6,11 +6,13 @@ export const apiErrorMessage=(body:unknown,fallback:string)=>typeof body==='obje
 export class ApiError extends Error {
   readonly retryable: boolean
   readonly retryAfter: number
+  readonly paymentId?: string
   constructor(message:string, readonly status:number, body:unknown) {
     super(message)
     const details=body&&typeof body==='object'?body as Record<string,unknown>:{}
     this.retryable=details.retryable===true
     this.retryAfter=typeof details.retryAfter==='number'&&details.retryAfter>0?details.retryAfter:0
+    this.paymentId=typeof details.paymentId==='string'?details.paymentId:undefined
   }
 }
 export function loadSession():Session|null { try { const value=sessionStorage.getItem('gomove-support-session')||localStorage.getItem(key); return value?JSON.parse(value):null } catch { return null } }

@@ -8,6 +8,7 @@ import {
   Trash2, WalletCards, Wrench, X,
 } from 'lucide-react'
 import { ApiClient, ApiError, clearSession, loadSession, saveSession, type Session } from './api'
+import { inviteCodeFromLocation, normalizeInviteCode } from './invites'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, isBonusEligibleParticipant } from './businessPlan'
 import { FINANCIAL_RESET_PHRASE } from './financialReset'
 import type { Bonus, CommissionRule, Page as ApiPage, TreeUser, User } from './types'
@@ -254,18 +255,34 @@ function BonusPeriodSummary({ periods }: { periods: { todayCents: number; weekCe
 
 function Registration({ setSession }: { setSession: (session: Session) => void }) {
   const invited = location.pathname.startsWith('/convite/')
-  const inviteCode = invited ? location.pathname.split('/').pop() || '' : ''
+  const [inviteInput, setInviteInput] = useState(() => inviteCodeFromLocation(location))
+  const inviteCode = normalizeInviteCode(inviteInput)
   const api = useApi(null)
   const [invite, setInvite] = useState<any>()
+  const [inviteError, setInviteError] = useState('')
+  const [checkingInvite, setCheckingInvite] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({ name: '', email: '', username: '', password: '', cpf: '' })
   useEffect(() => {
-    if (!invited) return
-    api.get(`/public/invites/${inviteCode}`).then(setInvite).catch(reason => setError(reason.message))
-  }, [inviteCode, invited])
+    let cancelled = false
+    setInvite(undefined); setInviteError('')
+    if (!inviteCode) { setCheckingInvite(false); return }
+    setCheckingInvite(true)
+    const timer = window.setTimeout(() => {
+      api.get(`/public/invites/${encodeURIComponent(inviteCode)}`)
+        .then(value => { if (!cancelled) setInvite(value) })
+        .catch(reason => { if (!cancelled) setInviteError(reason.message) })
+        .finally(() => { if (!cancelled) setCheckingInvite(false) })
+    }, 250)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [inviteCode, api])
+  const validInvite = invite && normalizeInviteCode(invite.sponsor.inviteCode) === inviteCode
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if ((invited || inviteInput.trim()) && (!inviteCode || !validInvite || checkingInvite)) {
+      setError('Confira o código de convite e aguarde a validação do indicador.'); return
+    }
     setBusy(true); setError('')
     try {
       const cpf = normalizeCpf(form.cpf)
@@ -275,10 +292,10 @@ function Registration({ setSession }: { setSession: (session: Session) => void }
       location.replace('/dashboard')
     } catch (reason: any) { setError(reason.message) } finally { setBusy(false) }
   }
-  const description = invited
-    ? invite ? `Indicado por ${invite.sponsor.name}. Após o cadastro, escolha como deseja ativar sua participação.` : 'Verificando convite…'
+  const description = invited || inviteInput.trim()
+    ? validInvite ? `Indicado por ${invite.sponsor.name}. Após o cadastro, escolha como deseja ativar sua participação.` : checkingInvite ? 'Verificando convite…' : 'Informe um código de convite válido para manter sua indicação.'
     : 'Crie seu acesso. Dentro da plataforma, você poderá escolher entre o Plano de Associado ou a compra direta de cotas.'
-  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">NOVO ACESSO</span><h1>Crie sua <em>conta.</em></h1><p>{description}</p><form onSubmit={submit} aria-busy={busy}><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>CPF (do titular)<input required inputMode="numeric" autoComplete="off" pattern="[0-9]{11}" maxLength={14} aria-describedby="registration-cpf-hint" title="Informe os 11 dígitos do CPF" placeholder="Somente números (11 dígitos)" value={form.cpf} onChange={event => setForm({ ...form, cpf: event.target.value.replace(/\D/g, '') })} /><small id="registration-cpf-hint">Seu CPF será usado automaticamente como chave PIX para saques. Cadastre essa chave no seu banco.</small></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required minLength={3} pattern="[A-Za-z0-9._-]+" title="Use apenas letras, números, ponto, hífen ou sublinhado" autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" aria-describedby="password-hint" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /><small id="password-hint">Use pelo menos 6 caracteres.</small></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={busy || (invited && !invite)}>{busy ? 'Criando conta…' : 'Criar conta e continuar'}</button></form><p className="registration-prompt">Já possui uma conta? <a href="/">Entrar</a></p></div></section></main>
+  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">NOVO ACESSO</span><h1>Crie sua <em>conta.</em></h1><p>{description}</p><form onSubmit={submit} aria-busy={busy}><label>Código de convite {invited ? "" : "(opcional)"}<input autoComplete="off" maxLength={300} value={inviteInput} onChange={event => setInviteInput(event.target.value)} placeholder="Código ou link do seu indicador" aria-describedby="invite-code-hint" /></label><small id="invite-code-hint">{validInvite ? `Indicador confirmado: ${invite.sponsor.name}` : "Se recebeu um convite, informe-o para vincular seu cadastro ao indicador."}</small><ErrorBox error={inviteError} /><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>CPF (do titular)<input required inputMode="numeric" autoComplete="off" pattern="[0-9]{11}" maxLength={14} aria-describedby="registration-cpf-hint" title="Informe os 11 dígitos do CPF" placeholder="Somente números (11 dígitos)" value={form.cpf} onChange={event => setForm({ ...form, cpf: event.target.value.replace(/\D/g, '') })} /><small id="registration-cpf-hint">Seu CPF será usado automaticamente como chave PIX para saques. Cadastre essa chave no seu banco.</small></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required minLength={3} pattern="[A-Za-z0-9._-]+" title="Use apenas letras, números, ponto, hífen ou sublinhado" autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" aria-describedby="password-hint" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /><small id="password-hint">Use pelo menos 6 caracteres.</small></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={busy || checkingInvite || (Boolean(invited || inviteInput.trim()) && !validInvite)}>{busy ? 'Criando conta…' : 'Criar conta e continuar'}</button></form><p className="registration-prompt">Já possui uma conta? <a href="/">Entrar</a></p></div></section></main>
 }
 
 const userLinks = [
@@ -507,26 +524,37 @@ function UserFinance({ session }: { session: Session }) {
   const [document, setDocument] = useState('')
   const [depositKey, setDepositKey] = useState(() => crypto.randomUUID())
   const [deposit, setDeposit] = useState<Row>()
+  const [resumeDepositId, setResumeDepositId] = useState<string>()
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
   useEffect(() => {
-    if (!deposit) return
-    const latest = data?.invoices.find(i => i.id === deposit.id)
-    if (latest && latest.paymentStatus !== deposit.paymentStatus) {
+    const latest = data?.invoices.find(i => i.id === (resumeDepositId || deposit?.id))
+    if (latest && latest !== deposit) {
       setDeposit(latest)
-      if (['CONFIRMED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'ERROR'].includes(latest.paymentStatus)) setDepositKey(crypto.randomUUID())
+      setResumeDepositId(undefined)
+      if (latest.paymentStatus !== deposit?.paymentStatus && ['CONFIRMED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'ERROR'].includes(latest.paymentStatus)) setDepositKey(crypto.randomUUID())
     }
-  }, [data, deposit])
+  }, [data, deposit, resumeDepositId])
   const withdraw = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setNotice(''); setActionError('')
-    try { await api.post('/withdrawals', { amount: Number(amount), wallet: withdrawWallet, idempotencyKey: withdrawalKey }); setAmount(''); setWithdrawalKey(crypto.randomUUID()); setNotice('Saque solicitado. Acompanhe o pagamento no histórico de saques.'); await load() }
-    catch (reason: any) { setActionError(reason.message) } finally { setBusy(false) }
+    try {
+      const result = await api.post<Row>('/withdrawals', { amount: Number(amount), wallet: withdrawWallet, idempotencyKey: withdrawalKey })
+      if (result.status === 'Recusado') throw new ApiError('O gateway recusou este saque. Confira o histórico e envie uma nova solicitação.', 409, { retryable: true })
+      if (['PROVIDER_UNKNOWN', 'WITHDRAWAL_CREATING'].includes(result.paymentStatus)) {
+        setNotice('Saque em processamento ou conciliação com o gateway. O valor continua reservado; acompanhe o histórico.')
+      } else {
+        setAmount(''); setWithdrawalKey(crypto.randomUUID())
+        setNotice(result.paymentStatus === 'CONFIRMED' ? 'Saque pago via PIX.' : 'Saque solicitado. Acompanhe o pagamento no histórico de saques.')
+      }
+      await load()
+    }
+    catch (reason: any) { setActionError(reason.message); if (reason instanceof ApiError && reason.retryable) setWithdrawalKey(crypto.randomUUID()); await load() } finally { setBusy(false) }
   }
   const createDeposit = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setNotice(''); setActionError('')
     try { const result = await api.post<Row>('/deposits', { amount: Number(depositAmount), paymentMethod: 'PIX', customerDocument: document, idempotencyKey: depositKey }); setDeposit(result); await load() }
-    catch (reason: any) { setActionError(reason.message); if (reason instanceof ApiError && reason.retryable) setDepositKey(crypto.randomUUID()) } finally { setBusy(false) }
+    catch (reason: any) { setActionError(reason.message); if (reason instanceof ApiError) { if (reason.retryable) setDepositKey(crypto.randomUUID()); if (reason.paymentId) setResumeDepositId(reason.paymentId) } await load() } finally { setBusy(false) }
   }
   const confirmDemoDeposit = async () => {
     if (!deposit) return
@@ -558,8 +586,8 @@ function UserFinance({ session }: { session: Session }) {
         <label>Valor do depósito (R$)<input required type="number" min="0.01" step="0.01" value={depositAmount} onChange={e => { setDepositAmount(e.target.value); setDepositKey(crypto.randomUUID()) }} /></label>
         <label>CPF ou CNPJ do pagador<input required inputMode="numeric" value={document} onChange={e => setDocument(e.target.value)} /></label>
         <button className="primary-btn" disabled={busy}>{busy ? 'Processando…' : 'Gerar PIX para depósito'}</button>
-        {pendingDeposits.map(i => <button key={i.id} type="button" className="outline-btn" onClick={() => setDeposit(i)}>Ver depósito pendente de {brl(i.amount)}</button>)}
-        {deposit && <div><p>Depósito: {brl(deposit.amount)} · {deposit.paymentStatus === 'CONFIRMED' ? 'Confirmado' : 'Aguardando confirmação'}</p>{deposit.paymentStatus === 'CONFIRMED' ? <p>Valor creditado na Carteira de Saldo.</p> : deposit.demo ? <button type="button" className="outline-btn" disabled={busy} onClick={() => void confirmDemoDeposit()}>Confirmar depósito de demonstração</button> : deposit.pixQrCode ? <PixPaymentDetails payment={deposit} /> : <p>{deposit.paymentStatus === 'CONFIRMED' ? 'Valor creditado na Carteira de Saldo.' : 'Aguarde os dados da cobrança ou a conciliação do pagamento.'}</p>}</div>}
+        {pendingDeposits.map(i => <button key={i.id} type="button" className="outline-btn" onClick={() => { setDeposit(i); setResumeDepositId(undefined) }}>Ver depósito pendente de {brl(i.amount)}</button>)}
+        {deposit && <div><p>Depósito: {brl(deposit.amount)} · {({ CONFIRMED: 'Confirmado', ERROR: 'Falha na criação', FAILED: 'Recusado pelo gateway', CANCELLED: 'Cancelado', TIMED_OUT: 'Expirado', PROVIDER_UNKNOWN: 'Em conciliação' } as Record<string, string>)[deposit.paymentStatus] || 'Aguardando confirmação'}</p>{deposit.paymentStatus === 'CONFIRMED' ? <p>Valor creditado na Carteira de Saldo.</p> : ['ERROR', 'FAILED', 'CANCELLED', 'TIMED_OUT'].includes(deposit.paymentStatus) ? <p>Esta cobrança foi encerrada. Gere um novo PIX para tentar novamente.</p> : deposit.demo ? <button type="button" className="outline-btn" disabled={busy} onClick={() => void confirmDemoDeposit()}>Confirmar depósito de demonstração</button> : deposit.pixQrCode ? <PixPaymentDetails payment={deposit} /> : <p>{deposit.paymentStatus === 'CONFIRMED' ? 'Valor creditado na Carteira de Saldo.' : 'Aguarde os dados da cobrança ou a conciliação do pagamento.'}</p>}</div>}
       </form>
       <form className="form-panel" onSubmit={withdraw} aria-busy={busy}>
         <h2>Solicitar saque</h2><p>Escolha a carteira de origem. É obrigatório ter um pacote ativo; o recebimento é via PIX com chave CPF do titular.</p>
@@ -908,6 +936,7 @@ function AdminSettings({ session, readOnly = false }: { session: Session; readOn
 }
 
 function Root() {
+  const path = usePath()
   const [session, setSession] = useState<Session | null>(loadSession())
   const [validating, setValidating] = useState(!!loadSession())
   useEffect(() => {
@@ -915,7 +944,7 @@ function Root() {
     new ApiClient(session.token, () => setSession(null)).get<{ user: User }>('/auth/me').then(({ user }) => { const next = { ...session, user }; saveSession(next); setSession(next) }).catch(() => { if(session.supportActor){sessionStorage.removeItem('gomove-support-session');window.location.assign('/admin/associates');return}clearSession();setSession(null) }).finally(() => setValidating(false))
   }, [])
   const logout = async () => { try { if(session)await new ApiClient(session.token).post('/auth/logout',{}) } finally { if(session?.supportActor){sessionStorage.removeItem('gomove-support-session');window.location.assign('/admin/associates');return}clearSession();setSession(null);go('/') } }
-  const registrationPath = location.pathname === '/cadastro' || location.pathname.startsWith('/convite/')
+  const registrationPath = location.pathname === '/cadastro' || path === '/cadastro/' || location.pathname.startsWith('/convite/')
   if (registrationPath && !session) return <Registration setSession={setSession} />
   if (validating) return <Loader />
   return session ? <Shell session={session} logout={logout} /> : <Login setSession={setSession} />

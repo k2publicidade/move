@@ -13,8 +13,15 @@ const associates = source.match(/function Associates\([\s\S]*?type CrudField/)?.
 test('registration works directly and through an affiliate invite', () => {
   assert.match(source, /location\.pathname === '\/cadastro'/)
   assert.match(source, /location\.pathname\.startsWith\('\/convite\/'\)/)
-  assert.match(registration, /const inviteCode = invited \? location\.pathname\.split\('\/'\)\.pop\(\) \|\| '' : ''/)
+  assert.match(registration, /inviteCodeFromLocation/)
   assert.match(registration, /inviteCode: inviteCode \|\| undefined/)
+})
+
+test('registration accepts an optional pasted invite and validates it before submission', () => {
+  assert.match(registration, /Código de convite/)
+  assert.match(registration, /encodeURIComponent\(inviteCode\)/)
+  assert.match(registration, /invite\.sponsor\.inviteCode/)
+  assert.match(registration, /setInvite\(undefined\)/)
 })
 
 test('successful registration stores the returned session and enters the dashboard', () => {

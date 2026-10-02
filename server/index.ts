@@ -209,7 +209,8 @@ async function mergeTwoPpTransaction(collection:'invoices'|'investments',localId
  for(let attempt=0;attempt<3;attempt++) {
   const db=await refreshDb(),item=db[collection].find((candidate:any)=>candidate.id===localId)
   if(!item)return null
-  Object.assign(item,{twoPpTransactionId:transaction.id,paymentReference:transaction.id,paymentUrl:transaction.paymentUrl,pixQrCode:transaction.pixQrCode,pixQrCodeBase64:transaction.pixQrCodeBase64,pixQrCodeUrl:transaction.pixQrCodeUrl,payAddress:transaction.payAddress,payAmount:transaction.payAmount,payCurrency:transaction.payCurrency,paymentProviderStatus:transaction.status})
+  Object.assign(item,{twoPpTransactionId:transaction.id,paymentReference:transaction.id,paymentUrl:transaction.paymentUrl,pixQrCode:transaction.pixQrCode,pixQrCodeBase64:transaction.pixQrCodeBase64,pixQrCodeUrl:transaction.pixQrCodeUrl,payAddress:transaction.payAddress,payAmount:transaction.payAmount,payCurrency:transaction.payCurrency})
+  if(item.paymentStatus!=='CONFIRMED'&&!NON_RETRYABLE_CHECKOUT_STATUSES.has(item.paymentStatus))item.paymentProviderStatus=transaction.status
   if(item.paymentStatus==='INVOICE_CREATING')item.paymentStatus='PENDING'
   onMerge(db,item);writeDb(db)
   try{await flushDb();return item}catch(error:any){if(!/alterados por outra operação/.test(String(error?.message))||attempt===2)throw error}
@@ -331,7 +332,8 @@ app.post(['/api/webhooks/2pp','/api/webhooks/2pp/:localId'],express.raw({type:'a
  if(db.twoPpWebhookEvents.some(event=>event.id===eventKey))return res.json({received:true,idempotent:true})
  if(!target.twoPpTransactionId)target.twoPpTransactionId=transactionId
  if(['INVOICE_CREATING','WITHDRAWAL_CREATING','PROVIDER_UNKNOWN'].includes(target.paymentStatus))target.paymentStatus='PENDING'
- if(target.paymentStatus!=='CONFIRMED')target.paymentProviderStatus=providerStatus
+ const previouslyTerminal=NON_RETRYABLE_CHECKOUT_STATUSES.has(target.paymentStatus)
+ if(target.paymentStatus!=='CONFIRMED'&&(!previouslyTerminal||providerStatus==='COMPLETED'))target.paymentProviderStatus=providerStatus
  if(providerStatus==='COMPLETED') {
   if(inv&&inv.paymentStatus!=='CONFIRMED')confirmInvestmentInDb(db,inv,'2pp-webhook')
   if(withdrawal&&withdrawal.paymentStatus!=='CONFIRMED') {
@@ -347,11 +349,11 @@ app.post(['/api/webhooks/2pp','/api/webhooks/2pp/:localId'],express.raw({type:'a
   }
  } else if(['FAILED','CANCELLED','EXPIRED','REFUNDED'].includes(providerStatus)) {
   const terminal=providerStatus==='EXPIRED'?'TIMED_OUT':providerStatus==='FAILED'?'FAILED':'CANCELLED'
-  if(target.paymentStatus!=='CONFIRMED') {
+  if(target.paymentStatus!=='CONFIRMED'&&!previouslyTerminal) {
    if(withdrawal)Object.assign(target,{paymentStatus:terminal,status:'Recusado',reconciliationRequired:false,paidAt:'—'})
    else Object.assign(target,{paymentStatus:terminal,status:'Cancelado',reconciliationRequired:false})
   }
- } else if(target.paymentStatus!=='CONFIRMED') target.paymentStatus='PENDING'
+ } else if(target.paymentStatus!=='CONFIRMED'&&!previouslyTerminal) target.paymentStatus='PENDING'
  db.twoPpWebhookEvents.unshift({id:eventKey,transactionId,status:providerStatus,paymentMethod,investmentId:inv?.id??null,associatePlanInvoiceId:planInvoice?.id??null,withdrawalId:withdrawal?.id??null,createdAt:now()})
  if(db.twoPpWebhookEvents.length>10000)db.twoPpWebhookEvents.length=10000
  writeDb(db)
@@ -393,7 +395,7 @@ function page<T>(items:T[], req:Request) { const p=Math.max(1,Number(req.query.p
 function createSession(db:Db,user:MlmUser) { const token=crypto.randomBytes(32).toString('base64url');db.sessions[token]={userId:user.id,expiresAt:new Date(Date.now()+12*60*60*1000).toISOString()};for(const [key,session] of Object.entries(db.sessions))if(Date.parse(session.expiresAt)<=Date.now())delete db.sessions[key];return {token,user:publicUser(user)} }
 app.post(['/api/auth/login','/api/login'],publicRateLimit,(req,res)=>{ const {username,password}=req.body??{},plainPassword=String(password??''),login=String(username).trim().toLowerCase(),db=readDb();let u=db.users.find(x=>x.username.toLowerCase()===login||x.email.toLowerCase()===login);if(!u&&login==='master')u=db.users.find(x=>x.username.toLowerCase()==='admin'); if(plainPassword.length>128||!u||!verify(plainPassword,String(u.passwordHash))||u.status!=='ACTIVE') return res.status(401).json({error:'Usuário ou senha inválidos'}); const session=createSession(db,u);writeDb(db);res.json(session) })
 app.get('/api/auth/me',auth,(req,res)=>res.json({user:publicUser((req as any).user)}))
-app.get('/api/public/invites/:inviteCode',publicRateLimit,(req,res)=>{const inviteCode=String(req.params.inviteCode).toLowerCase(),u=readDb().users.find(x=>x.inviteCode.toLowerCase()===inviteCode); if(!u||!canSponsorRegistrations(u)) return res.status(404).json({error:'Convite indisponível'}); res.json({sponsor:{name:(u as any).name,inviteCode:u.inviteCode}})})
+app.get('/api/public/invites/:inviteCode',publicRateLimit,(req,res)=>{const inviteCode=String(req.params.inviteCode).trim().toLowerCase(),u=readDb().users.find(x=>x.inviteCode.trim().toLowerCase()===inviteCode); if(!u||!canSponsorRegistrations(u)) return res.status(404).json({error:'Convite indisponível: confira o código e se o indicador possui participação ativa'}); res.json({sponsor:{name:(u as any).name,inviteCode:u.inviteCode}})})
 app.post('/api/public/register',publicRateLimit,(req,res)=>{ const b=req.body??{},password=String(b.password??''); if(!b.username||!b.email||password.length<6||password.length>128||!b.name) return res.status(422).json({error:'Informe nome, usuário, e-mail e uma senha entre 6 e 128 caracteres'}); let cpf='';try{cpf=normalizeCpf(b.cpf)}catch(error:any){return res.status(422).json({error:error.message})} const db=readDb();if(!db.profiles)db.profiles={};if(cpfOwnerId(db.profiles,cpf))return res.status(409).json({error:'CPF já cadastrado para outro usuário'}); try { const u=createRegistration(db.users,{username:b.username,email:b.email,passwordHash:hash(password),inviteCode:b.inviteCode,name:b.name}); db.users.push(u); db.profiles[u.id]={name:u.name,email:u.email,cpf}; const session=createSession(db,u);audit(db,u.id,'REGISTER','USER',u.id,{sponsorId:u.sponsorId,source:b.inviteCode?'INVITE':'DIRECT'});writeDb(db);res.status(201).json(session) } catch(e:any) { res.status(/already exists/.test(e.message)?409:422).json({error:e.message}) } })
 function descendants(db:Db,id:string) { const out=new Set<string>([id]); let changed=true; while(changed){changed=false; for(const u of db.users) if(u.sponsorId&&out.has(u.sponsorId)&&!out.has(u.id)){out.add(u.id);changed=true}} return out }
 function businessSummary(db:Db,user:MlmUser) { const bonuses=db.bonusEntries.filter(entry=>entry.userId===user.id&&entry.amountCents>0),approvedBonusCents=bonuses.filter(entry=>entry.status==='APPROVED').reduce((sum,entry)=>sum+entry.amountCents,0),pendingBonusCents=bonuses.filter(entry=>entry.status==='PENDING').reduce((sum,entry)=>sum+entry.amountCents,0),blockedBonusCents=bonuses.filter(entry=>entry.status==='BLOCKED_UPGRADE').reduce((sum,entry)=>sum+entry.amountCents,0),quotaAmountCents=confirmedQuotaCents(db,user.id),dailyEarningCents=db.dailyProfitabilities.filter(entry=>entry.userId===user.id).reduce((sum,entry)=>sum+Number(entry.creditedAmountCents||0),0),cappedEarningCents=db.dailyProfitabilities.filter(entry=>entry.userId===user.id).reduce((sum,entry)=>sum+Number(entry.cappedAmountCents||0),0)+bonuses.filter(entry=>entry.status==='CAPPED_250_PERCENT').reduce((sum,entry)=>sum+entry.amountCents,0),earningCapCents=user.membershipType==='SHAREHOLDER'?Math.floor(quotaAmountCents*SHAREHOLDER_EARNING_CAP_BPS/10_000):Number(user.bonusCapCents||ASSOCIATE_BONUS_CAP_CENTS),earningCapConsumedCents=approvedBonusCents+pendingBonusCents+dailyEarningCents,earningCapTotalCents=user.membershipType==='SHAREHOLDER'?Math.floor(quotaAmountCents*SHAREHOLDER_TOTAL_CAP_BPS/10_000):Number(user.bonusCapCents||ASSOCIATE_BONUS_CAP_CENTS),earningCapRemainingCents=Math.max(0,earningCapCents-earningCapConsumedCents),registrationAudit=db.auditLogs.find(entry=>entry.action==='REGISTER'&&entry.targetId===user.id),createdViaInvite=Boolean(user.registrationSource==='INVITE'||registrationAudit?.details?.source==='INVITE'),bonusPeriods=summarizeBonusPeriods(user.id,db.bonusEntries as any,db.transactions as any);return {...publicUser(user),createdViaInvite,wallets:walletSummary(db,user),bonusPeriods,approvedBonusCents,pendingBonusCents,blockedBonusCents,dailyEarningCents,cappedEarningCents,earningCapCents,earningCapTotalCents,earningCapConsumedCents,earningCapRemainingCents,bonusCapRemainingCents:earningCapRemainingCents,quotaAmountCents,canReceiveFinancialResults:user.membershipType==='SHAREHOLDER'}}
@@ -587,6 +589,7 @@ app.post(['/api/associate-plan','/api/deposits'],auth,async(req,res)=>{
  if(invoice?.paymentUrl||invoice?.pixQrCode||invoice?.payAddress||invoice?.paymentStatus==='CONFIRMED')return res.json(invoice)
  if(invoice)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
  invoice=d.invoices.find((item:any)=>item.userId===user.id&&item.productType===productType&&openStatuses.has(item.paymentStatus))
+ if(invoice&&productType==='DEPOSIT'&&invoice.amountCents!==invoiceAmountCents)return res.status(409).json({error:'Já existe um depósito pendente com outro valor. Abra a cobrança pendente para concluir o pagamento.',paymentId:invoice.id})
  if(invoice?.paymentUrl||invoice?.pixQrCode||invoice?.payAddress)return res.json(invoice)
  if(invoice)return res.status(409).json({error:'A cobrança está em processamento ou conciliação; tente novamente em instantes'})
  if(productType==='ASSOCIATE_PLAN'&&user.associatePlanStatus==='ACTIVE')return res.status(409).json({error:'O Plano de Associado já está ativo'})
@@ -638,7 +641,9 @@ app.post('/api/withdrawals',auth,async(req,res)=>{
  const user=(req as any).user as MlmUser,body={...(req.body??{})} as any
  const idempotencyKey=String(body.idempotencyKey??'').trim()||`withdrawal-${crypto.randomUUID()}`
  let d=readDb(),existing=d.withdrawals.find((item:any)=>item.userId===user.id&&item.idempotencyKey===idempotencyKey)
- if(existing){if(Number(body.amount)!==existing.amount||(body.wallet??'REDE')!==existing.wallet||(body.account!==undefined&&String(body.account).replace(/[.\s-]/g,'')!==existing.account))return res.status(409).json({error:'Identificador já utilizado para outro saque'});return res.json(existing)}
+ if(existing){if(Number(body.amount)!==existing.amount||(body.wallet??'REDE')!==existing.wallet||(body.account!==undefined&&String(body.account).replace(/[.\s-]/g,'')!==existing.account))return res.status(409).json({error:'Identificador já utilizado para outro saque'});if(NON_RETRYABLE_CHECKOUT_STATUSES.has(existing.paymentStatus)||existing.status==='Recusado')return res.status(409).json({error:'Esta tentativa de saque foi encerrada. Envie uma nova solicitação.',retryable:true,paymentId:existing.id});return res.json(existing)}
+ const uncertain=d.withdrawals.find((item:any)=>item.userId===user.id&&item.paymentStatus==='PROVIDER_UNKNOWN')
+ if(uncertain)return res.status(409).json({error:'Existe um saque aguardando conciliação com o gateway. Acompanhe o histórico antes de solicitar outro.',paymentId:uncertain.id,retryable:false})
  let result:ReturnType<typeof validateWithdrawal>,account:string
  try {
   if(body.wallet!==undefined&&!['COTA','REDE'].includes(body.wallet))throw new Error('Selecione uma carteira válida para saque (Cota ou Rede)')

@@ -127,6 +127,10 @@ test('ambiguous failure retains the gross reservation; failed webhook releases i
     assert.equal(retry.body.paymentStatus, 'PROVIDER_UNKNOWN')
     assert.equal(calls.length, 1)
     assert.equal((await request('/state', undefined, token)).body.business.wallets.reservedRedeCents, 10000)
+    const differentKey = await request('/withdrawals', { ...payload, idempotencyKey: 'another-key-while-unknown' }, token)
+    assert.equal(differentKey.status, 409)
+    assert.equal(differentKey.body.paymentId, retry.body.id)
+    assert.equal(calls.length, 1)
     assert.equal((await hook(retry.body.id, { status: 'FAILED' })).status, 200)
     const wallets = (await request('/state', undefined, token)).body.business.wallets
     assert.equal(wallets.redeCents, 30000)
@@ -160,5 +164,33 @@ test('public registration rejects missing, repeated and checksum-invalid CPFs be
       assert.equal(result.status, 422)
     }
     assert.equal(readDb().users.length, before)
+  })
+})
+
+test('a definitively failed payout replay cannot report success, and a new key can retry', async () => {
+  await scenario('99000002508', async ({ request, hook, token, calls }) => {
+    const payload = { amount: 100, idempotencyKey: 'failed-payout-replay' }
+    const first = await request('/withdrawals', payload, token)
+    assert.equal(first.status, 201)
+    assert.equal((await hook(first.body.id, { status: 'FAILED' })).status, 200)
+    const replay = await request('/withdrawals', payload, token)
+    assert.equal(replay.status, 409)
+    assert.equal(replay.body.retryable, true)
+    assert.equal(calls.length, 1)
+    const fresh = await request('/withdrawals', { ...payload, idempotencyKey: 'fresh-payout-after-failure' }, token)
+    assert.equal(fresh.status, 201)
+    assert.equal(calls.length, 2)
+  })
+})
+
+test('a delayed pending webhook never reopens a failed payout reservation', async () => {
+  await scenario('99000002699', async ({ request, hook, token }) => {
+    const created = await request('/withdrawals', { amount: 100, idempotencyKey: 'out-of-order-payout' }, token)
+    assert.equal((await hook(created.body.id, { status: 'FAILED' })).status, 200)
+    assert.equal((await hook(created.body.id, { status: 'PENDING' })).status, 200)
+    const saved = readDb().withdrawals.find((w: Row) => w.id === created.body.id)
+    assert.equal(saved.paymentStatus, 'FAILED')
+    assert.equal(saved.paymentProviderStatus, 'FAILED')
+    assert.equal((await request('/state', undefined, token)).body.business.wallets.reservedRedeCents, 0)
   })
 })

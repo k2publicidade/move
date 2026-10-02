@@ -32,6 +32,35 @@ type ProviderHarness = {
 
 const TWOPP_WEBHOOK_TOKEN = 'twop-test-token-with-at-least-32-characters'
 
+test('invite lookup and registration normalize the same pasted code', async () => {
+  const server = app.listen(0)
+  try {
+    const port = (server.address() as { port: number }).port
+    const base = `http://127.0.0.1:${port}/api`
+    const invite = await fetch(`${base}/public/invites/${encodeURIComponent(' MATHEUS01 ')}`)
+    assert.equal(invite.status, 200)
+    const result = await fetch(`${base}/public/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Convite normalizado', username: 'normalized-invite', email: 'normalized-invite@example.com', password: 'test-password', cpf: '52998224725', inviteCode: ' MATHEUS01 ' }) })
+    assert.equal(result.status, 201)
+    const session = await result.json() as any
+    assert.equal(session.user.sponsorId, readDb().users.find(u => u.username === 'matheus')!.id)
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+
+test('a different deposit key cannot silently return an open charge for another amount', async () => {
+  await withTwoPpServer(async (base, provider) => {
+    const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'matheus', password: 'gomove2026' }) })
+    const { token } = await login.json() as any
+    const create = (amount: number, key: string) => fetch(`${base}/api/deposits`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ amount, idempotencyKey: key, paymentMethod: 'PIX', customerDocument: '52998224725' }) })
+    const first = await create(100, 'deposit-original-amount')
+    assert.equal(first.status, 201)
+    const mismatch = await create(200, 'deposit-different-amount')
+    assert.equal(mismatch.status, 409)
+    const same = await create(100, 'deposit-same-amount')
+    assert.equal(same.status, 200)
+    assert.equal(provider.calls, 1)
+  })
+})
+
 async function withTwoPpServer(run: (baseUrl: string, provider: ProviderHarness) => Promise<void>) {
   const harness: ProviderHarness = { calls: 0, requests: [] }
   const provider = http.createServer((req, res) => {
@@ -352,6 +381,7 @@ test('an early completed webhook resolves the local invoice reference and checko
     const invoice = await checkout.json() as Record<string, any>
     assert.equal(invoice.paymentStatus, 'CONFIRMED')
     assert.equal(invoice.status, 'Pago')
+    assert.equal(invoice.paymentProviderStatus, 'COMPLETED')
     assert.equal(readDb().users.find(user => user.id === registration.user.id)?.associatePlanStatus, 'ACTIVE')
   })
 })

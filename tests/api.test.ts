@@ -14,13 +14,14 @@ test('apiErrorMessage preserves API and fallback errors', () => {
 test('client preserves gateway failure details and only allows explicitly safe retries', async () => {
   const originalFetch=globalThis.fetch
   try {
-    globalThis.fetch=async()=>new Response(JSON.stringify({error:'2PP: Failed to create PIX',retryable:true,retryAfter:42}),{status:429,headers:{'content-type':'application/json'}})
+    globalThis.fetch=async()=>new Response(JSON.stringify({error:'2PP: Failed to create PIX',retryable:true,retryAfter:42,paymentId:'payment-to-resume'}),{status:429,headers:{'content-type':'application/json'}})
     await assert.rejects(new ApiClient(null).post('/deposits',{}),error=>{
       assert.ok(error instanceof ApiError)
       assert.equal(error.message,'2PP: Failed to create PIX')
       assert.equal(error.retryable,true)
       assert.equal(error.retryAfter,42)
       assert.equal(error.status,429)
+      assert.equal(error.paymentId,'payment-to-resume')
       return true
     })
     globalThis.fetch=async()=>new Response(JSON.stringify({error:'Resposta incerta'}),{status:502,headers:{'content-type':'application/json'}})

@@ -14,7 +14,7 @@ process.env.TWOPP_API_KEY = 'twop-test-key'
 process.env.TWOPP_API_SECRET = 'twop-test-secret'
 process.env.TWOPP_WEBHOOK_TOKEN = WEBHOOK_TOKEN
 
-const { TWO_PP_CRYPTO_CURRENCIES, TwoPpRequestError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, isTwoPpCryptoCurrency } = await import('../server/twopayments.js')
+const { TWO_PP_CRYPTO_CURRENCIES, TwoPpConfigurationError, TwoPpRequestError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, createTwoPpPixWithdrawal, isTwoPpCryptoCurrency, twoPpWebhookUrl } = await import('../server/twopayments.js')
 const { app, readDb, writeDb } = await import('../server/index.js')
 
 after(() => fs.rmSync(testDir, { recursive: true, force: true }))
@@ -81,6 +81,29 @@ test('crypto charge prices in BRL, returns the wallet address and rejects unsupp
 })
 
 const pixInput = { localId: 'pix-error-tests', amount: 100, customerName: 'Cliente GoMove', customerEmail: 'cliente@example.com', customerDocument: '12345678901' }
+
+test('webhook origin rejects configuration that would route callbacks into a query, fragment or page', () => {
+  const original = process.env.APP_PUBLIC_URL
+  try {
+    for (const value of ['https://gomove.example?preview=1', 'https://gomove.example/#dashboard', 'https://gomove.example/finance']) {
+      process.env.APP_PUBLIC_URL = value
+      assert.throws(() => twoPpWebhookUrl('local-id'), TwoPpConfigurationError)
+    }
+    process.env.APP_PUBLIC_URL = 'https://gomove.example/'
+    const webhook = new URL(twoPpWebhookUrl('local-id'))
+    assert.equal(webhook.pathname, '/api/webhooks/2pp/local-id')
+    assert.equal(webhook.searchParams.get('token'), WEBHOOK_TOKEN)
+  } finally { process.env.APP_PUBLIC_URL = original }
+})
+
+test('incomplete crypto and payout responses preserve their uncertainty as structured provider errors', async () => {
+  await withProvider(() => ({ transactionId: 'crypto-incomplete', payAddress: 'TAddress', status: 'PENDING' }), async () => {
+    await assert.rejects(createTwoPpCryptoTransaction({ localId: 'crypto-incomplete-local', amount: 100, payCurrency: 'usdt-trc20', customerName: 'Cliente GoMove', customerEmail: 'cliente@example.com' }), error => error instanceof TwoPpRequestError && error.details.code === 'INVALID_RESPONSE' && error.details.outcome === 'unknown' && error.details.transactionId === 'crypto-incomplete')
+  })
+  await withProvider(() => ({ status: 'PENDING' }), async () => {
+    await assert.rejects(createTwoPpPixWithdrawal({ ...pixInput, pixKey: pixInput.customerDocument }), error => error instanceof TwoPpRequestError && error.details.code === 'INVALID_RESPONSE' && error.details.outcome === 'unknown')
+  })
+})
 
 test('PIX uses a copia-e-cola paymentUrl when qrCode is empty, without treating a checkout URL as PIX', async () => {
   await withProvider(() => ({ transactionId: 'pix-fallback', qrCode: '', paymentUrl: '000201-fallback-pix', status: 'PENDING' }), async () => {

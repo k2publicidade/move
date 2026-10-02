@@ -64,7 +64,7 @@ export function createRegistration(users: MlmUser[], input: { username: string; 
   if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
   const inviteCodeInput = input.inviteCode?.trim().toLowerCase()
   const sponsor = inviteCodeInput
-    ? users.find(u => u.inviteCode.toLowerCase() === inviteCodeInput && canSponsorRegistrations(u))
+    ? users.find(u => u.inviteCode.trim().toLowerCase() === inviteCodeInput && canSponsorRegistrations(u))
     : users.find(u => u.role === 'ADMIN_MASTER' && canSponsorRegistrations(u))
   if (!sponsor) throw new Error('active sponsor not found')
   const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'

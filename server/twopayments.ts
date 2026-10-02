@@ -52,7 +52,8 @@ function validatedPublicUrl() {
   let parsed: URL
   try { parsed = new URL(value) } catch { throw new TwoPpConfigurationError('APP_PUBLIC_URL inválida') }
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new TwoPpConfigurationError('APP_PUBLIC_URL precisa ser uma URL HTTPS válida')
-  return value
+  if (parsed.search || parsed.hash || !/^\/*$/.test(parsed.pathname)) throw new TwoPpConfigurationError('APP_PUBLIC_URL deve conter somente o domínio HTTPS da aplicação, sem página, parâmetros ou fragmentos')
+  return parsed.origin
 }
 
 export function twoPpConfig(requirePublicUrl = true) {
@@ -196,7 +197,7 @@ export async function createTwoPpPixWithdrawal(input: {
     webhookUrl: twoPpWebhookUrl(input.localId),
   }, 'Falha ao solicitar o saque PIX no 2PP')
   const id = String(data?.transactionId ?? data?.id ?? '').trim()
-  if (!id) throw new Error('2PP não retornou um saque PIX válido')
+  if (!id) throw new TwoPpRequestError('A 2PP não retornou a referência do saque PIX. A tentativa foi preservada para conciliação.', { code: 'INVALID_RESPONSE', outcome: 'unknown' })
   return {
     id,
     status: String(data?.status ?? 'PENDING'),
@@ -227,7 +228,7 @@ export async function createTwoPpCryptoTransaction(input: {
   const id = String(data?.transactionId ?? data?.id ?? '').trim()
   const payAddress = String(data?.payAddress ?? data?.address ?? '').trim()
   const payAmount = String(data?.payAmount ?? data?.amount ?? '').trim()
-  if (!id || !payAddress || !payAmount) throw new Error('2PP não retornou uma cobrança cripto válida')
+  if (!id || !payAddress || !payAmount) throw new TwoPpRequestError('A 2PP não retornou os dados completos da cobrança cripto. A tentativa foi preservada para conciliação.', { code: 'INVALID_RESPONSE', outcome: 'unknown', transactionId: id || undefined })
   return {
     id,
     status: String(data?.status ?? 'PENDING'),
