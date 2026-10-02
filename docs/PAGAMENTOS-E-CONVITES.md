@@ -22,7 +22,11 @@ No navegador, foram verificados cadastro por código com espaços, link de convi
 
 ## Validação que depende do ambiente publicado
 
-Não foram realizadas transferências reais nem publicação. Não há credenciais 2PP preenchidas no ambiente local disponível. Isso não comprova a configuração atual da produção.
+Não foram realizadas transferências reais. Não há credenciais 2PP preenchidas no ambiente local disponível. Isso não comprova a configuração atual da produção.
+
+Após autorização do usuário, o commit `e88140b` foi publicado na branch `main`. A Vercel confirmou o deploy `AjKcfqX6864hJrzrYyZNraz8BYfQ` como Ready em Production no domínio público. A API `/api/health` respondeu JSON com `ok:true`, e `/api/public/invites/%20GOMOVE%20` confirmou o indicador. O navegador validou o convite com barra final e código com espaços/maiúsculas.
+
+O cadastro administrativo de `jlider01` está ACTIVE, com modalidade Associado e plano PENDING; essa combinação não é elegível para indicar pela regra existente. Sua fatura de plano está PROVIDER_UNKNOWN. O painel de saldo e pagamentos foi atualizado para mostrar a referência 2PP, o status do provedor e o erro armazenado (incluindo código e status HTTP), também nos saques, para permitir conciliação baseada em evidências.
 
 O painel autenticado da Vercel confirmou o projeto `move`, o domínio `www.gomoveinfra.com.br` e a versão de produção `b007f90`, ainda sem estas correções. As variáveis `TWOPP_API_KEY`, `TWOPP_API_SECRET`, `TWOPP_BASE_URL`, `TWOPP_WEBHOOK_TOKEN` e `APP_PUBLIC_URL` existem em Production, mas são segredos sem leitura pelo painel; seus valores e validade não foram verificados. O convite público `/convite/gomove` identificou Administrador GoMove. Os logs acessíveis da última hora, consultados em 02/10/2026 às 19:40 de São Paulo, não apresentaram tentativas de depósito ou saque; isso não exclui falhas anteriores.
 
