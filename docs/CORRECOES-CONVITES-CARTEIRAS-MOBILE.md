@@ -32,12 +32,13 @@ Validação local em 03/10/2026.
 
 ## Evidências
 
-- `npm test`: 139 testes, incluindo regressões de convite, estorno, cotas legadas, paginação, sessão e calendário de saque.
+- `npm test`: 141 testes, incluindo regressões de convite, reescrita de rotas na Vercel, estorno, cotas legadas, paginação, sessão e calendário de saque.
 - `npm run build`: frontend, verificação TypeScript e servidor compilados.
 - Servidor compilado: rota SPA de convite e API pública de validação por URL de cadastro retornaram o indicador correto.
 - Playwright com Edge: 78 verificações de layout e interação em 320, 390 e 768 pixels, com verificações adicionais de desktop em 1440 pixels.
 - Fluxo no navegador: convite → cadastro ativo → acesso à rede sem plano → compra de R$ 60 em cotas pela Carteira de Saldo → aprovação do bônus de R$ 6 → mesmos incrementos no dashboard, no período e na Carteira Rede.
 - Atualização de plano sem novo login e saída de sessão preservando o convite verificadas no navegador.
 - Respostas 503 simuladas na rede MASTER e auditoria produzem mensagem e opção de recuperação, sem exceções não tratadas.
+- A verificação pública identificou a decodificação de barras nos parâmetros de convite pela Vercel. O adaptador mantém URLs completas como um único parâmetro, com regressão verificada em uma rota Express real.
 
 Os dados e créditos usados na validação anterior à publicação são locais e isolados. Os resultados e capturas estão em `output/bug-audit/`. A revisão emula telas de celular; não substitui a execução em aparelhos físicos. Não houve pagamento real no gateway durante esses testes.
