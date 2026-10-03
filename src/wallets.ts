@@ -36,7 +36,8 @@ export function cotaWithdrawalWeekKey(date = new Date()): string {
   const daysSinceSunday = (new Date(dayStartMs).getUTCDay() - COTA_WITHDRAWAL_WEEKDAY + 7) % 7
   let weekStartMs = dayStartMs - daysSinceSunday * 24 * 60 * 60 * 1000
   if (daysSinceSunday === 0 && hour < COTA_WITHDRAWAL_HOUR) weekStartMs -= 7 * 24 * 60 * 60 * 1000
-  return new Date(weekStartMs + COTA_WITHDRAWAL_HOUR * 60 * 60 * 1000).toISOString()
+  // São Paulo is UTC-03:00: Sunday 18h local is 21h UTC.
+  return new Date(weekStartMs + (COTA_WITHDRAWAL_HOUR + 3) * 60 * 60 * 1000).toISOString()
 }
 
 // Next Sunday 18:00 (São Paulo) release, shown to the participant when the weekly
@@ -79,10 +80,14 @@ export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string, 
   const pending = (db.withdrawals as Row[]).filter(w => w.userId === user.id && w.id !== excludeWithdrawalId && ['Pendente', 'Em análise'].includes(w.status))
   const reservedCotaCents = pending.filter(w => withdrawalWallet(w) === 'COTA').reduce((sum, w) => sum + Math.round(Number(w.amount) * 100), 0)
   const reservedRedeCents = pending.filter(w => withdrawalWallet(w) === 'REDE').reduce((sum, w) => sum + Math.round(Number(w.amount) * 100), 0)
-  const hasActivePackage = user.status === 'ACTIVE' && (user.associatePlanStatus === 'ACTIVE' || (db.investments as Row[]).some(i => i.userId === user.id && i.status === 'Ativo' && i.paymentStatus === 'CONFIRMED' && (!i.expiresAt || Date.parse(i.expiresAt) > Date.now())))
+  const hasActivePackage = user.status === 'ACTIVE' && (user.associatePlanStatus === 'ACTIVE' || (db.investments as Row[]).some(i => i.userId === user.id && i.status === 'Ativo' && i.paymentStatus === 'CONFIRMED' && (!i.expiresAt || Date.parse(i.expiresAt) > date.getTime())))
   const cotaWithdrawableCents = hasActivePackage ? Math.max(0, cotaCents - reservedCotaCents) : 0
   const redeWithdrawableCents = hasActivePackage ? Math.max(0, redeCents - reservedRedeCents) : 0
   const cotaWithdrawalUsedThisWeek = hasCotaWithdrawalThisWeek(db, user, excludeWithdrawalId, date)
+  const cotaQuotaMatured = hasQuotaMatured(user, date)
+  const cotaWithdrawalEligible = hasActivePackage && cotaQuotaMatured && !cotaWithdrawalUsedThisWeek
+  const matureMs = Date.parse(user.shareholderSince) + COTA_CARENCIA_DAYS * 24 * 60 * 60 * 1000
+  const releaseMs = Date.parse(cotaWithdrawalUsedThisWeek ? nextCotaWithdrawalRelease(date) : cotaWithdrawalWeekKey(date))
   return {
     balanceCents,
     cotaCents,
@@ -98,7 +103,10 @@ export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string, 
     // Cota wallet is released every Sunday 18:00 (São Paulo) for a single withdrawal.
     cotaWithdrawalOpen: !cotaWithdrawalUsedThisWeek,
     cotaWithdrawalUsedThisWeek,
-    cotaWithdrawalReleasedAt: hasQuotaMatured(user, date) && !cotaWithdrawalUsedThisWeek ? cotaWithdrawalWeekKey(date) : nextCotaWithdrawalRelease(date),
+    cotaQuotaMatured,
+    cotaWithdrawalEligible,
+    cotaAvailableForWithdrawalCents: cotaWithdrawalEligible ? cotaWithdrawableCents : 0,
+    cotaWithdrawalReleasedAt: Number.isFinite(matureMs) ? new Date(Math.max(matureMs, releaseMs)).toISOString() : null,
   }
 }
 
@@ -181,7 +189,7 @@ export function cpfOwnerId(profiles: Record<string, any> | undefined, cpf: strin
 
 export function validateWithdrawal(db: Row, user: Row, amount: unknown, wallet: WalletType, excludeId?: string, date = new Date()) {
   if (wallet !== 'COTA' && wallet !== 'REDE') throw new Error('Selecione uma carteira válida para saque (Cota ou Rede)')
-  const wallets = walletSummary(db, user, excludeId)
+  const wallets = walletSummary(db, user, excludeId, date)
   if (!wallets.hasActivePackage) throw new Error('É necessário ter um pacote ativo para sacar')
   const amounts = withdrawalAmounts(amount), cents = amounts.amountCents
   if (cents < WITHDRAWAL_MIN_CENTS) throw new Error('O valor mínimo para saque é de R$ 55,00')

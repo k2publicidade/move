@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cotaWithdrawalWeekKey, normalizeCpf, validatePixKey, validateWithdrawal, walletSummary, withdrawalAmounts, updateWithdrawal } from '../src/wallets.js'
+import { cotaWithdrawalWeekKey, nextCotaWithdrawalRelease, normalizeCpf, validatePixKey, validateWithdrawal, walletSummary, withdrawalAmounts, updateWithdrawal } from '../src/wallets.js'
 
 test('CPF validation accepts formatting and rejects missing, repeated, invalid check digits and letters', () => {
   assert.equal(normalizeCpf('529.982.247-25'), '52998224725')
@@ -85,4 +85,15 @@ test('Carteira Rede aceita quantos saques quiser no mesmo dia, sem somar as cart
   assert.throws(() => validateWithdrawal(db, user, 150, 'REDE', undefined, day), /Valor indisponível/)
   assert.throws(() => validateWithdrawal(db, user, 150, 'COTA', undefined, day), /Valor indisponível/)
   assert.throws(() => validateWithdrawal(db, user, 50, 'REDE', undefined, day), /mínimo para saque/)
+})
+
+test('the displayed Cota release is Sunday 18h in Sao Paulo, and funds in carencia are not available now', () => {
+  const monday = new Date('2026-09-14T10:00:00-03:00')
+  assert.equal(nextCotaWithdrawalRelease(monday), '2026-09-20T21:00:00.000Z')
+  const user = { id: 'u', status: 'ACTIVE', associatePlanStatus: 'ACTIVE', shareholderSince: '2026-09-13T12:00:00-03:00' }
+  const db = { investments: [], withdrawals: [], transactions: [{ userId: 'u', wallet: 'COTA', amount: 100 }] }
+  const summary = walletSummary(db, user, undefined, monday)
+  assert.equal(summary.cotaAvailableForWithdrawalCents, 0)
+  assert.equal(summary.cotaWithdrawalEligible, false)
+  assert.equal(summary.cotaWithdrawalReleasedAt, '2026-10-13T15:00:00.000Z')
 })

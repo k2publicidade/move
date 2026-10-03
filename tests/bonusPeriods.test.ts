@@ -16,6 +16,12 @@ test('summarizes credited bonuses for today, current week and current month in S
   })
 })
 
+test('legacy ledger dates use the credit date and repeated transaction IDs are counted once', () => {
+  const bonuses = [{ id: 'old-bonus', userId: 'u', amountCents: 1000, status: 'APPROVED', createdAt: '2026-08-01T15:00:00Z' }]
+  const transaction = { id: 'credit', userId: 'u', bonusEntryId: 'old-bonus', amount: 10, date: '14/08/2026' }
+  assert.deepEqual(summarizeBonusPeriods('u', bonuses, [transaction, transaction], new Date('2026-08-14T15:00:00Z')), { todayCents: 1000, weekCents: 1000, monthCents: 1000 })
+})
+
 test('uses the credit timestamp, includes reversals and does not double count ledger entries', () => {
   const bonuses = [
     { id: 'approved-earlier', userId: 'user-1', amountCents: 5000, status: 'APPROVED', createdAt: '2026-07-01T12:00:00Z' },

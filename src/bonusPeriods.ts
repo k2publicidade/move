@@ -1,5 +1,5 @@
 type BonusLike = { id: string; userId: string; amountCents: number; status: string; createdAt?: string }
-type TransactionLike = { id?: string; userId?: string; bonusEntryId?: string; amount?: number; createdAt?: string }
+type TransactionLike = { id?: string; userId?: string; bonusEntryId?: string; amount?: number; createdAt?: string; date?: string }
 
 export type BonusPeriodSummary = {
   todayCents: number
@@ -8,6 +8,11 @@ export type BonusPeriodSummary = {
 }
 
 const saoPauloDateKey = (value: string | Date) => {
+  if (typeof value === 'string') {
+    const legacy = value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+    if (legacy) value = `${legacy[3]}-${legacy[2]}-${legacy[1]}T12:00:00-03:00`
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) value += 'T12:00:00-03:00'
+  }
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return null
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -36,14 +41,18 @@ export function summarizeBonusPeriods(
   const monthStart = `${today.slice(0, 7)}-01`
   const bonusIds = new Set(bonuses.filter(item => item.userId === userId).map(item => item.id))
   const creditedBonusIds = new Set<string>()
+  const transactionIds = new Set<string>()
   const entries: Array<{ amountCents: number; dateKey: string }> = []
 
   for (const transaction of transactions) {
     if (transaction.userId !== userId || !transaction.bonusEntryId || !bonusIds.has(transaction.bonusEntryId)) continue
-    const dateKey = transaction.createdAt ? saoPauloDateKey(transaction.createdAt) : null
+    if (transaction.id && transactionIds.has(transaction.id)) continue
+    if (transaction.id) transactionIds.add(transaction.id)
+    const dateKey = saoPauloDateKey(transaction.createdAt || transaction.date || '')
     if (!dateKey) continue
     creditedBonusIds.add(transaction.bonusEntryId)
-    entries.push({ amountCents: Math.round(Number(transaction.amount || 0) * 100), dateKey })
+    const amountCents = Math.round(Number(transaction.amount || 0) * 100)
+    if (Number.isSafeInteger(amountCents)) entries.push({ amountCents, dateKey })
   }
 
   // Legacy approved entries may predate the financial ledger link.

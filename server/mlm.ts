@@ -1,4 +1,5 @@
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, DIRECT_REFERRAL_BPS, isBonusEligibleParticipant, type AssociatePlanStatus, type MembershipType } from '../src/businessPlan.js'
+import { normalizeInviteCode } from '../src/invites.js'
 
 export type MlmUser = { id: string; username: string; email: string; role: 'ADMIN_MASTER' | 'ADMIN_VIEWER' | 'ASSOCIATE'; status: 'PENDING' | 'ACTIVE' | 'BLOCKED'; sponsorId: string | null; inviteCode: string; registrationSource?: 'INVITE' | 'DIRECT'; membershipType?: MembershipType; associatePlanStatus?: AssociatePlanStatus; associatePlanAmountCents?: number; bonusCapCents?: number; associatePlanPaidAt?: string; shareholderSince?: string; [key: string]: unknown }
 export type RuleLevel = { level: number; bps: number }
@@ -62,7 +63,8 @@ export function createRegistration(users: MlmUser[], input: { username: string; 
   if (username === 'master') throw new Error('username is reserved')
   if (username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || !name || !input.passwordHash) throw new Error('registration data is invalid')
   if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
-  const inviteCodeInput = input.inviteCode?.trim().toLowerCase()
+  const inviteCodeInput = normalizeInviteCode(input.inviteCode ?? '')
+  if (input.inviteCode?.trim() && !inviteCodeInput) throw new Error('active sponsor not found')
   const sponsor = inviteCodeInput
     ? users.find(u => u.inviteCode.trim().toLowerCase() === inviteCodeInput && canSponsorRegistrations(u))
     : users.find(u => u.role === 'ADMIN_MASTER' && canSponsorRegistrations(u))

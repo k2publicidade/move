@@ -1,4 +1,4 @@
-import type { User } from './types'
+import type { User, Page } from './types'
 export type Session = { token:string; user:User; supportActor?:{id:string;name:string} }
 const key='gomove-session'
 export const authHeaders=(token:string|null):Record<string,string>=>token?{Authorization:`Bearer ${token}`}:{ }
@@ -26,7 +26,7 @@ export class ApiClient {
       const response=await fetch(`/api${path}`, {...options,headers})
       const contentType=response.headers.get('content-type')||''
       const body=contentType.includes('application/json')?await response.json().catch(()=>null):null
-      if(response.status===401){ clearSession(); this.onUnauthorized?.() }
+      if(response.status===401 && this.token){ if(loadSession()?.token===this.token)clearSession(); this.onUnauthorized?.() }
       if(response.ok&&body!==null) return body as T
       throw new ApiError(apiErrorMessage(body,`Erro ${response.status}`),response.status,body)
     } catch(error) {
@@ -35,6 +35,19 @@ export class ApiClient {
     }
   }
   get<T>(path:string){ return this.request<T>(path,{cache:'no-store'}) }
+  async getAll<T>(path: string): Promise<Page<T>> {
+    const [route, search = ''] = path.split('?')
+    const query = new URLSearchParams(search)
+    const items: T[] = []
+    let page = 1, result: Page<T>
+    do {
+      query.set('page', String(page++))
+      result = await this.get<Page<T>>(`${route}?${query}`)
+      items.push(...result.items)
+      if (!result.items.length) break
+    } while (items.length < result.total)
+    return { ...result, items, page: 1 }
+  }
   post<T>(path:string, body:unknown){ return this.request<T>(path,{method:'POST',body:JSON.stringify(body)}) }
   patch<T>(path:string, body:unknown){ return this.request<T>(path,{method:'PATCH',body:JSON.stringify(body)}) }
   put<T>(path:string, body:unknown){ return this.request<T>(path,{method:'PUT',body:JSON.stringify(body)}) }

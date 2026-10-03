@@ -14,3 +14,9 @@ test('invite links preserve the sponsor through trailing slashes, encoding and q
   assert.equal(inviteCodeFromLocation({ pathname: '/convite/%ZZ', search: '' }), '')
   assert.equal(normalizeInviteCode('https://example.com/sem-convite'), '')
 })
+
+test('pasted registration URLs retain query invitations and malformed extra path segments are rejected', () => {
+  assert.equal(normalizeInviteCode('https://example.com/cadastro?convite=MATHEUS01'), 'matheus01')
+  assert.equal(normalizeInviteCode('/convite/Matheus01/?utm_source=whatsapp'), 'matheus01')
+  assert.equal(normalizeInviteCode('https://example.com/convite/matheus01/extra'), '')
+})

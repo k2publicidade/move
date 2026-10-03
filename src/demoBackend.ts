@@ -3,6 +3,8 @@ import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal,
 import type { Bonus, CommissionRule, TreeUser, User } from './types'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, SHAREHOLDER_TOTAL_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from './businessPlan'
 import { summarizeBonusPeriods } from './bonusPeriods'
+import { confirmedQuotaCents as sumConfirmedQuotaCents, summarizeParticipantEarnings } from './participantSummary'
+import { normalizeInviteCode } from './invites'
 import { FINANCIAL_RESET_PHRASE, matchesFinancialResetPhrase, resetFinancialState } from './financialReset'
 
 type Row = Record<string, any> & { id: string }
@@ -248,9 +250,7 @@ function calculateDemoProfitabilityBonuses(db: DemoDatabase, participantId: stri
 }
 
 function confirmedQuotaCents(db: DemoDatabase, userId: string) {
-  return db.investments
-    .filter(investment => investment.userId === userId && (investment.status === 'Ativo' || investment.paymentStatus === 'CONFIRMED'))
-    .reduce((sum, investment) => sum + Number(investment.amountCents || 0), 0)
+  return sumConfirmedQuotaCents(db.investments as any, userId)
 }
 
 function allocateEarning(db: DemoDatabase, participant: User, amountCents: number) {
@@ -296,21 +296,9 @@ function processDailyProfitabilityRun(db: DemoDatabase, run: Row, actorId: strin
 }
 
 function businessSummary(db: DemoDatabase, user: User) {
-  const bonuses = db.bonusEntries.filter(entry => entry.userId === user.id && entry.amountCents > 0)
-  const approvedBonusCents = bonuses.filter(entry => entry.status === 'APPROVED').reduce((sum, entry) => sum + entry.amountCents, 0)
-  const pendingBonusCents = bonuses.filter(entry => entry.status === 'PENDING').reduce((sum, entry) => sum + entry.amountCents, 0)
-  const blockedBonusCents = bonuses.filter(entry => entry.status === 'BLOCKED_UPGRADE').reduce((sum, entry) => sum + entry.amountCents, 0)
-  const quotaAmountCents = db.investments.filter(investment => investment.userId === user.id && (investment.status === 'Ativo' || investment.paymentStatus === 'CONFIRMED')).reduce((sum, investment) => sum + Number(investment.amountCents || 0), 0)
-  const dailyEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.creditedAmountCents || 0), 0)
-  const cappedEarningCents = db.dailyProfitabilities.filter(entry => entry.userId === user.id).reduce((sum, entry) => sum + Number(entry.cappedAmountCents || 0), 0) + bonuses.filter(entry => entry.status === 'CAPPED_250_PERCENT').reduce((sum, entry) => sum + entry.amountCents, 0)
-  const earningCapCents = user.membershipType === 'SHAREHOLDER' ? Math.floor(quotaAmountCents * SHAREHOLDER_EARNING_CAP_BPS / 10_000) : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
-  const earningCapTotalCents = user.membershipType === 'SHAREHOLDER' ? Math.floor(quotaAmountCents * SHAREHOLDER_TOTAL_CAP_BPS / 10_000) : Number(user.bonusCapCents || ASSOCIATE_BONUS_CAP_CENTS)
-  const earningCapConsumedCents = approvedBonusCents + pendingBonusCents + dailyEarningCents
-  const earningCapRemainingCents = Math.max(0, earningCapCents - earningCapConsumedCents)
   const registrationAudit = db.auditLogs.find(entry => entry.action === 'REGISTER' && entry.targetId === user.id)
   const createdViaInvite = Boolean(user.registrationSource === 'INVITE' || registrationAudit?.details?.source === 'INVITE')
-  const bonusPeriods = summarizeBonusPeriods(user.id, db.bonusEntries, db.transactions)
-  return { ...publicUser(user), createdViaInvite, bonusPeriods, approvedBonusCents, pendingBonusCents, blockedBonusCents, dailyEarningCents, cappedEarningCents, earningCapCents, earningCapTotalCents, earningCapConsumedCents, earningCapRemainingCents, bonusCapRemainingCents: earningCapRemainingCents, quotaAmountCents, canReceiveFinancialResults: user.membershipType === 'SHAREHOLDER' }
+  return { ...publicUser(user), createdViaInvite, wallets: walletSummary(db, user), bonusPeriods: summarizeBonusPeriods(user.id, db.bonusEntries, db.transactions), ...summarizeParticipantEarnings(user, db.bonusEntries, db.dailyProfitabilities as any, db.investments as any) }
 }
 
 export async function demoRequest<T>(path: string, method = 'GET', body?: any, token: string | null = null): Promise<T> {
@@ -330,7 +318,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   }
 
   if (method === 'GET' && route.startsWith('/public/invites/')) {
-    const code = String(route.split('/').pop() ?? '').toLowerCase()
+    const code = normalizeInviteCode(decodeURIComponent(String(route.split('/').pop() ?? '')))
     const sponsor = db.users.find(item => item.inviteCode.toLowerCase() === code && canSponsorDemoRegistration(item))
     if (!sponsor) throw new Error('Convite indisponível')
     return { sponsor: { name: sponsor.name, inviteCode: sponsor.inviteCode } } as T
@@ -340,7 +328,8 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
     const name = String(body?.name ?? '').trim(), username = String(body?.username ?? '').trim().toLowerCase(), email = String(body?.email ?? '').trim().toLowerCase(), password = String(body?.password ?? '')
     if (!name || username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || password.length < 6 || password.length > 128) throw new Error('Dados de cadastro inválidos')
     if (username === 'master') throw new Error('O nome de usuário master é reservado')
-    const inviteCode = String(body?.inviteCode ?? '').trim().toLowerCase()
+    const inviteCode = normalizeInviteCode(String(body?.inviteCode ?? ''))
+    if (String(body?.inviteCode ?? '').trim() && !inviteCode) throw new Error('Convite indisponível')
     const sponsor = inviteCode
       ? db.users.find(item => item.inviteCode.toLowerCase() === inviteCode && canSponsorDemoRegistration(item))
       : db.users.find(item => item.role === 'ADMIN_MASTER' && canSponsorDemoRegistration(item))
@@ -452,7 +441,7 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   if (method === 'GET' && route === '/bonuses/me') return paged(db.bonusEntries.filter(item => item.userId === user.id)) as T
 
   if (method === 'GET' && route === '/admin/dashboard') {
-    return { control: summarizeAdminMetrics(db), users: db.users.length, active: db.users.filter(item => item.status === 'ACTIVE').length, pending: db.users.filter(item => item.status === 'PENDING').length, associates: db.users.filter(item => item.role === 'ASSOCIATE' && item.membershipType !== 'SHAREHOLDER').length, shareholders: db.users.filter(item => item.role === 'ASSOCIATE' && item.membershipType === 'SHAREHOLDER').length, pendingPlans: db.users.filter(item => item.role === 'ASSOCIATE' && item.associatePlanStatus !== 'ACTIVE').length, vehicles: db.vehicles.length, activeVehicles: db.vehicles.filter(item => item.status === 'Em operação').length, revenue: db.invoices.filter(item => item.status === 'Pago').reduce((sum, item) => sum + item.amount, 0), pendingWithdrawals: db.withdrawals.filter(item => item.status === 'Pendente').length, openTickets: db.tickets.filter(item => item.status !== 'Resolvido').length, bonusPendingCents: db.bonusEntries.filter(item => item.status === 'PENDING').reduce((sum, item) => sum + item.amountCents, 0), bonusBlockedCents: db.bonusEntries.filter(item => item.status === 'BLOCKED_UPGRADE').reduce((sum, item) => sum + item.amountCents, 0) } as T
+    return { control: summarizeAdminMetrics(db), users: db.users.length, active: db.users.filter(item => item.status === 'ACTIVE').length, pending: db.users.filter(item => item.status === 'PENDING').length, associates: db.users.filter(item => item.role === 'ASSOCIATE' && item.membershipType !== 'SHAREHOLDER').length, shareholders: db.users.filter(item => item.role === 'ASSOCIATE' && item.membershipType === 'SHAREHOLDER').length, pendingPlans: db.users.filter(item => item.role === 'ASSOCIATE' && item.membershipType !== 'SHAREHOLDER' && item.associatePlanStatus !== 'ACTIVE').length, vehicles: db.vehicles.length, activeVehicles: db.vehicles.filter(item => item.status === 'Em operação').length, revenue: db.invoices.filter(item => item.status === 'Pago').reduce((sum, item) => sum + item.amount, 0), pendingWithdrawals: db.withdrawals.filter(item => item.status === 'Pendente').length, openTickets: db.tickets.filter(item => item.status !== 'Resolvido').length, bonusPendingCents: db.bonusEntries.filter(item => item.status === 'PENDING').reduce((sum, item) => sum + item.amountCents, 0), bonusBlockedCents: db.bonusEntries.filter(item => item.status === 'BLOCKED_UPGRADE').reduce((sum, item) => sum + item.amountCents, 0) } as T
   }
   if (method === 'GET' && route === '/admin/associates') return paged(db.users.filter(item => item.role === 'ASSOCIATE').map(item => ({ ...publicUser(item), phone: db.profiles[item.id]?.phone ?? '', cpf: db.profiles[item.id]?.cpf ?? '' }))) as T
 

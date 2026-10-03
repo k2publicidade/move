@@ -1,5 +1,5 @@
 import { storeProducts, transactionWallet, walletLabels, normalizeCpf, isValidCpfDigits, withdrawalAmounts, WITHDRAWAL_FEE_BPS } from './wallets'
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   Activity, AlertCircle, BarChart3, CalendarDays, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
@@ -7,7 +7,7 @@ import {
   Settings, ShieldCheck, ShoppingBag, TicketCheck, UserRound, UsersRound, Wallet,
   Trash2, WalletCards, Wrench, X,
 } from 'lucide-react'
-import { ApiClient, ApiError, clearSession, loadSession, saveSession, type Session } from './api'
+import { ApiClient, ApiError, loadSession, saveSession, type Session } from './api'
 import { inviteCodeFromLocation, normalizeInviteCode } from './invites'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, UNILEVEL_LEVELS, isBonusEligibleParticipant } from './businessPlan'
 import { FINANCIAL_RESET_PHRASE } from './financialReset'
@@ -27,7 +27,7 @@ const brl = (value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency
 const cents = (value: number) => brl((value || 0) / 100)
 // O Associado que já atingiu o teto de bonificações só evolui a Cotista com R$ 300 em cotas.
 const upgradeQuotaCents = (participant: any) => (Number(participant?.approvedBonusCents || 0) + Number(participant?.pendingBonusCents || 0) + Number(participant?.blockedBonusCents || 0)) >= ASSOCIATE_BONUS_CAP_CENTS ? ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS : SHAREHOLDER_MIN_QUOTA_CENTS
-const dateTime = (value?: string) => value ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }).format(new Date(value)) : '—'
+const dateTime = (value?: string) => value && Number.isFinite(Date.parse(value)) ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }).format(new Date(value)) : '—'
 const defaultUnilevelText = UNILEVEL_LEVELS.map(item => `${item.level}:${item.bps / 100}`).join(', ')
 const initials = (name: string) => name.split(' ').map(part => part[0]).join('').slice(0, 2).toUpperCase()
 const statusLabels: Record<string, string> = {
@@ -46,9 +46,16 @@ function usePath() {
   useEffect(() => {
     const update = () => setPath(location.pathname)
     addEventListener('popstate', update)
+    // A child redirect can run before this subscription is mounted.
+    update()
     return () => removeEventListener('popstate', update)
   }, [])
   return path
+}
+
+function Redirect({ to }: { to: string }) {
+  useEffect(() => { go(to) }, [to])
+  return <Loader />
 }
 
 function useApi(session: Session | null, logout?: () => void) {
@@ -91,17 +98,28 @@ function NavLink({ to, icon: Icon, children, current, onNavigate }: { to: string
 
 function Loader() { return <div className="loading-screen" role="status" aria-live="polite"><div className="loader-mark" aria-hidden="true">G</div><p>Carregando a operação…</p></div> }
 function ErrorBox({ error }: { error: string }) { return error ? <div className="form-error" role="alert"><AlertCircle aria-hidden="true" />{error}</div> : null }
+async function copyTextToClipboard(value: string) {
+  try { await navigator.clipboard.writeText(value); return } catch { /* Older mobile browsers may require the selection fallback. */ }
+  const field = document.createElement('textarea')
+  field.value = value
+  field.style.cssText = 'position:fixed;left:0;top:0;opacity:0;font-size:16px'
+  const focused = document.activeElement as HTMLElement | null
+  document.body.appendChild(field)
+  field.focus(); field.select()
+  try { if (!document.execCommand('copy')) throw new Error('Não foi possível copiar. Selecione o texto e copie manualmente.') }
+  finally { field.remove(); focused?.focus() }
+}
 function PixPaymentDetails({ payment }: { payment: Row }) {
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState('')
   const pixCode = String(payment.pixQrCode || '')
   const qrImage = (payment.pixQrCodeBase64 || payment.qrCodeBase64 || payment.pixQrCodeUrl || payment.qrCodeUrl) ? String(payment.pixQrCodeBase64 || payment.qrCodeBase64 || payment.pixQrCodeUrl || payment.qrCodeUrl) : null
   const paymentUrl = payment.paymentUrl ? String(payment.paymentUrl) : null
 
   const copy = async () => {
     if (!pixCode) return
-    await navigator.clipboard.writeText(pixCode)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 2500)
+    try { await copyTextToClipboard(pixCode); setCopyError(''); setCopied(true); window.setTimeout(() => setCopied(false), 2500) }
+    catch (reason: any) { setCopyError(reason.message) }
   }
 
   const qrImageUrl = qrImage
@@ -109,7 +127,7 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
     : null
 
   return (
-    <div className="pix-payment-details" role="status">
+    <div className="pix-payment-details"><ErrorBox error={copyError} />
       <div className="pix-qr-container">
         <div className="pix-qr-instructions">
           <QrCode aria-hidden="true" />
@@ -155,7 +173,7 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
           </span>
         </div>
         <textarea readOnly aria-label="Código PIX Copia e Cola" value={pixCode} onClick={e => (e.target as HTMLTextAreaElement).select()} />
-        <button type="button" className="primary-btn" onClick={() => void copy()}>
+        <button type="button" className="primary-btn" disabled={!pixCode} onClick={() => void copy()}>
           {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
           {copied ? 'Código PIX copiado!' : 'Copiar código PIX'}
         </button>
@@ -173,19 +191,19 @@ function PixPaymentDetails({ payment }: { payment: Row }) {
 }
 function CryptoPaymentDetails({ payment }: { payment: Row }) {
   const [copied, setCopied] = useState('')
+  const [copyError, setCopyError] = useState('')
   const address = String(payment.payAddress || '')
   const amount = String(payment.payAmount || '')
   const currency = String(payment.payCurrency || '').toUpperCase()
 
   const copy = async () => {
     if (!address) return
-    await navigator.clipboard.writeText(address)
-    setCopied(address)
-    window.setTimeout(() => setCopied(''), 2500)
+    try { await copyTextToClipboard(address); setCopyError(''); setCopied(address); window.setTimeout(() => setCopied(''), 2500) }
+    catch (reason: any) { setCopyError(reason.message) }
   }
 
   return (
-    <div className="pix-payment-details" role="status">
+    <div className="pix-payment-details"><ErrorBox error={copyError} />
       <div className="pix-copy-section">
         <div className="pix-copy-header">
           <Copy aria-hidden="true" />
@@ -195,7 +213,7 @@ function CryptoPaymentDetails({ payment }: { payment: Row }) {
           </span>
         </div>
         <textarea readOnly aria-label="Endereço da carteira cripto" value={address} onClick={event => (event.target as HTMLTextAreaElement).select()} />
-        <button type="button" className="primary-btn" onClick={() => void copy()}>
+        <button type="button" className="primary-btn" disabled={!address} onClick={() => void copy()}>
           {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
           {copied ? 'Endereço copiado!' : 'Copiar endereço'}
         </button>
@@ -216,13 +234,33 @@ function Page({ title, subtitle, action, children }: { title: string; subtitle?:
 function Metric({ label, value, icon: Icon, note }: { label: string; value: string; icon: any; note?: string }) {
   return <article className="metric-card tone-lime"><div className="metric-top"><span>{label}</span><i><Icon /></i></div><strong>{value}</strong>{note && <small>{note}</small>}</article>
 }
-function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+function useDialogInteraction(open: boolean, element: RefObject<HTMLElement | null>, close: () => void) {
+  const closeRef = useRef(close)
+  closeRef.current = close
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    if (!open) return
+    const previousFocus = document.activeElement as HTMLElement | null
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const focusable = () => Array.from(element.current?.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]') || []).filter(node => node.getClientRects().length > 0)
+    ;(focusable()[0] || element.current)?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); return }
+      if (event.key !== 'Tab') return
+      const nodes = focusable(), first = nodes[0], last = nodes[nodes.length - 1]
+      if (!first) { event.preventDefault(); element.current?.focus(); return }
+      if (event.shiftKey && (document.activeElement === first || !element.current?.contains(document.activeElement))) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && (document.activeElement === last || !element.current?.contains(document.activeElement))) { event.preventDefault(); first.focus() }
+    }
     addEventListener('keydown', onKeyDown)
-    return () => removeEventListener('keydown', onKeyDown)
-  }, [close])
-  return <div className="modal-backdrop" onClick={close}><section className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={event => event.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button type="button" className="icon-btn" aria-label="Fechar janela" onClick={close}><X aria-hidden="true" /></button></div>{children}</section></div>
+    return () => { document.body.style.overflow = previousOverflow; removeEventListener('keydown', onKeyDown); previousFocus?.focus() }
+  }, [open, element])
+}
+
+function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }) {
+  const element = useRef<HTMLElement>(null)
+  useDialogInteraction(true, element, close)
+  return <div className="modal-backdrop" onClick={close}><section ref={element} tabIndex={-1} className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={event => event.stopPropagation()}><div className="modal-head"><h2>{title}</h2><button type="button" className="icon-btn" aria-label="Fechar janela" onClick={close}><X aria-hidden="true" /></button></div>{children}</section></div>
 }
 type TableColumn = [string, string, ((row: Row) => ReactNode)?]
 function DataTable({ columns, rows, empty = 'Nenhum registro encontrado.', action }: { columns: TableColumn[]; rows: Row[]; empty?: string; action?: (row: Row) => ReactNode }) {
@@ -253,7 +291,7 @@ function BonusPeriodSummary({ periods }: { periods: { todayCents: number; weekCe
   return <section className="bonus-period-summary" aria-labelledby="bonus-period-title"><div className="bonus-period-heading"><span><i><CalendarDays aria-hidden="true" /></i><span><small>SEU RESULTADO</small><h2 id="bonus-period-title">Bonificações recebidas</h2></span></span><p>Valores aprovados e creditados na sua conta.</p></div><div className="bonus-period-grid">{values.map((item, index) => <article className={index === 2 ? 'featured' : ''} key={item.label}><span>{item.label}</span><strong>{cents(item.value)}</strong><small>{item.note}</small></article>)}</div></section>
 }
 
-function Registration({ setSession }: { setSession: (session: Session) => void }) {
+function Registration({ setSession, existingSession, leaveSession }: { setSession: (session: Session) => void; existingSession?: Session | null; leaveSession?: () => Promise<void> }) {
   const invited = location.pathname.startsWith('/convite/')
   const [inviteInput, setInviteInput] = useState(() => inviteCodeFromLocation(location))
   const inviteCode = normalizeInviteCode(inviteInput)
@@ -261,6 +299,7 @@ function Registration({ setSession }: { setSession: (session: Session) => void }
   const [invite, setInvite] = useState<any>()
   const [inviteError, setInviteError] = useState('')
   const [checkingInvite, setCheckingInvite] = useState(false)
+  const [inviteRetry, setInviteRetry] = useState(0)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({ name: '', email: '', username: '', password: '', cpf: '' })
@@ -276,7 +315,7 @@ function Registration({ setSession }: { setSession: (session: Session) => void }
         .finally(() => { if (!cancelled) setCheckingInvite(false) })
     }, 250)
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [inviteCode, api])
+  }, [inviteCode, api, inviteRetry])
   const validInvite = invite && normalizeInviteCode(invite.sponsor.inviteCode) === inviteCode
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -295,7 +334,8 @@ function Registration({ setSession }: { setSession: (session: Session) => void }
   const description = invited || inviteInput.trim()
     ? validInvite ? `Indicado por ${invite.sponsor.name}. Após o cadastro, escolha como deseja ativar sua participação.` : checkingInvite ? 'Verificando convite…' : 'Informe um código de convite válido para manter sua indicação.'
     : 'Crie seu acesso. Dentro da plataforma, você poderá escolher entre o Plano de Associado ou a compra direta de cotas.'
-  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">NOVO ACESSO</span><h1>Crie sua <em>conta.</em></h1><p>{description}</p><form onSubmit={submit} aria-busy={busy}><label>Código de convite {invited ? "" : "(opcional)"}<input autoComplete="off" maxLength={300} value={inviteInput} onChange={event => setInviteInput(event.target.value)} placeholder="Código ou link do seu indicador" aria-describedby="invite-code-hint" /></label><small id="invite-code-hint">{validInvite ? `Indicador confirmado: ${invite.sponsor.name}` : "Se recebeu um convite, informe-o para vincular seu cadastro ao indicador."}</small><ErrorBox error={inviteError} /><label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>CPF (do titular)<input required inputMode="numeric" autoComplete="off" pattern="[0-9]{11}" maxLength={14} aria-describedby="registration-cpf-hint" title="Informe os 11 dígitos do CPF" placeholder="Somente números (11 dígitos)" value={form.cpf} onChange={event => setForm({ ...form, cpf: event.target.value.replace(/\D/g, '') })} /><small id="registration-cpf-hint">Seu CPF será usado automaticamente como chave PIX para saques. Cadastre essa chave no seu banco.</small></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required minLength={3} pattern="[A-Za-z0-9._-]+" title="Use apenas letras, números, ponto, hífen ou sublinhado" autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} type="password" aria-describedby="password-hint" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /><small id="password-hint">Use pelo menos 6 caracteres.</small></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={busy || checkingInvite || (Boolean(invited || inviteInput.trim()) && !validInvite)}>{busy ? 'Criando conta…' : 'Criar conta e continuar'}</button></form><p className="registration-prompt">Já possui uma conta? <a href="/">Entrar</a></p></div></section></main>
+  if (existingSession) return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><h1>Convite <em>GoMove.</em></h1><p>Você está conectado como {existingSession.user.name}. Para cadastrar outra pessoa por este convite, saia da conta atual.</p><ErrorBox error={inviteError || error} /><div className="invite-session-actions"><button className="outline-btn" onClick={() => go('/dashboard')}>Continuar na minha conta</button><button className="primary-btn" disabled={busy} onClick={async () => { setBusy(true); try { await leaveSession?.() } catch (reason: any) { setError(reason.message) } finally { setBusy(false) } }}>{busy ? 'Saindo…' : 'Sair e cadastrar pelo convite'}</button></div></div></section></main>
+  return <main className="login-shell invite-shell"><section className="login-panel compact-login"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><span className="eyebrow">NOVO ACESSO</span><h1>Crie sua <em>conta.</em></h1><p>{description}</p><form onSubmit={submit} aria-busy={busy}><label>Código de convite {invited ? "" : "(opcional)"}<input autoComplete="off" maxLength={300} value={inviteInput} onChange={event => setInviteInput(event.target.value)} placeholder="Código ou link do seu indicador" aria-describedby="invite-code-hint" /></label><small id="invite-code-hint">{validInvite ? `Indicador confirmado: ${invite.sponsor.name}` : "Se recebeu um convite, informe-o para vincular seu cadastro ao indicador."}</small><ErrorBox error={inviteError} />{inviteError && <button type="button" className="outline-btn" disabled={checkingInvite} onClick={() => setInviteRetry(value => value + 1)}>Verificar convite novamente</button>}<label>Nome<input required autoComplete="name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label><label>CPF (do titular)<input required inputMode="numeric" autoComplete="off" pattern="[0-9]{11}" maxLength={14} aria-describedby="registration-cpf-hint" title="Informe os 11 dígitos do CPF" placeholder="Somente números (11 dígitos)" value={form.cpf} onChange={event => setForm({ ...form, cpf: event.target.value.replace(/\D/g, '') })} /><small id="registration-cpf-hint">Seu CPF será usado automaticamente como chave PIX para saques. Cadastre essa chave no seu banco.</small></label><label>E-mail<input required autoComplete="email" type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} /></label><label>Usuário<input required minLength={3} pattern={'[A-Za-z0-9._\\-]+'} title="Use apenas letras, números, ponto, hífen ou sublinhado" autoComplete="username" value={form.username} onChange={event => setForm({ ...form, username: event.target.value })} /></label><label>Senha<input required autoComplete="new-password" minLength={6} maxLength={128} type="password" aria-describedby="password-hint" value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} /><small id="password-hint">Use pelo menos 6 caracteres.</small></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={busy || checkingInvite || (Boolean(invited || inviteInput.trim()) && !validInvite)}>{busy ? 'Criando conta…' : 'Criar conta e continuar'}</button></form><p className="registration-prompt">Já possui uma conta? <a href="/">Entrar</a></p></div></section></main>
 }
 
 const userLinks = [
@@ -305,6 +345,7 @@ const userLinks = [
 ] as const
 const activationLinks = [
   ['/activation', 'Ativar participação', ShieldCheck], ['/investments', 'Comprar cotas', BarChart3], ['/finance', 'Carteiras', Wallet],
+  ['/network', 'Minha rede', Network],
   ['/support', 'Atendimento', Headphones], ['/profile', 'Meu perfil', UserRound],
 ] as const
 const adminLinks = ([
@@ -317,22 +358,31 @@ const adminLinks = ([
 function Shell({ session, logout }: { session: Session; logout: () => void }) {
   const path = usePath()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const navigation = useRef<HTMLElement>(null)
+  useDialogInteraction(mobileOpen, navigation, () => setMobileOpen(false))
+  useEffect(() => { setMobileOpen(false) }, [path])
+  useEffect(() => {
+    const query = matchMedia('(max-width: 860px)')
+    const resize = () => { if (!query.matches) setMobileOpen(false) }
+    query.addEventListener('change', resize)
+    return () => query.removeEventListener('change', resize)
+  }, [])
   const isAdmin = session.user.role === 'ADMIN_MASTER' || session.user.role === 'ADMIN_VIEWER'
   const readOnly = session.user.role === 'ADMIN_VIEWER'
   const needsActivation = !session.supportActor && session.user.status === 'ACTIVE' && session.user.membershipType !== 'SHAREHOLDER' && session.user.associatePlanStatus !== 'ACTIVE'
   const links = isAdmin ? adminLinks : needsActivation ? activationLinks : userLinks
-  return <div className="app-shell">{mobileOpen && <button type="button" className="mobile-overlay" aria-label="Fechar menu" onClick={() => setMobileOpen(false)} />}<aside className={`sidebar ${mobileOpen ? 'is-mobile-open' : ''}`} aria-label={isAdmin ? (readOnly ? 'Navegação de visualização' : 'Navegação MASTER') : 'Navegação do usuário'}><div className="sidebar-top"><img src="/brand/gomove-logo-oficial.png" alt="GoMove" /></div><nav aria-label="Menu principal"><div className="nav-group"><span className="nav-label">{isAdmin ? (readOnly ? 'ADMINISTRAÇÃO · VISUALIZAÇÃO' : 'ADMINISTRAÇÃO MASTER') : 'MINHA CONTA'}</span>{links.map(([to, label, Icon]) => <NavLink key={to} to={to} icon={Icon} current={path} onNavigate={() => setMobileOpen(false)}>{label}</NavLink>)}</div></nav><div className="sidebar-profile"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{readOnly ? 'Administrador (visualização)' : isAdmin ? 'Administrador MASTER' : 'Usuário GoMove'}</small></span></div></aside><div className="app-main"><header className="topbar"><button type="button" className="icon-btn mobile-menu" aria-label="Abrir menu" onClick={() => setMobileOpen(true)}><Menu aria-hidden="true" /></button><span className="environment-pill"><span /> Sistema operacional</span><div className="topbar-spacer" /><div className="user-chip"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{readOnly ? 'VISUALIZAÇÃO' : isAdmin ? 'MASTER' : 'USUÁRIO'}</small></span></div><button type="button" className="icon-btn" aria-label="Sair" onClick={logout}><LogOut aria-hidden="true" /></button></header><main className="page-content" id="conteudo-principal">{readOnly && <div className="readonly-banner" role="status"><ShieldCheck aria-hidden="true" /><span><b>Perfil de visualização</b> · esta conta consulta todos os dados do sistema, mas não pode incluir, alterar nem excluir registros.</span></div>}{session.supportActor && <div className="support-banner" role="status"><span><b>Acesso MASTER · {session.user.name}</b> · Administrador: {session.supportActor.name}</span><button className="outline-btn" onClick={async () => { try { await new ApiClient(session.token).post('/auth/logout', {}) } finally { sessionStorage.removeItem('gomove-support-session'); window.location.assign('/admin/associates') } }}>Voltar ao MASTER</button></div>}<Router session={session} path={path} /></main></div></div>
+  return <div className="app-shell">{mobileOpen && <button type="button" className="mobile-overlay" aria-label="Fechar menu" onClick={() => setMobileOpen(false)} />}<aside ref={navigation} tabIndex={-1} id="main-navigation" role={mobileOpen ? 'dialog' : undefined} aria-modal={mobileOpen || undefined} className={`sidebar ${mobileOpen ? 'is-mobile-open' : ''}`} aria-label={isAdmin ? (readOnly ? 'Navegação de visualização' : 'Navegação MASTER') : 'Navegação do usuário'}><div className="sidebar-top"><img src="/brand/gomove-logo-oficial.png" alt="GoMove" /><button type="button" className="icon-btn mobile-close" aria-label="Fechar menu" onClick={() => setMobileOpen(false)}><X aria-hidden="true" /></button></div><nav aria-label="Menu principal"><div className="nav-group"><span className="nav-label">{isAdmin ? (readOnly ? 'ADMINISTRAÇÃO · VISUALIZAÇÃO' : 'ADMINISTRAÇÃO MASTER') : 'MINHA CONTA'}</span>{links.map(([to, label, Icon]) => <NavLink key={to} to={to} icon={Icon} current={path} onNavigate={() => setMobileOpen(false)}>{label}</NavLink>)}</div></nav><div className="sidebar-profile"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{readOnly ? 'Administrador (visualização)' : isAdmin ? 'Administrador MASTER' : 'Usuário GoMove'}</small></span></div></aside><div className="app-main"><header className="topbar"><button type="button" className="icon-btn mobile-menu" aria-label="Abrir menu" aria-expanded={mobileOpen} aria-controls="main-navigation" onClick={() => setMobileOpen(true)}><Menu aria-hidden="true" /></button><span className="environment-pill"><span /> Sistema operacional</span><div className="topbar-spacer" /><div className="user-chip"><span className="avatar">{initials(session.user.name)}</span><span><b>{session.user.name}</b><small>{readOnly ? 'VISUALIZAÇÃO' : isAdmin ? 'MASTER' : 'USUÁRIO'}</small></span></div><button type="button" className="icon-btn" aria-label="Sair" onClick={logout}><LogOut aria-hidden="true" /></button></header><main className="page-content" id="conteudo-principal">{readOnly && <div className="readonly-banner" role="status"><ShieldCheck aria-hidden="true" /><span><b>Perfil de visualização</b> · esta conta consulta todos os dados do sistema, mas não pode incluir, alterar nem excluir registros.</span></div>}{session.supportActor && <div className="support-banner" role="status"><span><b>Acesso MASTER · {session.user.name}</b> · Administrador: {session.supportActor.name}</span><button className="outline-btn" onClick={async () => { try { await new ApiClient(session.token).post('/auth/logout', {}) } finally { sessionStorage.removeItem('gomove-support-session'); window.location.assign('/admin/associates') } }}>Voltar ao MASTER</button></div>}<Router session={session} path={path} /></main></div></div>
 }
 
 function Router({ session, path }: { session: Session; path: string }) {
   const admin = session.user.role === 'ADMIN_MASTER' || session.user.role === 'ADMIN_VIEWER'
   const readOnly = session.user.role === 'ADMIN_VIEWER'
   if (admin) {
-    if (!path.startsWith('/admin')) { go('/admin'); return <Loader /> }
+    if (!path.startsWith('/admin')) return <Redirect to="/admin" />
     if (path === '/admin') return <AdminDashboard session={session} />
     if (path === '/admin/associates') return <Associates session={session} readOnly={readOnly} />
     if (path === '/admin/fleet') {
-      if (!vehicleFeatureEnabled) { go('/admin'); return <Loader /> }
+      if (!vehicleFeatureEnabled) return <Redirect to="/admin" />
       return <AdminCollection session={session} type="vehicles" readOnly={readOnly} />
     }
     if (path === '/admin/investments') return <AdminCollection session={session} type="investments" readOnly={readOnly} />
@@ -345,9 +395,9 @@ function Router({ session, path }: { session: Session; path: string }) {
     if (path === '/admin/settings') return <AdminSettings session={session} readOnly={readOnly} />
     return <AdminDashboard session={session} />
   }
-  if (path.startsWith('/admin')) { go('/dashboard'); return <Loader /> }
+  if (path.startsWith('/admin')) return <Redirect to="/dashboard" />
   const needsActivation = !session.supportActor && session.user.status === 'ACTIVE' && session.user.membershipType !== 'SHAREHOLDER' && session.user.associatePlanStatus !== 'ACTIVE'
-  if (needsActivation && !['/activation', '/investments', '/my-investments', '/profile', '/support', '/finance', '/store'].includes(path)) { go('/activation'); return <Loader /> }
+  if (needsActivation && !['/activation', '/investments', '/my-investments', '/profile', '/support', '/finance', '/store', '/network', '/referrals', '/unilevel', '/genealogy'].includes(path)) return <Redirect to="/activation" />
   if (path === '/activation') return needsActivation ? <ActivationOnboarding session={session} /> : <UserDashboard session={session} />
   if (path === '/dashboard' || path === '/') return <UserDashboard session={session} />
   if (path === '/investments' || path === '/my-investments') return <UserInvestments session={session} />
@@ -416,11 +466,10 @@ function UserDashboard({ session }: { session: Session }) {
   const { data, error } = usePortalState(session)
   if (!data && !error) return <Loader />
   const state = data || emptyState
-  const invested = state.investments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
-  const earnings = state.investments.reduce((sum, item) => sum + Number(item.profit || 0), 0)
+  const invested = Number(state.business.quotaAmountCents || 0) / 100
   const participant = state.business
   const isShareholder = participant.membershipType === 'SHAREHOLDER'
-  return <Page title={`Olá, ${session.user.name.split(' ')[0]}.`} subtitle="Aqui está o resumo da sua participação na GoMove."><ErrorBox error={error} /><BonusPeriodSummary periods={participant.bonusPeriods || { todayCents: 0, weekCents: 0, monthCents: 0 }} />{!isShareholder && <div className="business-plan-alert"><ShieldCheck aria-hidden="true" /><span><b>Você é Associado</b><small>Bonificações são limitadas a {cents(ASSOCIATE_BONUS_CAP_CENTS)}. Adquira ao menos {cents(upgradeQuotaCents(participant))} em cotas para evoluir a Cotista e liberar valores bloqueados.</small></span><button className="primary-btn" onClick={() => go('/investments')}>Fazer upgrade</button></div>}{isShareholder && <div className="business-plan-alert"><BarChart3 aria-hidden="true" /><span><b>Teto de ganhos: {cents(participant.earningCapTotalCents ?? participant.earningCapCents)}</b><small>Limite de 250% por cota, já incluindo o valor investido. Ainda podem ser creditados {cents(participant.earningCapRemainingCents)} de rendimento (150% além do investido). Ao atingir o limite, adquira novas cotas para renovar a capacidade.</small></span><button className="primary-btn" onClick={() => go('/investments')}>Renovar cotas</button></div>}<section className="metric-grid"><Metric label="MODALIDADE" value={isShareholder ? 'Cotista' : 'Associado'} icon={UserRound} note={isShareholder ? `${brl(invested)} em cotas confirmadas` : 'Participação na rede'} /><Metric label="PLANO DE ASSOCIADO" value={participant.associatePlanStatus === 'ACTIVE' ? 'Ativo' : 'Pendente'} icon={ShieldCheck} note={cents(ASSOCIATE_PLAN_PRICE_CENTS)} /><Metric label="BÔNUS APROVADOS" value={cents(participant.approvedBonusCents)} icon={WalletCards} note={participant.blockedBonusCents ? `${cents(participant.blockedBonusCents)} bloqueados` : 'Diretos e indiretos'} /><Metric label="LIMITE DISPONÍVEL" value={cents(participant.earningCapRemainingCents ?? participant.bonusCapRemainingCents)} icon={BarChart3} note={isShareholder ? `${cents(participant.earningCapConsumedCents)} de ${cents(participant.earningCapCents)} de rendimento utilizados` : 'Até o teto de R$ 500,00'} /></section><section className="dashboard-split"><div className="panel"><div className="panel-title"><h2>Movimentações recentes</h2><button className="text-btn" onClick={() => go('/finance')}>Ver financeiro</button></div>{state.transactions.slice(0, 5).map(item => <div className="activity-row" key={item.id}><i className={item.amount >= 0 ? 'positive' : 'negative'}><WalletCards /></i><span><b>{item.description}</b><small>{item.date}</small></span><strong className={item.amount >= 0 ? 'positive-text' : ''}>{brl(item.amount)}</strong></div>)}</div><div className="panel quick-panel"><h2>Acesso rápido</h2><button onClick={() => go('/investments')}><BarChart3 /><span><b>{isShareholder ? 'Adquirir novas cotas' : 'Evoluir para Cotista'}</b><small>Aquisição mínima de {cents(isShareholder ? SHAREHOLDER_MIN_QUOTA_CENTS : upgradeQuotaCents(participant))}</small></span></button><button onClick={() => go('/network')}><Network /><span><b>Minha rede</b><small>Indicações diretas e indiretas</small></span></button><button onClick={() => go('/support')}><Headphones /><span><b>Solicitar suporte</b><small>Atendimento especializado</small></span></button></div></section></Page>
+  return <Page title={`Olá, ${session.user.name.split(' ')[0]}.`} subtitle="Aqui está o resumo da sua participação na GoMove."><ErrorBox error={error} /><BonusPeriodSummary periods={participant.bonusPeriods || { todayCents: 0, weekCents: 0, monthCents: 0 }} />{!isShareholder && <div className="business-plan-alert"><ShieldCheck aria-hidden="true" /><span><b>Você é Associado</b><small>Bonificações são limitadas a {cents(ASSOCIATE_BONUS_CAP_CENTS)}. Adquira ao menos {cents(upgradeQuotaCents(participant))} em cotas para evoluir a Cotista e liberar valores bloqueados.</small></span><button className="primary-btn" onClick={() => go('/investments')}>Fazer upgrade</button></div>}{isShareholder && <div className="business-plan-alert"><BarChart3 aria-hidden="true" /><span><b>Teto de ganhos: {cents(participant.earningCapTotalCents ?? participant.earningCapCents)}</b><small>Limite de 250% por cota, já incluindo o valor investido. Ainda podem ser creditados {cents(participant.earningCapRemainingCents)} de rendimento (150% além do investido). Ao atingir o limite, adquira novas cotas para renovar a capacidade.</small></span><button className="primary-btn" onClick={() => go('/investments')}>Renovar cotas</button></div>}<section className="metric-grid"><Metric label="MODALIDADE" value={isShareholder ? 'Cotista' : 'Associado'} icon={UserRound} note={isShareholder ? `${brl(invested)} em cotas confirmadas` : 'Participação na rede'} /><Metric label="STATUS DA CONTA" value={statusLabels[participant.status || session.user.status]} icon={ShieldCheck} note={isShareholder ? 'Cotas confirmadas · plano dispensado' : participant.associatePlanStatus === 'ACTIVE' ? 'Plano de Associado ativo' : 'Plano de Associado aguardando pagamento'} /><Metric label="BÔNUS APROVADOS" value={cents(participant.approvedBonusCents)} icon={WalletCards} note={participant.blockedBonusCents ? `${cents(participant.blockedBonusCents)} bloqueados` : 'Total após estornos, antes de saques'} /><Metric label="LIMITE DISPONÍVEL" value={cents(participant.earningCapRemainingCents ?? participant.bonusCapRemainingCents)} icon={BarChart3} note={isShareholder ? `${cents(participant.earningCapConsumedCents)} de ${cents(participant.earningCapCents)} de rendimento utilizados` : 'Até o teto de R$ 500,00'} /></section><section className="dashboard-split"><div className="panel"><div className="panel-title"><h2>Movimentações recentes</h2><button className="text-btn" onClick={() => go('/finance')}>Ver financeiro</button></div>{state.transactions.slice(0, 5).map(item => <div className="activity-row" key={item.id}><i className={item.amount >= 0 ? 'positive' : 'negative'}><WalletCards /></i><span><b>{item.description}</b><small>{item.date}</small></span><strong className={item.amount >= 0 ? 'positive-text' : ''}>{brl(item.amount)}</strong></div>)}</div><div className="panel quick-panel"><h2>Acesso rápido</h2><button onClick={() => go('/investments')}><BarChart3 /><span><b>{isShareholder ? 'Adquirir novas cotas' : 'Evoluir para Cotista'}</b><small>Aquisição mínima de {cents(isShareholder ? SHAREHOLDER_MIN_QUOTA_CENTS : upgradeQuotaCents(participant))}</small></span></button><button onClick={() => go('/network')}><Network /><span><b>Minha rede</b><small>Indicações diretas e indiretas</small></span></button><button onClick={() => go('/support')}><Headphones /><span><b>Solicitar suporte</b><small>Atendimento especializado</small></span></button></div></section></Page>
 }
 
 const quotaPaymentOptions = [
@@ -442,7 +491,7 @@ function UserInvestments({ session }: { session: Session }) {
   const [customerDocument, setCustomerDocument] = useState('')
   const [checkoutResult, setCheckoutResult] = useState<Row>()
   const openCheckout = (event: FormEvent) => {
-    event.preventDefault(); setActionError(''); setCheckoutResult(undefined); setPaymentOption('PIX'); setCustomerDocument(''); setCheckoutKey(crypto.randomUUID()); setCheckoutOpen(true)
+    event.preventDefault(); setActionError(''); setCheckoutResult(undefined); setPaymentOption('PIX'); setCustomerDocument(String(data?.profile.cpf || '')); setCheckoutKey(crypto.randomUUID()); setCheckoutOpen(true)
   }
   const invest = async (event: FormEvent) => {
     event.preventDefault()
@@ -565,7 +614,7 @@ function UserFinance({ session }: { session: Session }) {
   if (!data && !error) return <Loader />
   const state = data || emptyState
   const wallets = state.business.wallets || { balanceCents: 0, cotaCents: 0, redeCents: 0, cotaWithdrawableCents: 0, redeWithdrawableCents: 0, reservedCents: 0, hasActivePackage: false }
-  const selectedWithdrawable = withdrawWallet === 'COTA' ? wallets.cotaWithdrawableCents : wallets.redeWithdrawableCents
+  const selectedWithdrawable = withdrawWallet === 'COTA' ? (wallets.cotaAvailableForWithdrawalCents ?? 0) : wallets.redeWithdrawableCents
   const withdrawalWindowLabel = wallets.cotaWithdrawalReleasedAt ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }).format(new Date(wallets.cotaWithdrawalReleasedAt)) : 'domingo, 18h'
   const registeredCpf = String(state.profile.cpf ?? '').replace(/[.\s-]/g, '')
   const hasValidCpf = isValidCpfDigits(registeredCpf)
@@ -577,8 +626,8 @@ function UserFinance({ session }: { session: Session }) {
     <section className="metric-grid wallet-metrics">
       <Metric label="CARTEIRA DE SALDO" value={cents(wallets.balanceCents)} icon={Wallet} note="Depósitos para comprar produtos e pacotes. Não permite saque." />
       <Metric label="CARTEIRA COTA" value={cents(wallets.cotaCents)} icon={CircleDollarSign} note="Rendimento variável da própria cota, até 250% total (150% além do investido)." />
-      <Metric label="CARTEIRA REDE" value={cents(wallets.redeCents)} icon={UsersRound} note="Indicação direta e Unilevel da sua rede." />
-      <Metric label="DISPONÍVEL PARA SAQUE" value={cents(wallets.cotaWithdrawableCents + wallets.redeWithdrawableCents)} icon={WalletCards} note={`${cents(wallets.reservedCents)} reservados em solicitações pendentes.`} />
+      <Metric label="CARTEIRA REDE" value={cents(wallets.redeCents)} icon={UsersRound} note="Saldo de indicações e Unilevel, após saques e estornos." />
+      <Metric label="DISPONÍVEL PARA SAQUE" value={cents((wallets.cotaAvailableForWithdrawalCents ?? 0) + wallets.redeWithdrawableCents)} icon={WalletCards} note={`${cents(wallets.reservedCents)} reservados em solicitações pendentes.`} />
     </section>
     <section className="dashboard-split wallet-forms">
       <form className="form-panel" onSubmit={createDeposit} aria-busy={busy}>
@@ -594,16 +643,16 @@ function UserFinance({ session }: { session: Session }) {
         {!wallets.hasActivePackage && <p role="status">Saque bloqueado: adquira ou ative um pacote para sacar seus rendimentos.</p>}
         <div className="form-grid">
           <label>Carteira de origem<select value={withdrawWallet} onChange={event => { setWithdrawWallet(event.target.value as 'COTA' | 'REDE'); setAmount(''); setWithdrawalKey(crypto.randomUUID()) }} disabled={!wallets.hasActivePackage}>
-            <option value="COTA">Carteira Cota — {cents(wallets.cotaWithdrawableCents)} disponíveis</option>
+            <option value="COTA">Carteira Cota — {cents(wallets.cotaAvailableForWithdrawalCents ?? 0)} disponíveis</option>
             <option value="REDE">Carteira Rede — {cents(wallets.redeWithdrawableCents)} disponíveis</option>
           </select></label>
           <label>Chave PIX — CPF cadastrado<input readOnly value={hasValidCpf ? registeredCpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : ''} placeholder="CPF não cadastrado" aria-describedby="withdrawal-cpf-hint" /></label>
         </div>
         <p id="withdrawal-cpf-hint">{hasValidCpf ? 'O saque será enviado automaticamente para o CPF do seu cadastro. Cadastre esse CPF como chave PIX no seu banco.' : <>Para sacar, informe um CPF válido em <a href="/profile">Meu perfil</a>.</>}</p>
         <label>Valor do saque (R$)<input required min="55" max={selectedWithdrawable / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => { setAmount(event.target.value); setWithdrawalKey(crypto.randomUUID()) }} placeholder="R$ 0,00" disabled={!wallets.hasActivePackage} /></label>
-        <p>Disponível: {cents(selectedWithdrawable)}. Mínimo: R$ 55,00. Taxa de {WITHDRAWAL_FEE_BPS / 100}% descontada do valor solicitado. {withdrawWallet === 'COTA' ? `Carteira Cota: 1 saque por semana, liberado todo domingo às 18h (horário de São Paulo), após 30 dias de cota ativa.${wallets.cotaWithdrawalUsedThisWeek ? ` Próxima liberação em ${withdrawalWindowLabel}.` : ''}` : 'Carteira Rede: saques todos os dias, sem limite de quantidade, respeitando o saldo disponível.'}</p>
+        <p>Disponível: {cents(selectedWithdrawable)}. Mínimo: R$ 55,00. Taxa de {WITHDRAWAL_FEE_BPS / 100}% descontada do valor solicitado. {withdrawWallet === 'COTA' ? `Carteira Cota: 1 saque por semana, liberado todo domingo às 18h (horário de São Paulo), após 30 dias de cota ativa.${!wallets.cotaWithdrawalEligible && wallets.cotaWithdrawalReleasedAt ? ` Próxima liberação em ${withdrawalWindowLabel}.` : ''}` : 'Carteira Rede: saques todos os dias, sem limite de quantidade, respeitando o saldo disponível.'}</p>
         {withdrawalPreview && <dl className="withdrawal-summary" aria-live="polite"><div><dt>Valor debitado da carteira</dt><dd>{cents(withdrawalPreview.amountCents)}</dd></div><div><dt>Taxa de saque ({WITHDRAWAL_FEE_BPS / 100}%)</dt><dd>{cents(withdrawalPreview.feeCents)}</dd></div><div><dt>Líquido para envio via PIX</dt><dd>{cents(withdrawalPreview.netCents)}</dd></div></dl>}
-        <button className="primary-btn" disabled={busy || !hasValidCpf || !wallets.hasActivePackage || selectedWithdrawable < 5500 || (withdrawWallet === 'COTA' && Boolean(wallets.cotaWithdrawalUsedThisWeek))}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button>
+        <button className="primary-btn" disabled={busy || !hasValidCpf || !wallets.hasActivePackage || selectedWithdrawable < 5500 || (withdrawWallet === 'COTA' && !wallets.cotaWithdrawalEligible)}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button>
       </form>
     </section>
     <h2 className="section-title">Faturas</h2><DataTable rows={state.invoices} columns={[["id", "FATURA"], ["due", "VENCIMENTO"], ["description", "DESCRIÇÃO"], ["remaining", "SALDO", row => brl(row.remaining)], ["status", "STATUS", row => status(row.status)]]} />
@@ -617,14 +666,14 @@ function BonusesPage({ session }: { session: Session }) {
   const [summary, setSummary] = useState<any>()
   const [bonuses, setBonuses] = useState<Bonus[]>([])
   const [error, setError] = useState('')
-  const load = useCallback(() => Promise.all([api.get<any>('/network/summary'), api.get<ApiPage<Bonus>>('/bonuses/me?pageSize=100')])
+  const load = useCallback(() => Promise.all([api.get<any>('/network/summary'), api.getAll<Bonus>('/bonuses/me?pageSize=100')])
       .then(([bonusSummary, bonusEntries]) => { setSummary(bonusSummary); setBonuses([...bonusEntries.items].sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))); setError('') })
       .catch(reason => setError(reason.message))
   , [api])
   useEffect(() => { void load() }, [load])
   useAutoRefresh(load)
   if (!summary && !error) return <Loader />
-  return <Page title="Bonificações" subtitle="Acompanhe seus créditos de indicação e Unilevel com transparência."><ErrorBox error={error} /><BonusPeriodSummary periods={summary?.bonusPeriods || { todayCents: 0, weekCents: 0, monthCents: 0 }} /><section className="metric-grid bonus-status-grid"><Metric label="TOTAL APROVADO" value={cents(summary?.approvedBonusCents)} icon={Check} note="Bonificações confirmadas" /><Metric label="AGUARDANDO APROVAÇÃO" value={cents(summary?.pendingBonusCents)} icon={Activity} note="Em análise pelo financeiro" /><Metric label="VALOR BLOQUEADO" value={cents(summary?.blockedBonusCents)} icon={AlertCircle} note={summary?.blockedBonusCents ? 'Aguardando ampliação do limite' : 'Nenhum valor bloqueado'} /><Metric label="LIMITE DISPONÍVEL" value={cents(summary?.earningCapRemainingCents ?? summary?.bonusCapRemainingCents)} icon={ShieldCheck} note={summary?.membershipType === 'SHAREHOLDER' ? 'Dentro do teto de 250% da cota' : 'Dentro do teto da modalidade'} /></section>{summary?.blockedBonusCents > 0 && <div className="business-plan-alert warning bonus-page-alert"><AlertCircle aria-hidden="true" /><span><b>{cents(summary.blockedBonusCents)} aguardando liberação</b><small>{summary.membershipType === 'SHAREHOLDER' ? 'Renove suas cotas para ampliar o teto de ganhos.' : 'Evolua para Cotista para ampliar sua capacidade de bonificação.'}</small></span><button className="primary-btn" onClick={() => go('/investments')}>{summary.membershipType === 'SHAREHOLDER' ? 'Renovar cotas' : 'Evoluir para Cotista'}</button></div>}<section className="bonus-history" aria-labelledby="bonus-history-title"><div className="store-section-heading"><div><span className="eyebrow">HISTÓRICO COMPLETO</span><h2 id="bonus-history-title">Detalhes das bonificações</h2></div><span>{bonuses.length} {bonuses.length === 1 ? 'lançamento' : 'lançamentos'}</span></div><BonusTable rows={bonuses} detailed /></section></Page>
+  return <Page title="Bonificações" subtitle="Acompanhe seus créditos de indicação e Unilevel com transparência."><ErrorBox error={error} /><BonusPeriodSummary periods={summary?.bonusPeriods || { todayCents: 0, weekCents: 0, monthCents: 0 }} /><section className="metric-grid bonus-status-grid"><Metric label="TOTAL APROVADO" value={cents(summary?.approvedBonusCents)} icon={Check} note="Total após estornos, antes de saques" /><Metric label="AGUARDANDO APROVAÇÃO" value={cents(summary?.pendingBonusCents)} icon={Activity} note="Em análise pelo financeiro" /><Metric label="VALOR BLOQUEADO" value={cents(summary?.blockedBonusCents)} icon={AlertCircle} note={summary?.blockedBonusCents ? 'Aguardando ampliação do limite' : 'Nenhum valor bloqueado'} /><Metric label="LIMITE DISPONÍVEL" value={cents(summary?.earningCapRemainingCents ?? summary?.bonusCapRemainingCents)} icon={ShieldCheck} note={summary?.membershipType === 'SHAREHOLDER' ? 'Dentro do teto de 250% da cota' : 'Dentro do teto da modalidade'} /></section>{summary?.blockedBonusCents > 0 && <div className="business-plan-alert warning bonus-page-alert"><AlertCircle aria-hidden="true" /><span><b>{cents(summary.blockedBonusCents)} aguardando liberação</b><small>{summary.membershipType === 'SHAREHOLDER' ? 'Renove suas cotas para ampliar o teto de ganhos.' : 'Evolua para Cotista para ampliar sua capacidade de bonificação.'}</small></span><button className="primary-btn" onClick={() => go('/investments')}>{summary.membershipType === 'SHAREHOLDER' ? 'Renovar cotas' : 'Evoluir para Cotista'}</button></div>}<section className="bonus-history" aria-labelledby="bonus-history-title"><div className="store-section-heading"><div><span className="eyebrow">HISTÓRICO COMPLETO</span><h2 id="bonus-history-title">Detalhes das bonificações</h2></div><span>{bonuses.length} {bonuses.length === 1 ? 'lançamento' : 'lançamentos'}</span></div><BonusTable rows={bonuses} detailed /></section></Page>
 }
 
 function NetworkPage({ session }: { session: Session }) {
@@ -635,12 +684,12 @@ function NetworkPage({ session }: { session: Session }) {
   const [bonuses, setBonuses] = useState<Bonus[]>([])
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
-  const load = useCallback(() => Promise.all([api.get<any>('/network/summary'), api.get<ApiPage<User>>('/network/directs?pageSize=100'), api.get<Array<User & { level: number }>>('/network/unilevel?depth=10'), api.get<ApiPage<Bonus>>('/bonuses/me?pageSize=100')]).then(([networkSummary, directUsers, networkUsers, bonusEntries]) => { setSummary(networkSummary); setDirects(directUsers.items); setUnilevel(networkUsers); setBonuses(bonusEntries.items); setError('') }).catch(reason => setError(reason.message)), [api])
+  const load = useCallback(() => Promise.all([api.get<any>('/network/summary'), api.getAll<User>('/network/directs?pageSize=100'), api.get<Array<User & { level: number }>>('/network/unilevel?depth=10'), api.getAll<Bonus>('/bonuses/me?pageSize=100')]).then(([networkSummary, directUsers, networkUsers, bonusEntries]) => { setSummary(networkSummary); setDirects(directUsers.items); setUnilevel(networkUsers); setBonuses(bonusEntries.items); setError('') }).catch(reason => setError(reason.message)), [api])
   useEffect(() => { void load() }, [load])
   useAutoRefresh(load)
   if (!summary && !error) return <Loader />
-  const referral = `${location.origin}/convite/${session.user.inviteCode}`
-  const copyReferral = async () => { try { await navigator.clipboard.writeText(referral); setCopied(true); setTimeout(() => setCopied(false), 2500) } catch { setError('Não foi possível copiar o link. Selecione-o e copie manualmente.') } }
+  const referral = `${location.origin}/convite/${encodeURIComponent(summary?.inviteCode || session.user.inviteCode)}`
+  const copyReferral = async () => { try { await copyTextToClipboard(referral); setCopied(true); setTimeout(() => setCopied(false), 2500) } catch { setError('Não foi possível copiar o link. Selecione-o e copie manualmente.') } }
   return <Page title="Minha rede" subtitle="Acompanhe indicações diretas, indiretas e bonificações."><ErrorBox error={error} />{copied && <div className="success-box" role="status"><Check aria-hidden="true" />Link de indicação copiado.</div>}{summary?.blockedBonusCents > 0 && <div className="business-plan-alert warning"><AlertCircle aria-hidden="true" /><span><b>{cents(summary.blockedBonusCents)} aguardando upgrade</b><small>Você atingiu o limite de R$ 500,00 da modalidade Associado. O valor será liberado ao se tornar Cotista.</small></span><button className="primary-btn" onClick={() => go('/investments')}>Evoluir para Cotista</button></div>}<div className="business-plan-alert"><Network aria-hidden="true" /><span><b>Dois bônus, duas bases de cálculo</b><small>Indicação direta: {DIRECT_REFERRAL_BPS / 100}% sobre cada cota adquirida e ativada pelo seu indicado · Unilevel sobre o Diário: {UNILEVEL_LEVELS.map(item => `N${item.level} ${item.bps / 100}%`).join(' · ')}</small></span></div><section className="metric-grid"><Metric label="INDICAÇÕES DIRETAS" value={String(summary?.directs || 0)} icon={UsersRound} /><Metric label="INDICAÇÕES INDIRETAS" value={String(Math.max(0, (summary?.networkSize || 0) - (summary?.directs || 0)))} icon={Network} /><Metric label="BÔNUS APROVADOS" value={cents(summary?.approvedBonusCents)} icon={WalletCards} /><Metric label={summary?.membershipType === 'SHAREHOLDER' ? 'MODALIDADE' : 'LIMITE RESTANTE'} value={summary?.membershipType === 'SHAREHOLDER' ? 'Cotista' : cents(summary?.bonusCapRemainingCents)} icon={ShieldCheck} /></section><div className="referral-banner"><div><span>SEU LINK DE INDICAÇÃO</span><strong>{referral}</strong></div><button className="primary-btn" onClick={() => void copyReferral()}><Copy aria-hidden="true" />{copied ? 'Link copiado' : 'Copiar link'}</button></div><section className="dashboard-split"><div><h2 className="section-title">Meus diretos</h2><UserTable users={directs} /></div><div><h2 className="section-title">Bônus recentes</h2><BonusTable rows={bonuses} /></div></section><section className="unilevel-section"><div className="store-section-heading"><h2>Rede por nível</h2><span>{unilevel.length} participantes</span></div><DataTable rows={unilevel as Row[]} columns={[["level", "NÍVEL", row => `N${row.level}`], ["name", "PARTICIPANTE"], ["membershipType", "MODALIDADE", row => row.membershipType === 'SHAREHOLDER' ? 'Cotista' : 'Associado'], ["username", "USUÁRIO", row => `@${row.username}`], ["status", "STATUS", row => status(row.status)]]} /></section></Page>
 }
 
@@ -681,9 +730,9 @@ function UserTable({ users, onSelect, onAccess, onAccount, showCpf }: { users: U
     ["name", "PARTICIPANTE"],
     ...(showCpf ? [["cpf", "CPF", row => { const d = String(row.cpf ?? '').replace(/\D/g, ''); return d.length === 11 ? `${d.slice(0, 3)}.***.***-${d.slice(9)}` : '—' }] as TableColumn] : []),
     ["membershipType", "MODALIDADE", row => row.membershipType === 'SHAREHOLDER' ? 'Cotista' : 'Associado'],
-    ["associatePlanStatus", "PLANO R$ 55", row => status(row.associatePlanStatus || 'PENDING')],
+    ["associatePlanStatus", "PLANO R$ 55", row => row.membershipType === 'SHAREHOLDER' && row.associatePlanStatus !== 'ACTIVE' ? 'Dispensado (Cotista)' : status(row.associatePlanStatus || 'PENDING')],
     ["username", "USUÁRIO", row => `@${row.username}`],
-    ["status", "STATUS", row => status(row.status)],
+    ["status", "STATUS DA CONTA", row => status(row.status)],
   ] as TableColumn[]
   return <DataTable rows={users} columns={columns} action={onSelect ? row => <div className="account-actions"><button className="outline-btn" onClick={() => onSelect(row as User)}>Editar cadastro / senha</button>{onAccount && <button className="outline-btn" onClick={() => onAccount(row as User)}>Saldo e pagamentos</button>}{onAccess && <button className="primary-btn" onClick={() => onAccess(row as User)}>Entrar na conta</button>}</div> : undefined} />
 }
@@ -724,7 +773,7 @@ function AdminDashboard({ session }: { session: Session }) {
 <Metric label="ENTRADAS TOTAL" value={cents(data.control.cashInTotalCents)} icon={Wallet} note="Depósitos, planos e cotas recebidos" />
 <Metric label="SAÍDAS / SAQUES HOJE" value={cents(data.control.cashOutTodayCents)} icon={WalletCards} note="Saques efetivamente pagos no dia" />
 <Metric label="SAÍDAS / SAQUES TOTAL" value={cents(data.control.cashOutTotalCents)} icon={WalletCards} note="Total de saques pagos" />
-</section><p>Entradas excluem compras com saldo da carteira e ajustes internos. Saídas consideram saques pagos. Conta ativa não significa plano pago.</p>{(data.control.registrationsWithoutDate > 0 || data.control.paymentsWithoutDate > 0) && <p role="status">Histórico sem data: {data.control.registrationsWithoutDate} cadastros e {data.control.paymentsWithoutDate} pagamentos entram somente nos totais.</p>}</>}<section className="metric-grid admin-grid"><Metric label="ASSOCIADOS" value={String(data.associates || 0)} icon={UsersRound} note={`${data.active} contas ativas`} /><Metric label="COTISTAS" value={String(data.shareholders || 0)} icon={BarChart3} note="Com direito aos resultados" /><Metric label="PLANOS PENDENTES" value={String(data.pendingPlans || 0)} icon={ShieldCheck} note={`Plano de ${cents(ASSOCIATE_PLAN_PRICE_CENTS)}`} /><Metric label="BÔNUS BLOQUEADOS" value={cents(data.bonusBlockedCents)} icon={AlertCircle} note="Aguardando upgrade" /><Metric label="BÔNUS PENDENTES" value={cents(data.bonusPendingCents)} icon={Activity} note="Aguardando aprovação" /></section><section className="dashboard-split"><div className="panel"><h2>Prioridades do Plano de Negócios</h2><div className="admin-alert"><ShieldCheck /><span><b>{data.pendingPlans || 0} planos aguardando confirmação</b><small>Uma conta só pode ser ativada após o Plano de Associado de {cents(ASSOCIATE_PLAN_PRICE_CENTS)}.</small></span><button onClick={() => go('/admin/associates')}>Abrir</button></div><div className="admin-alert"><AlertCircle /><span><b>{cents(data.bonusBlockedCents)} em bônus bloqueados</b><small>Os valores serão liberados após a aquisição mínima de {cents(SHAREHOLDER_MIN_QUOTA_CENTS)} em cotas.</small></span><button onClick={() => go('/admin/commissions')}>Abrir</button></div><div className="admin-alert"><Wallet /><span><b>{data.pendingWithdrawals || 0} saques aguardando</b><small>Valide e processe as solicitações financeiras.</small></span><button onClick={() => go('/admin/finance')}>Abrir</button></div></div><div className="panel operation-health"><h2>Regras automatizadas</h2><div><span>Plano de Associado obrigatório</span><b>Ativa</b></div><div><span>Indicação direta sobre cotas</span><b>{DIRECT_REFERRAL_BPS / 100}%</b></div><div><span>Unilevel N1 a N6</span><b>{UNILEVEL_LEVELS.map(item => `${item.bps / 100}%`).join(' · ')}</b></div><div><span>Teto de bônus do Associado</span><b>{cents(ASSOCIATE_BONUS_CAP_CENTS)}</b></div><div><span>Ingresso direto como Cotista</span><b>A partir de {cents(SHAREHOLDER_MIN_QUOTA_CENTS)}</b></div><div><span>Upgrade obrigatório (teto atingido)</span><b>Cota mínima de {cents(ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS)}</b></div><div><span>Saque Carteira Cota</span><b>1 por semana · domingo 18h</b></div><div><span>Saque Carteira Rede</span><b>Todos os dias, sem limite</b></div><div><span>Taxa de saque</span><b>{WITHDRAWAL_FEE_BPS / 100}% nas duas carteiras</b></div><div><span>Liberação do bônus bloqueado</span><b>Automática</b></div></div></section></> : <Loader />}</Page>
+</section><p>Entradas excluem compras com saldo da carteira e ajustes internos. Saídas consideram saques pagos. Conta ativa não significa plano pago.</p>{(data.control.registrationsWithoutDate > 0 || data.control.paymentsWithoutDate > 0) && <p role="status">Histórico sem data: {data.control.registrationsWithoutDate} cadastros e {data.control.paymentsWithoutDate} pagamentos entram somente nos totais.</p>}</>}<section className="metric-grid admin-grid"><Metric label="ASSOCIADOS" value={String(data.associates || 0)} icon={UsersRound} note={`${data.active} contas ativas`} /><Metric label="COTISTAS" value={String(data.shareholders || 0)} icon={BarChart3} note="Com direito aos resultados" /><Metric label="PLANOS PENDENTES" value={String(data.pendingPlans || 0)} icon={ShieldCheck} note={`Plano de ${cents(ASSOCIATE_PLAN_PRICE_CENTS)}`} /><Metric label="BÔNUS BLOQUEADOS" value={cents(data.bonusBlockedCents)} icon={AlertCircle} note="Aguardando upgrade" /><Metric label="BÔNUS PENDENTES" value={cents(data.bonusPendingCents)} icon={Activity} note="Aguardando aprovação" /></section><section className="dashboard-split"><div className="panel"><h2>Prioridades do Plano de Negócios</h2><div className="admin-alert"><ShieldCheck /><span><b>{data.pendingPlans || 0} planos aguardando confirmação</b><small>A participação financeira exige o plano confirmado ou cotas pagas. O acesso à conta é liberado no cadastro.</small></span><button onClick={() => go('/admin/associates')}>Abrir</button></div><div className="admin-alert"><AlertCircle /><span><b>{cents(data.bonusBlockedCents)} em bônus bloqueados</b><small>O upgrade exige cotas de {cents(ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS)} após atingir o teto, respeitando a capacidade de ganhos.</small></span><button onClick={() => go('/admin/commissions')}>Abrir</button></div><div className="admin-alert"><Wallet /><span><b>{data.pendingWithdrawals || 0} saques aguardando</b><small>Valide e processe as solicitações financeiras.</small></span><button onClick={() => go('/admin/finance')}>Abrir</button></div></div><div className="panel operation-health"><h2>Regras automatizadas</h2><div><span>Plano de Associado</span><b>Dispensado para compra direta de cotas</b></div><div><span>Indicação direta sobre cotas</span><b>{DIRECT_REFERRAL_BPS / 100}%</b></div><div><span>Unilevel N1 a N6</span><b>{UNILEVEL_LEVELS.map(item => `${item.bps / 100}%`).join(' · ')}</b></div><div><span>Teto de bônus do Associado</span><b>{cents(ASSOCIATE_BONUS_CAP_CENTS)}</b></div><div><span>Ingresso direto como Cotista</span><b>A partir de {cents(SHAREHOLDER_MIN_QUOTA_CENTS)}</b></div><div><span>Upgrade obrigatório (teto atingido)</span><b>Cota mínima de {cents(ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS)}</b></div><div><span>Saque Carteira Cota</span><b>1 por semana · domingo 18h</b></div><div><span>Saque Carteira Rede</span><b>Todos os dias, sem limite</b></div><div><span>Taxa de saque</span><b>{WITHDRAWAL_FEE_BPS / 100}% nas duas carteiras</b></div><div><span>Liberação do bônus bloqueado</span><b>Automática</b></div></div></section></> : <Loader />}</Page>
 }
 
 function Associates({ session, readOnly = false }: { session: Session; readOnly?: boolean }) {
@@ -785,7 +834,7 @@ function AdminCollection({ session, type, readOnly = false }: { session: Session
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState<Row>()
   const [form, setForm] = useState<Row>({ id: '' })
-  const load = () => Promise.all([api.get<ApiPage<Row>>(`/admin/${type}?pageSize=100`), api.get<ApiPage<User>>('/admin/associates?pageSize=100')]).then(([records, accounts]) => { setRows(records.items); setUsers(accounts.items) }).catch(reason => setError(reason.message))
+  const load = () => Promise.all([api.getAll<Row>(`/admin/${type}?pageSize=100`), api.getAll<User>('/admin/associates?pageSize=100')]).then(([records, accounts]) => { setRows(records.items); setUsers(accounts.items) }).catch(reason => setError(reason.message))
   useEffect(() => { void load() }, [type])
   const openCreate = () => { const initial: Row = { id: '' }; for (const field of config.fields) initial[field.key] = field.options?.[0] ?? (field.type === 'number' ? 0 : ''); setForm(initial); setCreating(true); setEditing(undefined); setError('') }
   const openEdit = (row: Row) => { setForm({ ...row }); setEditing(row); setCreating(false); setError('') }
@@ -814,8 +863,16 @@ function AdminNetwork({ session }: { session: Session }) {
   const [users, setUsers] = useState<User[]>([])
   const [root, setRoot] = useState('')
   const [depth, setDepth] = useState(5)
-  useEffect(() => { api.get<ApiPage<User>>('/admin/associates?pageSize=100').then(value => setUsers(value.items)) }, [])
-  useEffect(() => { api.get<TreeUser>(`/admin/network/tree?depth=${depth}${root ? `&rootUserId=${root}` : ''}`).then(setTreeData) }, [root, depth])
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    setError(''); setTreeData(undefined)
+    Promise.all([api.getAll<User>('/admin/associates?pageSize=100'), api.get<TreeUser>(`/admin/network/tree?depth=${depth}${root ? `&rootUserId=${encodeURIComponent(root)}` : ''}`)])
+      .then(([accounts, tree]) => { if (!cancelled) { setUsers(accounts.items); setTreeData(tree) } })
+      .catch(reason => { if (!cancelled) setError(reason.message) })
+    return () => { cancelled = true }
+  }, [api, root, depth, retry])
   const TreeNode = ({ node, level = 0, isRoot = false }: { node: TreeUser; level?: number; isRoot?: boolean }) => <li className={`tree-branch${isRoot ? ' tree-branch-root' : ''}`}>
     <article className={`person-node${isRoot ? ' tree-root' : ''}`}>
       <span>{initials(node.name)}</span>
@@ -825,7 +882,7 @@ function AdminNetwork({ session }: { session: Session }) {
     </article>
     {node.children.length > 0 && <ul className="tree-children">{node.children.map(child => <TreeNode key={child.id} node={child} level={level + 1} />)}</ul>}
   </li>
-  return <Page title="Rede completa" subtitle="Explore a genealogia de qualquer usuário, com profundidade controlada."><div className="table-tools"><select value={root} onChange={event => setRoot(event.target.value)}><option value="">Raiz global MASTER</option>{users.map(user => <option value={user.id} key={user.id}>{user.name}</option>)}</select><select value={depth} onChange={event => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option value={value} key={value}>{value} níveis</option>)}</select></div>{treeData ? <div className="tree-panel"><div className="tree-scroll"><ul className="network-tree"><TreeNode node={treeData} isRoot /></ul></div><div className="tree-legend"><span><i className="legend-dot active" />Ativo</span><span><i className="legend-dot pending" />Pendente</span><span><i className="legend-dot blocked" />Bloqueado</span></div></div> : <Loader />}</Page>
+  return <Page title="Rede completa" subtitle="Explore a genealogia de qualquer usuário, com profundidade controlada." action={error ? <button className="outline-btn" onClick={() => setRetry(value => value + 1)}>Tentar novamente</button> : undefined}><ErrorBox error={error} /><div className="table-tools"><select aria-label="Raiz da rede" value={root} onChange={event => setRoot(event.target.value)}><option value="">Raiz global MASTER</option>{users.map(user => <option value={user.id} key={user.id}>{user.name}</option>)}</select><select aria-label="Quantidade de níveis" value={depth} onChange={event => setDepth(Number(event.target.value))}>{[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option value={value} key={value}>{value} níveis</option>)}</select></div>{treeData ? <div className="tree-panel"><div className="tree-scroll"><ul className="network-tree"><TreeNode node={treeData} isRoot /></ul></div><div className="tree-legend"><span><i className="legend-dot active" />Ativo</span><span><i className="legend-dot pending" />Pendente</span><span><i className="legend-dot blocked" />Bloqueado</span></div></div> : !error ? <Loader /> : null}</Page>
 }
 
 function Commissions({ session, readOnly = false }: { session: Session; readOnly?: boolean }) {
@@ -842,7 +899,7 @@ function Commissions({ session, readOnly = false }: { session: Session; readOnly
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const load = useCallback(() => Promise.all([api.get<ApiPage<CommissionRule>>('/admin/commission-rules?pageSize=100'), api.get<ApiPage<Bonus>>('/admin/bonus-entries?pageSize=100'), api.get<ApiPage<User>>('/admin/associates?pageSize=100'), api.get<ApiPage<Row>>('/admin/daily-profitabilities?pageSize=100')]).then(([a, b, c, d]) => { setRules(a.items); setBonuses(b.items); setUsers(c.items); setDailyRuns(d.items); setError('') }).catch(reason => setError(reason.message)), [api])
+  const load = useCallback(() => Promise.all([api.getAll<CommissionRule>('/admin/commission-rules?pageSize=100'), api.getAll<Bonus>('/admin/bonus-entries?pageSize=100'), api.getAll<User>('/admin/associates?pageSize=100'), api.getAll<Row>('/admin/daily-profitabilities?pageSize=100')]).then(([a, b, c, d]) => { setRules(a.items); setBonuses(b.items); setUsers(c.items); setDailyRuns(d.items); setError('') }).catch(reason => setError(reason.message)), [api])
   useEffect(() => { void load() }, [load])
   useAutoRefresh(load)
   const manual = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(''); setNotice(''); try { await api.post('/admin/bonus-entries/manual-credit', { userId: form.userId, amountCents: Math.round(Number(form.amount) * 100), reason: form.reason }); setForm({ userId: '', amount: '', reason: '' }); setNotice('Crédito criado e enviado para aprovação.'); await load() } catch (reason: any) { setError(reason.message) } finally { setBusy(false) } }
@@ -869,8 +926,15 @@ function Commissions({ session, readOnly = false }: { session: Session; readOnly
 function Audit({ session }: { session: Session }) {
   const api = useApi(session)
   const [rows, setRows] = useState<Row[]>([])
-  useEffect(() => { api.get<ApiPage<Row>>('/admin/audit-logs?pageSize=100').then(value => setRows(value.items)) }, [])
-  return <Page title="Auditoria administrativa" subtitle="Trilha imutável das decisões sensíveis do MASTER."><DataTable rows={rows} columns={[["createdAt", "DATA", row => new Date(row.createdAt).toLocaleString('pt-BR')], ["action", "AÇÃO"], ["targetType", "TIPO"], ["targetId", "ALVO"], ["details", "DETALHES", row => JSON.stringify(row.details)]]} /></Page>
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    setError('')
+    api.getAll<Row>('/admin/audit-logs?pageSize=100').then(value => { if (!cancelled) setRows(value.items) }).catch(reason => { if (!cancelled) setError(reason.message) })
+    return () => { cancelled = true }
+  }, [api, retry])
+  return <Page title="Auditoria administrativa" subtitle="Trilha imutável das decisões sensíveis do MASTER." action={error ? <button className="outline-btn" onClick={() => setRetry(value => value + 1)}>Tentar novamente</button> : undefined}><ErrorBox error={error} /><DataTable rows={rows} columns={[["createdAt", "DATA", row => dateTime(row.createdAt)], ["action", "AÇÃO"], ["targetType", "TIPO"], ["targetId", "ALVO"], ["details", "DETALHES", row => JSON.stringify(row.details)]]} /></Page>
 }
 
 function AdminSettings({ session, readOnly = false }: { session: Session; readOnly?: boolean }) {
@@ -885,7 +949,7 @@ function AdminSettings({ session, readOnly = false }: { session: Session; readOn
   const [newPassword, setNewPassword] = useState('')
   const typed = confirmation.trim().replace(/\s+/g, ' ').toUpperCase()
   const ready = typed === FINANCIAL_RESET_PHRASE
-  const loadViewers = useCallback(() => api.get<ApiPage<User>>('/admin/viewers?pageSize=100').then(value => setViewers(value.items)).catch(reason => setError(reason.message)), [api])
+  const loadViewers = useCallback(() => api.getAll<User>('/admin/viewers?pageSize=100').then(value => setViewers(value.items)).catch(reason => setError(reason.message)), [api])
   useEffect(() => { void loadViewers() }, [loadViewers])
   const resetBalances = async () => {
     if (!ready) return
@@ -924,7 +988,7 @@ function AdminSettings({ session, readOnly = false }: { session: Session; readOn
     <section className="settings-grid"><div className="panel"><h2>Segurança</h2><div className="toggle-row"><span><b>Autenticação protegida</b><small>Senhas armazenadas com hash criptográfico e sessões privadas</small></span><input type="checkbox" checked readOnly /></div><div className="toggle-row"><span><b>Auditar mudanças financeiras</b><small>Registra autor, data e justificativa</small></span><input type="checkbox" checked readOnly /></div></div><div className="panel"><h2>Ambiente online</h2><p>Cadastros, convites, operações e dados administrativos são armazenados no servidor e compartilhados entre dispositivos autorizados.</p></div></section>
     <section className="panel viewers-panel"><div className="panel-title"><h2>Administradores de visualização</h2><span>{viewers.length} de 3 sugeridos</span></div>
       <p>Essas contas entram no painel MASTER, <b>consultam todos os dados do sistema</b> (painéis, usuários, cotas, pedidos, financeiro, rede, comissões e auditoria) e <b>não conseguem editar nada</b>: qualquer inclusão, alteração ou exclusão é recusada pelo servidor. Crie os três acessos de leitura que a operação pedir — cada um é uma conta separada, com senha própria.</p>
-      {readOnly ? <p role="status">Somente o MASTER pode criar, alterar ou remover esses acessos.</p> : <form onSubmit={createViewer} aria-busy={busy}><div className="form-grid"><label>Nome<input required autoComplete="name" value={viewerForm.name} onChange={event => setViewerForm({ ...viewerForm, name: event.target.value })} /></label><label>Usuário<input required minLength={3} maxLength={32} pattern="[A-Za-z0-9._-]+" autoComplete="off" value={viewerForm.username} onChange={event => setViewerForm({ ...viewerForm, username: event.target.value })} placeholder="ex.: auditoria1" /></label><label>E-mail<input required type="email" autoComplete="off" value={viewerForm.email} onChange={event => setViewerForm({ ...viewerForm, email: event.target.value })} /></label><label>Senha inicial<input required minLength={6} maxLength={128} type="password" autoComplete="new-password" value={viewerForm.password} onChange={event => setViewerForm({ ...viewerForm, password: event.target.value })} /></label></div><button className="primary-btn" disabled={busy}>{busy ? 'Criando acesso…' : 'Criar acesso de visualização'}</button></form>}
+      {readOnly ? <p role="status">Somente o MASTER pode criar, alterar ou remover esses acessos.</p> : <form onSubmit={createViewer} aria-busy={busy}><div className="form-grid"><label>Nome<input required autoComplete="name" value={viewerForm.name} onChange={event => setViewerForm({ ...viewerForm, name: event.target.value })} /></label><label>Usuário<input required minLength={3} maxLength={32} pattern={'[A-Za-z0-9._\\-]+'} autoComplete="off" value={viewerForm.username} onChange={event => setViewerForm({ ...viewerForm, username: event.target.value })} placeholder="ex.: auditoria1" /></label><label>E-mail<input required type="email" autoComplete="off" value={viewerForm.email} onChange={event => setViewerForm({ ...viewerForm, email: event.target.value })} /></label><label>Senha inicial<input required minLength={6} maxLength={128} type="password" autoComplete="new-password" value={viewerForm.password} onChange={event => setViewerForm({ ...viewerForm, password: event.target.value })} /></label></div><button className="primary-btn" disabled={busy}>{busy ? 'Criando acesso…' : 'Criar acesso de visualização'}</button></form>}
       <DataTable rows={viewers as Row[]} columns={[["name", "NOME"], ["username", "USUÁRIO", row => `@${row.username}`], ["email", "E-MAIL"], ["status", "STATUS", row => status(row.status)]]} empty="Nenhum administrador de visualização cadastrado." action={readOnly ? undefined : row => <div className="row-actions"><button className="outline-btn" disabled={busy} onClick={() => { setViewerAction({ kind: 'password', viewer: row as User }); setNewPassword(''); setError('') }}>Trocar senha</button><button className="icon-btn danger-icon" aria-label={`Remover acesso de ${row.username}`} disabled={busy} onClick={() => setViewerAction({ kind: 'delete', viewer: row as User })}><Trash2 aria-hidden="true" /></button></div>} />
     </section>
     <section className="panel danger-panel"><h2>Zona de risco · Zerar saldos do sistema</h2>
@@ -937,16 +1001,30 @@ function AdminSettings({ session, readOnly = false }: { session: Session; readOn
 
 function Root() {
   const path = usePath()
-  const [session, setSession] = useState<Session | null>(loadSession())
-  const [validating, setValidating] = useState(!!loadSession())
-  useEffect(() => {
+  const [session, setSession] = useState<Session | null>(() => loadSession())
+  const [validating, setValidating] = useState(() => !!loadSession())
+  const refreshSession = useCallback(async () => {
     if (!session) { setValidating(false); return }
-    new ApiClient(session.token, () => setSession(null)).get<{ user: User }>('/auth/me').then(({ user }) => { const next = { ...session, user }; saveSession(next); setSession(next) }).catch(() => { if(session.supportActor){sessionStorage.removeItem('gomove-support-session');window.location.assign('/admin/associates');return}clearSession();setSession(null) }).finally(() => setValidating(false))
-  }, [])
-  const logout = async () => { try { if(session)await new ApiClient(session.token).post('/auth/logout',{}) } finally { if(session?.supportActor){sessionStorage.removeItem('gomove-support-session');window.location.assign('/admin/associates');return}clearSession();setSession(null);go('/') } }
-  const registrationPath = location.pathname === '/cadastro' || path === '/cadastro/' || location.pathname.startsWith('/convite/')
-  if (registrationPath && !session) return <Registration setSession={setSession} />
+    try {
+      const { user } = await new ApiClient(session.token, () => setSession(current => current?.token === session.token ? loadSession() : current)).get<{ user: User }>('/auth/me')
+      setSession(current => {
+        if (!current || current.token !== session.token) return current
+        if (JSON.stringify(current.user) === JSON.stringify(user)) return current
+        const next = { ...current, user }; saveSession(next); return next
+      })
+    } catch { /* A transient connection failure must not erase a valid session. */ }
+    finally { setValidating(false) }
+  }, [session?.token])
+  useEffect(() => { void refreshSession() }, [refreshSession])
+  useAutoRefresh(refreshSession)
+  const leaveSession = async () => {
+    try { if (session) await new ApiClient(session.token).post('/auth/logout', {}) }
+    finally { if (session?.supportActor) { sessionStorage.removeItem('gomove-support-session'); setSession(loadSession()) } else { localStorage.removeItem('gomove-session'); setSession(null) } }
+  }
+  const logout = async () => { const support = session?.supportActor; try { await leaveSession() } catch { /* Local sign-out still completes when offline. */ } go(support ? '/admin/associates' : '/') }
+  const registrationPath = location.pathname === '/cadastro' || path === '/cadastro/' || location.pathname.startsWith('/convite/') || (path === '/' && Boolean(inviteCodeFromLocation(location)))
   if (validating) return <Loader />
+  if (registrationPath) return <Registration key={path + location.search} setSession={setSession} existingSession={session} leaveSession={leaveSession} />
   return session ? <Shell session={session} logout={logout} /> : <Login setSession={setSession} />
 }
 

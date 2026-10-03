@@ -329,3 +329,61 @@ tbody tr:hover{background:rgba(184,230,0,.025)}
 .readonly-banner{display:flex;align-items:center;gap:12px;padding:14px 18px;margin-bottom:16px;border:1px solid rgba(184,223,0,.28);border-left:3px solid var(--lime);border-radius:10px;background:rgba(184,223,0,.06);color:var(--muted);font-size:11px}.readonly-banner svg{color:var(--lime);flex-shrink:0}.readonly-banner b{color:#fff;text-transform:uppercase;letter-spacing:.08em;font-size:10px}
 .danger-panel{margin-top:18px;border-color:rgba(255,123,114,.3)}.danger-panel h2{color:#ff8b84}
 .viewers-panel{margin-top:18px}.viewers-panel p{color:var(--muted);font-size:13px;line-height:1.65}
+
+/* Keep financial details and dialogs within the available viewport. */
+.app-main,.page-heading>div,.panel,.form-panel,.metric-card,.dashboard-split>*{min-width:0}
+.metric-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.wallet-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+.metric-top{gap:8px}.metric-top>span{overflow-wrap:anywhere}.metric-top i{flex-shrink:0}
+.metric-card>strong{overflow-wrap:anywhere;line-height:1.15}
+.activity-row{grid-template-columns:38px minmax(0,1fr) auto}.activity-row span{min-width:0;overflow-wrap:anywhere}
+.form-error,.success-box,.payment-notice,.pix-status-badge,.readonly-banner{overflow-wrap:anywhere}
+.activation-card input{width:100%;min-width:0;min-height:48px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--radius-sm);background:#091116;color:var(--text)}
+.activation-card input:focus{border-color:var(--lime);box-shadow:var(--focus)}
+.pix-payment-details,.pix-copy-section,.pix-qr-container{min-width:0;max-width:100%}
+.pix-qr-card{width:min(100%,332px);min-width:0;min-height:0;flex-shrink:1}
+.pix-qr-card svg,.pix-qr-card img,.pix-qr-image{width:100%!important;height:auto!important;min-width:0!important;min-height:0!important;max-width:300px!important;aspect-ratio:1}
+.pix-status-badge>span{min-width:0;max-width:100%}
+.pix-payment-details textarea{width:100%;min-width:0;font-size:16px}
+.modal-backdrop{display:flex;align-items:center;justify-content:center;padding:20px 16px;overflow:auto;overscroll-behavior:contain}
+.modal{position:relative;left:auto;top:auto;transform:none;width:min(100%,560px);max-height:calc(100dvh - 40px);min-width:0;overscroll-behavior:contain}
+.modal-head{gap:16px}.modal-head h2{min-width:0;overflow-wrap:anywhere}.modal-head .icon-btn{flex-shrink:0}
+.modal-head{position:sticky;top:-26px;z-index:2;background:#0c1318;padding-block:8px}
+.invite-session-actions{display:grid;gap:12px}
+.support-banner>span:first-child{width:auto;height:auto;display:block;background:transparent;color:inherit;border-radius:0}
+.payment-method-grid label:focus-within{outline:2px solid var(--lime);outline-offset:2px}
+@media(max-width:1180px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:860px){
+  .sidebar{visibility:hidden;transition:transform .25s ease,visibility .25s;max-width:calc(100% - 44px);height:100dvh;overscroll-behavior:contain;padding-top:env(safe-area-inset-top)}
+  .sidebar.is-mobile-open{visibility:visible}
+  .sidebar-top{gap:12px;padding-inline:8px}.sidebar-top img{width:150px;max-width:calc(100% - 56px)}
+  .sidebar .mobile-close{display:grid;flex-shrink:0}
+  .topbar{padding-top:env(safe-area-inset-top);height:calc(var(--topbar) + env(safe-area-inset-top))}
+  .topbar .icon-btn{flex-shrink:0}.topbar .environment-pill{min-width:0;font-size:11px}.topbar .user-chip{padding-inline:6px}
+  .page-content{padding-bottom:max(60px,env(safe-area-inset-bottom))}
+  .login-panel{min-height:100dvh}
+  input:not([type=checkbox]):not([type=radio]),select,textarea{font-size:16px!important}
+}
+@media(min-width:861px){.sidebar .mobile-close{display:none}}
+@media(max-width:720px){
+  tbody td>.status{justify-self:end;max-width:100%;text-align:left;overflow-wrap:anywhere}
+  .table-actions{display:block;text-align:left}.table-actions:before{display:block;margin-bottom:10px}
+  .account-actions,.inline-actions{display:flex;flex-wrap:wrap;gap:8px}.account-actions>*{width:100%;justify-content:center}
+  .finance-tabs{flex-wrap:wrap}.finance-tabs button{flex:1 1 120px}
+  .operation-health>div{gap:12px}.operation-health>div>*{min-width:0;overflow-wrap:anywhere}
+  .operation-health b{text-align:right}
+  .bonus-mobile-card header{flex-wrap:wrap}.bonus-mobile-card .status{max-width:100%}
+  .store-section-heading{flex-wrap:wrap}.store-section-heading>span{white-space:normal}
+  .form-grid{grid-template-columns:minmax(0,1fr)}.form-grid label.wide{grid-column:auto}
+  .modal{padding:20px;max-height:calc(100dvh - 24px)}.modal-backdrop{padding:12px}
+  .modal-head{top:-20px}.modal-actions .outline-btn,.modal-actions .primary-btn{width:100%}
+  .split-actions>span{display:none}
+}
+@media(max-width:600px){
+  .wallet-metrics{grid-template-columns:minmax(0,1fr)}
+  .activity-row{grid-template-columns:32px minmax(0,1fr);gap:10px}.activity-row>strong{grid-column:2;justify-self:start}
+  .payment-notice{flex-wrap:wrap}.payment-notice>button{width:100%}
+  .withdrawal-summary>div{flex-wrap:wrap;gap:6px}.withdrawal-summary dd{white-space:normal}
+  .referral-banner>div{min-width:0;width:100%}.referral-banner strong{user-select:all}
+}
+@media(max-width:380px){.metric-grid{grid-template-columns:minmax(0,1fr)}.metric-card{min-height:130px}.environment-pill{max-width:112px}.topbar{gap:8px;padding-inline:12px}.user-chip{border:0}}
