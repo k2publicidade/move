@@ -7,7 +7,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { neon } from '@neondatabase/serverless'
-import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
+import { buildNetworkTree, calculateDirectReferralBonus, calculateProfitabilityBonuses, canSponsorRegistrations, createBonusReversal, createRegistration, createUniqueInviteCode, resolveRegistrationSponsor, transitionBonus, validateCommissionPlan, wouldCreateSponsorCycle, type MlmUser } from './mlm.js'
 import { TwoPpConfigurationError, TwoPpRequestError, createTwoPpCryptoTransaction, createTwoPpPixTransaction, createTwoPpPixWithdrawal, normalizeCustomerDocument, verifyTwoPpWebhookToken, type TwoPpCryptoCurrency } from './twopayments.js'
 import { ASSOCIATE_BONUS_CAP_CENTS, ASSOCIATE_PLAN_PRICE_CENTS, ASSOCIATE_UPGRADE_MIN_QUOTA_CENTS, COMMISSION_PLAN_VERSION, DIRECT_REFERRAL_BPS, SHAREHOLDER_MIN_QUOTA_CENTS, SHAREHOLDER_EARNING_CAP_BPS, SHAREHOLDER_TOTAL_CAP_BPS, UNILEVEL_LEVELS, allocateEarningByBusinessPlan, canUpgradeToShareholder, isBonusEligibleParticipant, releaseBlockedBonuses, requiredUpgradeQuotaCents, withBusinessPlanDefaults } from '../src/businessPlan.js'
 import { transactionWallet, walletSummary, validateWithdrawal, updateWithdrawal, settleWithdrawal, debitPurchase, creditDeposit, moneyCents, storeProducts, validatePixKey, normalizeCpf, cpfOwnerId } from '../src/wallets.js'
@@ -89,7 +89,13 @@ function normalizeDb(db:any,persisted?:string): Db {
   Object.assign(user,withBusinessPlanDefaults(user as any))
   if(inferredShareholder)user.membershipType='SHAREHOLDER'
  }
- for(const transaction of db.transactions)transaction.wallet=transactionWallet(transaction)
+ // Older Unilevel credits carry the source daily ID and were inferred as COTA.
+ // Repair only a proven bonus/source link; do not move unrelated explicit wallets.
+ const unilevelIds=new Set(db.bonusEntries.filter((entry:any)=>entry.type==='UNILEVEL_PROFITABILITY').map((entry:any)=>entry.id))
+ for(const transaction of db.transactions) {
+  if(transaction.dailyProfitabilityId&&unilevelIds.has(transaction.bonusEntryId)&&(!transaction.wallet||transaction.wallet==='COTA'))transaction.wallet='REDE'
+  transaction.wallet=transactionWallet(transaction)
+ }
  const normalized=JSON.stringify(db,null,2)
  if(persisted!==undefined&&normalized!==persisted) writeDb(db,normalized)
  return db
@@ -246,8 +252,8 @@ function processDailyProfitabilityRun(db:Db,run:any,actorId:string) {
   if(allocation.availableCents<=0)continue
   for(const calculated of calculateProfitabilityBonuses(db.users,participant.id,earning.id,allocation.availableCents,plan.levels)) {
    const recipient=db.users.find(item=>item.id===calculated.userId)!;const bonusAllocation=allocateEarning(db,recipient,calculated.amountCents);const base={userId:recipient.id,sourceUserId:participant.id,level:calculated.level,eventId:earning.id,dailyProfitabilityId:earning.id,dailyProfitabilityRunId:run.id,type:calculated.type,reason:`Unilevel N${calculated.level} sobre o Diário de ${participant.name}`,createdAt:now()}
-   if(bonusAllocation.availableCents>0){const bonus={id:crypto.randomUUID(),...base,amountCents:bonusAllocation.availableCents,status:'APPROVED',idempotencyKey:bonusAllocation.cappedCents?`${calculated.idempotencyKey}:available`:calculated.idempotencyKey};db.bonusEntries.unshift(bonus);bonuses.push(bonus);run.unilevelAmountCents+=bonus.amountCents;db.transactions.unshift({id:crypto.randomUUID(),userId:recipient.id,bonusEntryId:bonus.id,dailyProfitabilityId:earning.id,dailyProfitabilityRunId:run.id,date:run.date,description:`Unilevel N${calculated.level} sobre o Diário de ${participant.name}`,amount:bonus.amountCents/100,status:'Crédito',createdAt:now()})}
-   if(bonusAllocation.cappedCents>0){const capped={id:crypto.randomUUID(),...base,amountCents:bonusAllocation.cappedCents,status:'CAPPED_250_PERCENT',idempotencyKey:`${calculated.idempotencyKey}:capped`,reason:'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite'};db.bonusEntries.unshift(capped);bonuses.push(capped)}
+   if(bonusAllocation.availableCents>0){const bonus={id:crypto.randomUUID(),...base,amountCents:bonusAllocation.availableCents,status:'APPROVED',idempotencyKey:bonusAllocation.cappedCents?`${calculated.idempotencyKey}:available`:calculated.idempotencyKey};db.bonusEntries.unshift(bonus);bonuses.push(bonus);run.unilevelAmountCents+=bonus.amountCents;db.transactions.unshift({id:crypto.randomUUID(),userId:recipient.id,wallet:'REDE',bonusEntryId:bonus.id,dailyProfitabilityId:earning.id,dailyProfitabilityRunId:run.id,date:run.date,description:`Unilevel N${calculated.level} sobre o Diário de ${participant.name}`,amount:bonus.amountCents/100,status:'Crédito',createdAt:now()})}
+   if(bonusAllocation.cappedCents>0){const capped={id:crypto.randomUUID(),...base,amountCents:bonusAllocation.cappedCents,status:recipient.membershipType==='SHAREHOLDER'?'CAPPED_250_PERCENT':'BLOCKED_UPGRADE',idempotencyKey:`${calculated.idempotencyKey}:capped`,reason:recipient.membershipType==='SHAREHOLDER'?'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite':'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista'};db.bonusEntries.unshift(capped);bonuses.push(capped)}
   }
  }
  Object.assign(run,{status:'PROCESSED',processedAt:now()});audit(db,actorId,'DAILY_PROFITABILITY_PROCESS','DAILY_PROFITABILITY',run.id,{date:run.date,rateBps:run.rateBps,participantCount:run.participantCount,creditedAmountCents:run.creditedAmountCents,cappedAmountCents:run.cappedAmountCents,unilevelAmountCents:run.unilevelAmountCents});return {run,earnings,bonuses,idempotent:false}
@@ -269,7 +275,11 @@ function confirmInvestmentInDb(db:Db, inv:any, actorId:string) {
   const recipient=db.users.find(user=>user.id===x.userId)!
   const allocation=allocateEarning(db,recipient,x.amountCents)
   const base={userId:x.userId,level:x.level,eventId:event.id,investmentId:inv.id,type:x.type,reason:`Indicação direta de ${plan.directReferralBps/100}% sobre as cotas ${inv.id}`,ruleSnapshot:event.ruleSnapshot,createdAt:now()}
-  if(allocation.availableCents>0)db.bonusEntries.push({id:crypto.randomUUID(),...base,amountCents:allocation.availableCents,status:'PENDING',idempotencyKey:allocation.cappedCents?`${x.idempotencyKey}:available`:x.idempotencyKey})
+  if(allocation.availableCents>0) {
+   const bonus={id:crypto.randomUUID(),...base,amountCents:allocation.availableCents,status:'APPROVED',idempotencyKey:allocation.cappedCents?`${x.idempotencyKey}:available`:x.idempotencyKey}
+   db.bonusEntries.push(bonus)
+   db.transactions.unshift({id:crypto.randomUUID(),userId:recipient.id,bonusEntryId:bonus.id,wallet:'REDE',date:new Date().toLocaleDateString('pt-BR'),description:base.reason,amount:bonus.amountCents/100,status:'Crédito',createdAt:now()})
+  }
   if(allocation.cappedCents>0)db.bonusEntries.push({id:crypto.randomUUID(),...base,amountCents:allocation.cappedCents,status:recipient.membershipType==='SHAREHOLDER'?'CAPPED_250_PERCENT':'BLOCKED_UPGRADE',idempotencyKey:`${x.idempotencyKey}:capped`,reason:recipient.membershipType==='SHAREHOLDER'?'Teto de 250% da cota atingido; renove suas cotas para ampliar o limite':'Limite de R$ 500,00 atingido; valor aguardando upgrade para Cotista'})
  }
  inv.paymentStatus='CONFIRMED';inv.status='Ativo';inv.confirmedAt=now()
@@ -397,7 +407,7 @@ function page<T>(items:T[], req:Request) { const p=Math.max(1,Number(req.query.p
 function createSession(db:Db,user:MlmUser) { const token=crypto.randomBytes(32).toString('base64url');db.sessions[token]={userId:user.id,expiresAt:new Date(Date.now()+12*60*60*1000).toISOString()};for(const [key,session] of Object.entries(db.sessions))if(Date.parse(session.expiresAt)<=Date.now())delete db.sessions[key];return {token,user:publicUser(user)} }
 app.post(['/api/auth/login','/api/login'],publicRateLimit,(req,res)=>{ const {username,password}=req.body??{},plainPassword=String(password??''),login=String(username).trim().toLowerCase(),db=readDb();let u=db.users.find(x=>x.username.toLowerCase()===login||x.email.toLowerCase()===login);if(!u&&login==='master')u=db.users.find(x=>x.username.toLowerCase()==='admin'); if(plainPassword.length>128||!u||!verify(plainPassword,String(u.passwordHash))||u.status!=='ACTIVE') return res.status(401).json({error:'Usuário ou senha inválidos'}); const session=createSession(db,u);writeDb(db);res.json(session) })
 app.get('/api/auth/me',auth,(req,res)=>res.json({user:publicUser((req as any).user)}))
-app.get('/api/public/invites/:inviteCode',publicRateLimit,(req,res)=>{const inviteCode=normalizeInviteCode(String(req.params.inviteCode)),u=readDb().users.find(x=>x.inviteCode.trim().toLowerCase()===inviteCode); if(!u||!canSponsorRegistrations(u)) return res.status(404).json({error:'Convite indisponível: confira o código e se a conta do indicador está ativa'}); res.json({sponsor:{name:(u as any).name,inviteCode:u.inviteCode}})})
+app.get('/api/public/invites/:inviteCode',publicRateLimit,(req,res)=>{const inviteCode=normalizeInviteCode(String(req.params.inviteCode)),u=resolveRegistrationSponsor(readDb().users,inviteCode); if(!u) return res.status(404).json({error:'Convite indisponível: confira o código e se a conta do indicador está ativa'}); res.json({sponsor:{name:(u as any).name,username:u.username,inviteCode:u.inviteCode}})})
 app.post('/api/public/register',publicRateLimit,(req,res)=>{ const b=req.body??{},password=String(b.password??''); if(!b.username||!b.email||password.length<6||password.length>128||!b.name) return res.status(422).json({error:'Informe nome, usuário, e-mail e uma senha entre 6 e 128 caracteres'}); let cpf='';try{cpf=normalizeCpf(b.cpf)}catch(error:any){return res.status(422).json({error:error.message})} const db=readDb();if(!db.profiles)db.profiles={};if(cpfOwnerId(db.profiles,cpf))return res.status(409).json({error:'CPF já cadastrado para outro usuário'}); try { const u=createRegistration(db.users,{username:b.username,email:b.email,passwordHash:hash(password),inviteCode:b.inviteCode,name:b.name}); db.users.push(u); db.profiles[u.id]={name:u.name,email:u.email,cpf}; const session=createSession(db,u);audit(db,u.id,'REGISTER','USER',u.id,{sponsorId:u.sponsorId,source:b.inviteCode?'INVITE':'DIRECT'});writeDb(db);res.status(201).json(session) } catch(e:any) { res.status(/already exists/.test(e.message)?409:422).json({error:e.message}) } })
 function descendants(db:Db,id:string) { const out=new Set<string>([id]); let changed=true; while(changed){changed=false; for(const u of db.users) if(u.sponsorId&&out.has(u.sponsorId)&&!out.has(u.id)){out.add(u.id);changed=true}} return out }
 function businessSummary(db:Db,user:MlmUser) {
@@ -462,18 +472,18 @@ app.get('/api/admin/associates',auth,admin,(req,res)=>{const d=readDb();res.json
 app.post('/api/admin/associates',auth,admin,(req,res)=>{
  const b=req.body??{},d=readDb(),username=String(b.username??'').trim().toLowerCase(),email=String(b.email??'').trim().toLowerCase(),password=String(b.password??''),sponsor=b.sponsorId?d.users.find(u=>u.id===b.sponsorId&&canSponsorRegistrations(u)):d.users.find(u=>u.role==='ADMIN_MASTER'&&canSponsorRegistrations(u))
  if(!String(b.name??'').trim()||username.length<3||username==='master'||!email.includes('@')||password.length<6||password.length>128||!sponsor)return res.status(422).json({error:'Preencha nome, usuário, e-mail, senha e patrocinador válidos'})
- if(d.users.some(u=>u.username.toLowerCase()===username||u.email.toLowerCase()===email))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
+ if(d.users.some(u=>u.username.toLowerCase()===username||u.inviteCode.trim().toLowerCase()===username||u.email.toLowerCase()===email))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
  let cpf='';try{cpf=normalizeCpf(b.cpf)}catch(error:any){return res.status(422).json({error:error.message})}
  if(!d.profiles)d.profiles={};if(cpfOwnerId(d.profiles,cpf))return res.status(409).json({error:'CPF já cadastrado para outro usuário'})
  const associatePlanStatus=['ACTIVE','PENDING','INACTIVE'].includes(b.associatePlanStatus)?b.associatePlanStatus:'PENDING',requestedStatus=['ACTIVE','PENDING','BLOCKED'].includes(b.status)?b.status:'PENDING'
- const account:MlmUser={id:crypto.randomUUID(),name:String(b.name).trim(),username,email,passwordHash:hash(password),role:'ASSOCIATE',status:requestedStatus,sponsorId:sponsor.id,inviteCode:`${username.replace(/[^a-z0-9]/g,'').slice(0,14)}${Math.random().toString(36).slice(2,6)}`,membershipType:'ASSOCIATE',associatePlanStatus,associatePlanAmountCents:ASSOCIATE_PLAN_PRICE_CENTS,bonusCapCents:ASSOCIATE_BONUS_CAP_CENTS,...(associatePlanStatus==='ACTIVE'?{associatePlanPaidAt:now()}:{})}
+ const account:MlmUser={id:crypto.randomUUID(),name:String(b.name).trim(),username,email,passwordHash:hash(password),role:'ASSOCIATE',status:requestedStatus,sponsorId:sponsor.id,inviteCode:createUniqueInviteCode(d.users,username),membershipType:'ASSOCIATE',associatePlanStatus,associatePlanAmountCents:ASSOCIATE_PLAN_PRICE_CENTS,bonusCapCents:ASSOCIATE_BONUS_CAP_CENTS,...(associatePlanStatus==='ACTIVE'?{associatePlanPaidAt:now()}:{})}
  d.users.push(account);d.profiles[account.id]={name:account.name,email:account.email,phone:String(b.phone??''),cpf,country:'Brasil'};audit(d,(req as any).user.id,'RECORD_CREATE','USER',account.id,{sponsorId:account.sponsorId,status:account.status});writeDb(d);res.status(201).json(publicUser(account))
 })
 app.patch('/api/admin/associates/:id',auth,admin,(req,res)=>{
  const b=req.body??{},d=readDb(),account=d.users.find(u=>u.id===req.params.id&&u.role==='ASSOCIATE');if(!account)return res.status(404).json({error:'Usuário não encontrado'})
  const username=String(b.username??account.username).trim().toLowerCase(),email=String(b.email??account.email).trim().toLowerCase(),name=String(b.name??account.name??'').trim(),requestedSponsorId=b.sponsorId===null?d.users.find(u=>u.role==='ADMIN_MASTER')?.id:b.sponsorId
  if(!name||username.length<3||(username==='master'&&account.username!=='master')||!email.includes('@'))return res.status(422).json({error:'Nome, usuário e e-mail são obrigatórios'})
- if(d.users.some(u=>u.id!==account.id&&(u.username.toLowerCase()===username||u.email.toLowerCase()===email)))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
+ if(d.users.some(u=>u.id!==account.id&&(u.username.toLowerCase()===username||(username!==account.username.trim().toLowerCase()&&u.inviteCode.trim().toLowerCase()===username)||u.email.toLowerCase()===email)))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
  if(b.cpf!==undefined&&String(b.cpf).trim()!==''){let nextCpf='';try{nextCpf=normalizeCpf(b.cpf)}catch(error:any){return res.status(422).json({error:error.message})}if(cpfOwnerId(d.profiles,nextCpf,account.id))return res.status(409).json({error:'CPF já cadastrado para outro usuário'});if(!d.profiles[account.id])d.profiles[account.id]={};d.profiles[account.id].cpf=nextCpf}
  if(requestedSponsorId&&(!d.users.some(u=>u.id===requestedSponsorId&&canSponsorRegistrations(u))||wouldCreateSponsorCycle(d.users,account.id,requestedSponsorId)))return res.status(422).json({error:'Patrocinador precisa ter uma conta ativa e não pode criar um ciclo'})
  const nextPlanStatus=['ACTIVE','PENDING','INACTIVE'].includes(b.associatePlanStatus)?b.associatePlanStatus:account.associatePlanStatus,nextStatus=['ACTIVE','PENDING','BLOCKED'].includes(b.status)?b.status:account.status
@@ -510,8 +520,8 @@ app.post('/api/admin/viewers',auth,admin,(req,res)=>{
  if(!name||!username||!email||password.length<6||password.length>128)return res.status(422).json({error:'Informe nome, usuário, e-mail e uma senha entre 6 e 128 caracteres'})
  if(!/^[a-z0-9._-]{3,32}$/.test(username))return res.status(422).json({error:'Usuário inválido: use de 3 a 32 caracteres (letras, números, ponto, hífen ou sublinhado)'})
  const d=readDb()
- if(d.users.some(u=>u.username.toLowerCase()===username||String(u.email??'').toLowerCase()===email))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
- const viewer={id:crypto.randomUUID(),username,email,name,passwordHash:hash(password),role:'ADMIN_VIEWER' as const,status:'ACTIVE' as const,sponsorId:null,inviteCode:`vis-${crypto.randomBytes(3).toString('hex')}`}
+ if(d.users.some(u=>u.username.toLowerCase()===username||u.inviteCode.trim().toLowerCase()===username||String(u.email??'').toLowerCase()===email))return res.status(409).json({error:'Usuário ou e-mail já cadastrado'})
+ const viewer={id:crypto.randomUUID(),username,email,name,passwordHash:hash(password),role:'ADMIN_VIEWER' as const,status:'ACTIVE' as const,sponsorId:null,inviteCode:createUniqueInviteCode(d.users,`vis-${username}`)}
  d.users.push(viewer);if(!d.profiles)d.profiles={};d.profiles[viewer.id]={name,email,country:'Brasil'}
  audit(d,(req as any).user.id,'VIEWER_ADMIN_CREATE','USER',viewer.id,{username})
  writeDb(d);res.status(201).json(publicUser(viewer))

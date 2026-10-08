@@ -58,8 +58,9 @@ export function withdrawalWallet(withdrawal: Row): WalletType {
 export function transactionWallet(transaction: Row): WalletType {
   if (transaction.wallet === 'BALANCE' || transaction.wallet === 'COTA' || transaction.wallet === 'REDE') return transaction.wallet
   if (transaction.depositId || transaction.adjustmentReference) return 'BALANCE'
-  if (transaction.dailyProfitabilityId) return 'COTA'
+  // A daily Unilevel commission carries both IDs; its bonus owns the wallet.
   if (transaction.bonusEntryId) return 'REDE'
+  if (transaction.dailyProfitabilityId) return 'COTA'
   if (transaction.withdrawalId) return 'REDE'
   if (transaction.wallet === 'EARNINGS') return 'REDE'
   if (/^rendimento operacional/i.test(transaction.description ?? '')) return 'COTA'
