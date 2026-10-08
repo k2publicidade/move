@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
+import { publicSurface } from '../src/siteRouting'
 
 const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const registration = source.match(/function Registration\([\s\S]*?const userLinks/)?.[0] ?? ''
@@ -11,8 +12,8 @@ const commissions = source.match(/function Commissions\([\s\S]*?function Audit/)
 const associates = source.match(/function Associates\([\s\S]*?type CrudField/)?.[0] ?? ''
 
 test('registration works directly and through an affiliate invite', () => {
-  assert.match(source, /location\.pathname === '\/cadastro'/)
-  assert.match(source, /location\.pathname\.startsWith\('\/convite\/'\)/)
+  assert.equal(publicSurface({ pathname: '/cadastro', search: '' }), 'registration')
+  assert.equal(publicSurface({ pathname: '/convite/matheus01', search: '' }), 'registration')
   assert.match(registration, /inviteCodeFromLocation/)
   assert.match(registration, /inviteCode: inviteCode \|\| undefined/)
 })

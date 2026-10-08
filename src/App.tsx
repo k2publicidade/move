@@ -1,5 +1,5 @@
 import { storeProducts, transactionWallet, walletLabels, normalizeCpf, isValidCpfDigits, moneyCents, withdrawalAmounts, WITHDRAWAL_FEE_BPS } from './wallets'
-import { FormEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, ReactNode, RefObject, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   Activity, AlertCircle, BarChart3, CalendarDays, Car, Check, CircleDollarSign, Copy, FileText, GitBranch,
@@ -14,6 +14,12 @@ import { participantIndicators } from './participantSummary'
 import { FINANCIAL_RESET_PHRASE } from './financialReset'
 import type { Bonus, CommissionRule, Page as ApiPage, TreeUser, User } from './types'
 import './styles.css'
+import { publicSurface } from './siteRouting'
+
+const LandingPage = lazy(async () => {
+  await import('./landing.css')
+  return import('./LandingPage')
+})
 
 type Row = Record<string, any> & { id: string }
 type PortalState = {
@@ -281,7 +287,7 @@ function Login({ setSession }: { setSession: (session: Session) => void }) {
       go(session.user.role === 'ADMIN_MASTER' || session.user.role === 'ADMIN_VIEWER' ? '/admin' : '/dashboard')
     } catch (reason: any) { setError(reason.message) } finally { setLoading(false) }
   }
-  return <main className="login-shell"><div className="login-visual"><img src="/brand/gomove-hero.jpeg" alt="Mobilidade inteligente GoMove" /></div><section className="login-panel"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><h1>Bem-vindo <em>de volta.</em></h1><p>Acesse sua conta GoMove com suas credenciais.</p><form onSubmit={submit} aria-busy={loading}><label>Usuário ou e-mail<input required autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} /></label><label>Senha<input required autoComplete="current-password" type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={loading}>{loading ? 'Autenticando…' : 'Entrar na plataforma'}</button></form><p className="registration-prompt">Ainda não tem acesso? <a href="/cadastro">Criar conta</a></p></div></section></main>
+  return <main className="login-shell"><div className="login-visual"><img src="/brand/gomove-hero.jpeg" alt="Mobilidade inteligente GoMove" /></div><section className="login-panel"><div className="login-form-wrap"><img className="login-logo" src="/brand/gomove-logo-oficial.png" alt="GoMove" /><h1>Bem-vindo <em>de volta.</em></h1><p>Acesse sua conta GoMove com suas credenciais.</p><form onSubmit={submit} aria-busy={loading}><label>Usuário ou e-mail<input required autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} /></label><label>Senha<input required autoComplete="current-password" type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><ErrorBox error={error} /><button className="primary-btn login-btn" disabled={loading}>{loading ? 'Autenticando…' : 'Entrar na plataforma'}</button></form><p className="registration-prompt">Ainda não tem acesso? <a href="/cadastro">Criar conta</a></p><p className="registration-prompt"><a href="/">← Voltar ao site GoMove</a></p></div></section></main>
 }
 function BonusPeriodSummary({ periods }: { periods: { todayCents: number; weekCents: number; monthCents: number } }) {
   const values = [
@@ -1062,9 +1068,11 @@ function Root() {
     finally { if (session?.supportActor) { sessionStorage.removeItem('gomove-support-session'); setSession(loadSession()) } else { localStorage.removeItem('gomove-session'); setSession(null) } }
   }
   const logout = async () => { const support = session?.supportActor; try { await leaveSession() } catch { /* Local sign-out still completes when offline. */ } go(support ? '/admin/associates' : '/') }
-  const registrationPath = location.pathname === '/cadastro' || path === '/cadastro/' || location.pathname.startsWith('/convite/') || (path === '/' && Boolean(inviteCodeFromLocation(location)))
+  const surface = publicSurface({ pathname: path, search: location.search })
+  if (surface === 'website') return <Suspense fallback={<Loader />}><LandingPage /></Suspense>
   if (validating) return <Loader />
-  if (registrationPath) return <Registration key={path + location.search} setSession={setSession} existingSession={session} leaveSession={leaveSession} />
+  if (surface === 'registration') return <Registration key={path + location.search} setSession={setSession} existingSession={session} leaveSession={leaveSession} />
+  if (session && ['/login', '/login/', '/portal', '/portal/'].includes(path)) return <Redirect to={session.user.role === 'ADMIN_MASTER' || session.user.role === 'ADMIN_VIEWER' ? '/admin' : '/dashboard'} />
   return session ? <Shell session={session} logout={logout} /> : <Login setSession={setSession} />
 }
 
