@@ -1,0 +1,2 @@
+# Preserve the original binary presentation without newline conversion.
+*.pdf binary
