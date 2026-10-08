@@ -48,7 +48,7 @@ export function transitionBonus(entry: BonusLedgerEntry, targetStatus: 'APPROVED
   return { ...entry, status: targetStatus }
 }
 
-export function createBonusReversal(entries: BonusLedgerEntry[], originalId: string, reason: string, id = crypto.randomUUID, timestamp = () => new Date().toISOString()): BonusLedgerEntry {
+export function createBonusReversal(entries: BonusLedgerEntry[], originalId: string, reason: string, id = () => crypto.randomUUID(), timestamp = () => new Date().toISOString()): BonusLedgerEntry {
   const original = entries.find(entry => entry.id === originalId)
   if (!original) throw new Error('Bonus not found')
   if (original.type === 'REVERSAL' || original.reversalOfId) throw new Error('A reversal cannot be reversed')
@@ -58,20 +58,35 @@ export function createBonusReversal(entries: BonusLedgerEntry[], originalId: str
   return { id: id(), userId: original.userId, amountCents: -original.amountCents, status: 'APPROVED', type: 'REVERSAL', reversalOfId: original.id, reason: reason.trim(), createdAt: timestamp() }
 }
 
+export function resolveRegistrationSponsor(users: MlmUser[], input: string): MlmUser | undefined {
+  const token = normalizeInviteCode(input)
+  if (!token) return undefined
+  // Resolve across all accounts before checking activity: a blocked account's
+  // legacy code must never redirect silently to a different active username.
+  const matches = users.filter(user => user.username.trim().toLowerCase() === token || user.inviteCode.trim().toLowerCase() === token)
+  if (matches.length !== 1 || !canSponsorRegistrations(matches[0])) return undefined
+  return matches[0]
+}
+
+export function createUniqueInviteCode(users: MlmUser[], username: string): string {
+  const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'
+  let inviteCode = ''
+  do inviteCode = `${prefix}${Math.random().toString(36).slice(2, 8)}`; while (users.some(user => user.inviteCode.trim().toLowerCase() === inviteCode || user.username.trim().toLowerCase() === inviteCode))
+  return inviteCode
+}
+
 export function createRegistration(users: MlmUser[], input: { username: string; email: string; passwordHash: string; inviteCode?: string; name: string }, id = () => crypto.randomUUID()): MlmUser {
   const username = input.username.trim().toLowerCase(), email = input.email.trim().toLowerCase(), name = input.name.trim()
   if (username === 'master') throw new Error('username is reserved')
   if (username.length < 3 || !/^[a-z0-9._-]+$/.test(username) || !email.includes('@') || !name || !input.passwordHash) throw new Error('registration data is invalid')
-  if (users.some(u => u.username.toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
+  if (users.some(u => u.username.toLowerCase() === username || u.inviteCode.trim().toLowerCase() === username || u.email.toLowerCase() === email)) throw new Error('username or email already exists')
   const inviteCodeInput = normalizeInviteCode(input.inviteCode ?? '')
   if (input.inviteCode?.trim() && !inviteCodeInput) throw new Error('active sponsor not found')
   const sponsor = inviteCodeInput
-    ? users.find(u => u.inviteCode.trim().toLowerCase() === inviteCodeInput && canSponsorRegistrations(u))
+    ? resolveRegistrationSponsor(users, inviteCodeInput)
     : users.find(u => u.role === 'ADMIN_MASTER' && canSponsorRegistrations(u))
   if (!sponsor) throw new Error('active sponsor not found')
-  const prefix = username.replace(/[^a-z0-9]/g, '').slice(0, 14) || 'gomove'
-  let inviteCode = ''
-  do inviteCode = `${prefix}${Math.random().toString(36).slice(2, 8)}`; while (users.some(user => user.inviteCode.toLowerCase() === inviteCode.toLowerCase()))
+  const inviteCode = createUniqueInviteCode(users, username)
   return { id: id(), username, email, passwordHash: input.passwordHash, name, role: 'ASSOCIATE', status: 'ACTIVE', sponsorId: sponsor.id, inviteCode, registrationSource: inviteCodeInput ? 'INVITE' : 'DIRECT', membershipType: 'ASSOCIATE', associatePlanStatus: 'PENDING', associatePlanAmountCents: ASSOCIATE_PLAN_PRICE_CENTS, bonusCapCents: ASSOCIATE_BONUS_CAP_CENTS }
 }
 

@@ -129,7 +129,8 @@ test('each investment confirmation generates only a 10% direct bonus and remains
   const matheusInvestment = await demoRequest<Record<string, any>>('/admin/investments', 'POST', { userId: ana.id, pack: 'Cotas GoMove', amount: 500, status: 'Aguardando pagamento' }, master.token)
   const matheusConfirmation = await demoRequest<{ bonuses: Record<string, any>[] }>(`/admin/investments/${matheusInvestment.id}/confirm`, 'POST', {}, master.token)
   const matheusBonus = matheusConfirmation.bonuses.find(item => item.userId === matheus.id)!
-  await demoRequest(`/admin/bonus-entries/${matheusBonus.id}/approve`, 'POST', {}, master.token)
+  assert.equal(matheusBonus.status, 'APPROVED')
+  await assert.rejects(() => demoRequest(`/admin/bonus-entries/${matheusBonus.id}/approve`, 'POST', {}, master.token), /pendentes/)
   const user = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'matheus', password: 'gomove2026' })
   let state = await demoRequest<{ transactions: Record<string, any>[] }>('/state', 'GET', undefined, user.token)
   assert.equal(state.transactions.filter(item => item.bonusEntryId === matheusBonus.id).length, 1)
