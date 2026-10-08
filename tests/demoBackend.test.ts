@@ -20,7 +20,7 @@ test('demo database includes separate MASTER and user profiles', () => {
   assert.ok(database.vehicles.length >= 3)
 })
 
-test('demo deposits stay in purchase wallet and only earnings with an active package can be withdrawn', async () => {
+test('demo deposits enter balance wallet and earnings still require an active package to withdraw', async () => {
   localStorage.clear()
   const user = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Carteiras Demo', username: 'walletdemo', email: 'walletdemo@example.com', password: 'safe-password', cpf: '99000010101' })
   const deposit = await demoRequest<Record<string, any>>('/deposits', 'POST', { amount: 600, idempotencyKey: 'demo-deposit' }, user.token)
@@ -29,6 +29,7 @@ test('demo deposits stay in purchase wallet and only earnings with an active pac
   let state = await demoRequest<Record<string, any>>('/state', 'GET', undefined, user.token)
   assert.equal(state.business.wallets.balanceCents, 60000)
   assert.equal(state.business.wallets.earningsCents, 0)
+  assert.equal(state.business.wallets.balanceWithdrawableCents, 60000)
   await assert.rejects(() => demoRequest('/withdrawals', 'POST', { amount: 50 }, user.token), /pacote ativo/)
   await demoRequest('/wallet/purchases', 'POST', { productType: 'INVESTMENT', amount: 500, idempotencyKey: 'demo-quota' }, user.token)
   await demoRequest('/wallet/purchases', 'POST', { productType: 'INVESTMENT', amount: 500, idempotencyKey: 'demo-quota' }, user.token)
@@ -47,6 +48,31 @@ test('user-created ticket is visible to MASTER and protected by role', async () 
   const masterSession = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
   const tickets = await demoRequest<Page<Record<string, any>>>('/admin/tickets', 'GET', undefined, masterSession.token)
   assert.equal(tickets.items[0].subject, 'Teste integrado')
+})
+
+test('demo MASTER credits withdrawable real balance and reservations prevent spending it twice', async () => {
+  localStorage.clear()
+  const master = await demoRequest<{ token: string }>('/auth/login', 'POST', { username: 'admin', password: 'gomove2026' })
+  const user = await demoRequest<{ token: string; user: User }>('/public/register', 'POST', { name: 'Saldo Real Demo', username: 'realdemo', email: 'realdemo@example.com', password: 'safe-password', cpf: '99000010284' })
+  const route = `/admin/associates/${user.user.id}/balance-adjustments`
+  const credit = { amountCents: 20000, wallet: 'BALANCE', reason: 'Crédito real', reference: 'real-demo-1' }
+  await assert.rejects(() => demoRequest(route, 'POST', credit, user.token), /administrativo/)
+  await demoRequest(route, 'POST', credit, master.token)
+  assert.equal((await demoRequest<any>(route, 'POST', credit, master.token)).idempotent, true)
+  const account = await demoRequest<any>(`/admin/associates/${user.user.id}/account`, 'GET', undefined, master.token)
+  assert.equal(account.wallets.balanceWithdrawableCents, 20000)
+  assert.equal(account.wallets.hasActivePackage, false)
+  const payload = { amount: 100, wallet: 'BALANCE', idempotencyKey: 'real-demo-payout' }
+  const payout = await demoRequest<any>('/withdrawals', 'POST', payload, user.token)
+  assert.equal((await demoRequest<any>('/withdrawals', 'POST', payload, user.token)).id, payout.id)
+  assert.equal((await demoRequest<any>('/state', 'GET', undefined, user.token)).business.wallets.reservedBalanceCents, 10000)
+  await assert.rejects(() => demoRequest('/wallet/purchases', 'POST', { productType: 'PRODUCT', productId: 'PROD-03', idempotencyKey: 'reserved-demo-buy' }, user.token), /insuficiente/)
+  await assert.rejects(() => demoRequest(route, 'POST', { ...credit, amountCents: -10001, reference: 'reserved-demo-debit' }, master.token), /reservados/)
+  await demoRequest(`/admin/withdrawals/${payout.id}`, 'PATCH', { status: 'Pago' }, master.token)
+  const state = await demoRequest<any>('/state', 'GET', undefined, user.token)
+  assert.equal(state.business.wallets.balanceCents, 10000)
+  assert.equal(state.business.wallets.reservedCents, 0)
+  assert.equal(state.business.wallets.earningsCents, 0)
 })
 
 test('investment creates an idempotent 2PP crypto checkout', async () => {

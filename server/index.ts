@@ -453,7 +453,7 @@ app.post('/api/admin/associates/:id/balance-adjustments',auth,admin,(req,res)=>{
  const wallet=b.wallet??'BALANCE';if(!['BALANCE','COTA','REDE'].includes(wallet))return res.status(422).json({error:'Carteira inválida'})
  const previous=d.transactions.find((t:any)=>t.userId===u.id&&t.adjustmentReference===reference)
  if(previous){if(Math.round(previous.amount*100)!==b.amountCents||previous.reason!==reason||transactionWallet(previous)!==wallet)return res.status(409).json({error:'Referência já utilizada em outro ajuste'});return res.json({transaction:previous,idempotent:true})}
- const wallets=walletSummary(d,u),balanceCents=wallet==='BALANCE'?wallets.balanceCents:wallet==='COTA'?wallets.cotaCents:wallets.redeCents,reservedCents=wallet==='BALANCE'?0:wallet==='COTA'?wallets.reservedCotaCents:wallets.reservedRedeCents
+ const wallets=walletSummary(d,u),balanceCents=wallet==='BALANCE'?wallets.balanceCents:wallet==='COTA'?wallets.cotaCents:wallets.redeCents,reservedCents=wallet==='BALANCE'?wallets.reservedBalanceCents:wallet==='COTA'?wallets.reservedCotaCents:wallets.reservedRedeCents
  if(b.amountCents<0&&balanceCents+b.amountCents<reservedCents)return res.status(422).json({error:'O ajuste não pode consumir valores reservados nem deixar saldo negativo'})
  const actorId=(req as any).user.id,transaction={id:crypto.randomUUID(),userId:u.id,actorId,wallet,amount:b.amountCents/100,adjustmentReference:reference,reason,description:`Ajuste MASTER: ${reason}`,status:b.amountCents>0?'Crédito':'Débito',date:new Date().toLocaleDateString('pt-BR'),createdAt:now()}
  d.transactions.unshift(transaction);audit(d,actorId,'BALANCE_ADJUSTMENT','USER',u.id,{transactionId:transaction.id,wallet,amountCents:b.amountCents,beforeCents:balanceCents,afterCents:balanceCents+b.amountCents,reference,reason});writeDb(d);res.status(201).json({transaction,idempotent:false})
@@ -571,7 +571,7 @@ app.post('/api/wallet/purchases',auth,(req,res)=>{
   }else if(b.productType==='INVESTMENT'){
    const {amount,amountCents}=parseQuotaAmount(b.amount),upgradeQuotaCents=requiredUpgradeQuotaCents(user,d.bonusEntries)
    if(amountCents<upgradeQuotaCents)throw new Error(minimumQuotaMessage(upgradeQuotaCents))
-   if(walletSummary(d,user).balanceCents<amountCents)throw new Error('Saldo insuficiente na Carteira de Saldo')
+   if(walletSummary(d,user).balanceAvailableCents<amountCents)throw new Error('Saldo insuficiente na Carteira de Saldo')
    item={...base,amount,amountCents,pack:'Cotas GoMove',profit:0,status:'Pendente',paymentStatus:'PENDING'}
    d.investments.unshift(item);confirmInvestmentInDb(d,item,user.id)
    debitPurchase(d,user,amountCents,id,'Compra de cotas GoMove',crypto.randomUUID)
@@ -652,8 +652,8 @@ app.post('/api/withdrawals',auth,async(req,res)=>{
  if(uncertain)return res.status(409).json({error:'Existe um saque aguardando conciliação com o gateway. Acompanhe o histórico antes de solicitar outro.',paymentId:uncertain.id,retryable:false})
  let result:ReturnType<typeof validateWithdrawal>,account:string
  try {
-  if(body.wallet!==undefined&&!['COTA','REDE'].includes(body.wallet))throw new Error('Selecione uma carteira válida para saque (Cota ou Rede)')
-  const wallet=body.wallet==='COTA'?'COTA':'REDE'
+  if(body.wallet!==undefined&&!['BALANCE','COTA','REDE'].includes(body.wallet))throw new Error('Selecione uma carteira válida para saque (Saldo, Cota ou Rede)')
+  const wallet=body.wallet==='BALANCE'?'BALANCE':body.wallet==='COTA'?'COTA':'REDE'
   result=validateWithdrawal(d,user,body.amount,wallet)
   account=validatePixKey(body.account,d.profiles?.[user.id]?.cpf)
  } catch(error:any) { return res.status(422).json({error:error.message}) }

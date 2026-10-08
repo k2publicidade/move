@@ -61,6 +61,61 @@ async function scenario(cpf: string, run: (context: {
   }
 }
 
+test('MASTER credit is real withdrawable balance, without a package, with reservations and an actual gateway payout request', async () => {
+  await scenario('99000002770', async ({ request, hook, token, userId, calls }) => {
+    const db = readDb()
+    db.users.find(u => u.id === userId)!.associatePlanStatus = 'PENDING'
+    db.transactions = db.transactions.filter((t: Row) => t.userId !== userId)
+    writeDb(db)
+    const master = (await request('/auth/login', { username: 'admin', password: 'gomove2026' })).body
+    const route = `/admin/associates/${userId}/balance-adjustments`
+    const credit = { amountCents: 20000, wallet: 'BALANCE', reason: 'Saldo real concedido pelo ADMIN', reference: 'real-credit-1' }
+    assert.equal((await request(route, credit, token)).status, 403)
+    for (const invalid of [0, 1.5, 100000001]) assert.equal((await request(route, { ...credit, amountCents: invalid }, master.token)).status, 422)
+    assert.equal((await request(route, credit, master.token)).status, 201)
+    assert.equal((await request(route, credit, master.token)).body.idempotent, true)
+    assert.equal((await request(route, { ...credit, amountCents: 30000 }, master.token)).status, 409)
+    assert.equal(readDb().auditLogs.filter(log => log.action === 'BALANCE_ADJUSTMENT' && log.targetId === userId).length, 1)
+    let wallets = (await request('/state', undefined, token)).body.business.wallets
+    assert.equal(wallets.balanceWithdrawableCents, 20000)
+    assert.equal(wallets.earningsCents, 0)
+    assert.equal(wallets.hasActivePackage, false)
+    assert.equal((await request('/withdrawals', { amount: 100, wallet: 'REDE' }, token)).status, 422)
+    const payload = { amount: 100, wallet: 'BALANCE', idempotencyKey: 'real-payout-1' }
+    const created = await request('/withdrawals', payload, token)
+    assert.equal(created.status, 201, JSON.stringify(created.body))
+    assert.equal(created.body.wallet, 'BALANCE')
+    assert.equal(calls[0].amount, 94)
+    assert.equal(calls[0].pixKey, '99000002770')
+    assert.equal((await request('/withdrawals', payload, token)).body.id, created.body.id)
+    assert.equal(calls.length, 1)
+    wallets = (await request('/state', undefined, token)).body.business.wallets
+    assert.equal(wallets.balanceCents, 20000)
+    assert.equal(wallets.balanceWithdrawableCents, 10000)
+    assert.equal(wallets.reservedBalanceCents, 10000)
+    assert.equal(wallets.reservedRedeCents, 0)
+    assert.equal((await request('/wallet/purchases', { productType: 'PRODUCT', productId: 'PROD-03', idempotencyKey: 'reserved-purchase' }, token)).status, 422)
+    assert.equal((await request(route, { ...credit, amountCents: -10001, reference: 'reserved-debit' }, master.token)).status, 422)
+    assert.equal((await request('/withdrawals', { ...payload, amount: 101, idempotencyKey: 'too-much' }, token)).status, 422)
+    const second = await request('/withdrawals', { ...payload, idempotencyKey: 'real-payout-2' }, token)
+    assert.equal(second.status, 201)
+    assert.equal((await request('/state', undefined, token)).body.business.wallets.balanceWithdrawableCents, 0)
+    assert.equal((await hook(second.body.id, { status: 'FAILED' })).status, 200)
+    assert.equal((await request('/state', undefined, token)).body.business.wallets.balanceWithdrawableCents, 10000)
+    assert.equal((await hook(created.body.id, { status: 'COMPLETED' })).status, 200)
+    assert.equal((await hook(created.body.id, { status: 'COMPLETED', retry: 2 })).status, 200)
+    const ledger = readDb().transactions.filter((t: Row) => t.withdrawalId === created.body.id)
+    assert.equal(ledger.length, 1)
+    assert.equal(ledger[0].wallet, 'BALANCE')
+    assert.equal(ledger[0].amount, -100)
+    wallets = (await request('/state', undefined, token)).body.business.wallets
+    assert.equal(wallets.balanceCents, 10000)
+    assert.equal(wallets.reservedCents, 0)
+    assert.equal(wallets.balanceWithdrawableCents, 10000)
+    assert.equal(wallets.earningsCents, 0)
+  })
+})
+
 test('PIX uses registered CPF, ignores forged fee/provider fields, sends net and settles gross exactly once', async () => {
   await scenario('99000002001', async ({ request, hook, token, userId, calls }) => {
     const mismatch = await request('/withdrawals', { amount: 100, account: '52998224725' }, token)

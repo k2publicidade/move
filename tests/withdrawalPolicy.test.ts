@@ -1,6 +1,33 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cotaWithdrawalWeekKey, nextCotaWithdrawalRelease, normalizeCpf, validatePixKey, validateWithdrawal, walletSummary, withdrawalAmounts, updateWithdrawal } from '../src/wallets.js'
+import { cotaWithdrawalWeekKey, nextCotaWithdrawalRelease, normalizeCpf, validatePixKey, validateWithdrawal, walletSummary, withdrawalAmounts, updateWithdrawal, withdrawalWallet, debitPurchase } from '../src/wallets.js'
+
+test('real balance can be withdrawn without a package and pending requests reserve purchases as well', () => {
+  const user = { id: 'real', status: 'ACTIVE', associatePlanStatus: 'PENDING' }
+  const db: any = { users: [user], profiles: { real: { cpf: '52998224725' } }, investments: [], withdrawals: [], transactions: [{ userId: 'real', wallet: 'BALANCE', amount: 200 }, { userId: 'other', wallet: 'BALANCE', amount: 500 }] }
+  assert.equal(validateWithdrawal(db, user, 100, 'BALANCE').netCents, 9400)
+  assert.throws(() => validateWithdrawal(db, user, 100, 'REDE'), /pacote ativo/)
+  assert.throws(() => validateWithdrawal(db, user, 50, 'BALANCE'), /mínimo/)
+  assert.throws(() => validateWithdrawal(db, { ...user, status: 'BLOCKED' }, 100, 'BALANCE'), /conta ativa/)
+  const request: any = { id: 'real-1', userId: user.id, wallet: 'BALANCE', amount: 100, status: 'Pendente', createdAt: new Date().toISOString() }
+  db.withdrawals.push(request)
+  assert.equal(walletSummary(db, user).reservedBalanceCents, 10000)
+  assert.equal(walletSummary(db, user).balanceAvailableCents, 10000)
+  assert.equal(walletSummary(db, user).reservedRedeCents, 0)
+  assert.equal(validateWithdrawal(db, user, 100, 'BALANCE').amountCents, 10000)
+  assert.throws(() => validateWithdrawal(db, user, 101, 'BALANCE'), /indisponível/)
+  assert.throws(() => debitPurchase(db, user, 10001, 'purchase', 'Compra', () => 't'), /insuficiente/)
+  updateWithdrawal(db, request, { status: 'Recusado' }, () => 't')
+  assert.equal(walletSummary(db, user).balanceWithdrawableCents, 20000)
+  request.status = 'Pendente'
+  updateWithdrawal(db, request, { status: 'Pago' }, () => 't')
+  updateWithdrawal(db, request, { status: 'Pago' }, () => 't')
+  assert.equal(walletSummary(db, user).balanceCents, 10000)
+  assert.equal(walletSummary(db, user).reservedCents, 0)
+  assert.equal(db.transactions.filter((t: any) => t.withdrawalId === request.id).length, 1)
+  assert.equal(withdrawalWallet(request), 'BALANCE')
+  assert.equal(withdrawalWallet({}), 'REDE')
+})
 
 test('CPF validation accepts formatting and rejects missing, repeated, invalid check digits and letters', () => {
   assert.equal(normalizeCpf('529.982.247-25'), '52998224725')

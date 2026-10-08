@@ -47,8 +47,9 @@ export function nextCotaWithdrawalRelease(date = new Date()): string {
   return new Date(currentMs + 7 * 24 * 60 * 60 * 1000).toISOString()
 }
 
-// A withdrawal belongs to exactly one earnings wallet: COTA (own quota yield) or REDE (network bonuses).
+// Legacy withdrawals without a wallet belong to REDE.
 export function withdrawalWallet(withdrawal: Row): WalletType {
+  if (withdrawal.wallet === 'BALANCE') return 'BALANCE'
   return withdrawal.wallet === 'COTA' ? 'COTA' : 'REDE'
 }
 
@@ -78,9 +79,12 @@ export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string, 
     else redeCents += amount
   }
   const pending = (db.withdrawals as Row[]).filter(w => w.userId === user.id && w.id !== excludeWithdrawalId && ['Pendente', 'Em análise'].includes(w.status))
+  const reservedBalanceCents = pending.filter(w => withdrawalWallet(w) === 'BALANCE').reduce((sum, w) => sum + Math.round(Number(w.amount) * 100), 0)
   const reservedCotaCents = pending.filter(w => withdrawalWallet(w) === 'COTA').reduce((sum, w) => sum + Math.round(Number(w.amount) * 100), 0)
   const reservedRedeCents = pending.filter(w => withdrawalWallet(w) === 'REDE').reduce((sum, w) => sum + Math.round(Number(w.amount) * 100), 0)
   const hasActivePackage = user.status === 'ACTIVE' && (user.associatePlanStatus === 'ACTIVE' || (db.investments as Row[]).some(i => i.userId === user.id && i.status === 'Ativo' && i.paymentStatus === 'CONFIRMED' && (!i.expiresAt || Date.parse(i.expiresAt) > date.getTime())))
+  const balanceAvailableCents = Math.max(0, balanceCents - reservedBalanceCents)
+  const balanceWithdrawableCents = user.status === 'ACTIVE' ? balanceAvailableCents : 0
   const cotaWithdrawableCents = hasActivePackage ? Math.max(0, cotaCents - reservedCotaCents) : 0
   const redeWithdrawableCents = hasActivePackage ? Math.max(0, redeCents - reservedRedeCents) : 0
   const cotaWithdrawalUsedThisWeek = hasCotaWithdrawalThisWeek(db, user, excludeWithdrawalId, date)
@@ -93,13 +97,16 @@ export function walletSummary(db: Row, user: Row, excludeWithdrawalId?: string, 
     cotaCents,
     redeCents,
     earningsCents: cotaCents + redeCents,
-    reservedCents: reservedCotaCents + reservedRedeCents,
+    balanceAvailableCents,
+    balanceWithdrawableCents,
+    reservedCents: reservedBalanceCents + reservedCotaCents + reservedRedeCents,
+    reservedBalanceCents,
     reservedCotaCents,
     reservedRedeCents,
     hasActivePackage,
     cotaWithdrawableCents,
     redeWithdrawableCents,
-    withdrawableCents: cotaWithdrawableCents + redeWithdrawableCents,
+    withdrawableCents: balanceWithdrawableCents + cotaWithdrawableCents + redeWithdrawableCents,
     // Cota wallet is released every Sunday 18:00 (São Paulo) for a single withdrawal.
     cotaWithdrawalOpen: !cotaWithdrawalUsedThisWeek,
     cotaWithdrawalUsedThisWeek,
@@ -188,11 +195,17 @@ export function cpfOwnerId(profiles: Record<string, any> | undefined, cpf: strin
 }
 
 export function validateWithdrawal(db: Row, user: Row, amount: unknown, wallet: WalletType, excludeId?: string, date = new Date()) {
-  if (wallet !== 'COTA' && wallet !== 'REDE') throw new Error('Selecione uma carteira válida para saque (Cota ou Rede)')
+  if (wallet !== 'BALANCE' && wallet !== 'COTA' && wallet !== 'REDE') throw new Error('Selecione uma carteira válida para saque (Saldo, Cota ou Rede)')
   const wallets = walletSummary(db, user, excludeId, date)
-  if (!wallets.hasActivePackage) throw new Error('É necessário ter um pacote ativo para sacar')
+  if (wallet === 'BALANCE') {
+    if (user.status !== 'ACTIVE') throw new Error('É necessário ter uma conta ativa para sacar')
+  } else if (!wallets.hasActivePackage) throw new Error('É necessário ter um pacote ativo para sacar')
   const amounts = withdrawalAmounts(amount), cents = amounts.amountCents
   if (cents < WITHDRAWAL_MIN_CENTS) throw new Error('O valor mínimo para saque é de R$ 55,00')
+  if (wallet === 'BALANCE') {
+    if (cents > wallets.balanceWithdrawableCents) throw new Error('Valor indisponível para saque na Carteira de Saldo')
+    return { ...amounts, wallet }
+  }
   if (wallet === 'COTA') {
     if (!hasQuotaMatured(user, date)) throw new Error('A Carteira Cota exige 30 dias de cota ativa para o primeiro saque')
     if (hasCotaWithdrawalThisWeek(db, user, excludeId, date)) throw new Error('A Carteira Cota permite 1 saque por semana; a próxima liberação é no domingo, às 18h')
@@ -239,7 +252,7 @@ export function settleWithdrawal(db: Row, item: Row, createId: () => string) {
 }
 
 export function debitPurchase(db: Row, user: Row, amountCents: number, reference: string, description: string, createId: () => string) {
-  if (walletSummary(db, user).balanceCents < amountCents) throw new Error('Saldo insuficiente na Carteira de Saldo')
+  if (walletSummary(db, user).balanceAvailableCents < amountCents) throw new Error('Saldo insuficiente na Carteira de Saldo')
   db.transactions.unshift({ id: createId(), userId: user.id, purchaseId: reference, wallet: 'BALANCE', amount: -amountCents / 100, description, date: new Date().toLocaleDateString('pt-BR'), status: 'Débito', createdAt: new Date().toISOString() })
 }
 

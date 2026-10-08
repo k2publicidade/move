@@ -47,7 +47,7 @@ A cobrança cripto devolve endereço e valor exato em USDT, exibidos no portal p
 
 - O cadastro exige CPF único, com formato e dígitos verificadores válidos. Isso não substitui uma consulta de situação cadastral ou verificação de identidade.
 - O servidor usa automaticamente o CPF do perfil como chave PIX; não aceita uma chave de outro titular. O participante precisa cadastrar essa chave no seu banco. Contas antigas sem CPF válido devem completar o perfil antes de sacar.
-- Novos saques das carteiras Cota e Rede têm taxa de **6%**, inclusive o primeiro saque, arredondada ao centavo mais próximo. A tela mostra o valor bruto, a taxa e o líquido para envio ao gateway.
+- Novos saques das carteiras Saldo, Cota e Rede têm taxa de **6%**, inclusive o primeiro saque, arredondada ao centavo mais próximo. A tela mostra o valor bruto, a taxa e o líquido para envio ao gateway.
 - Exemplo: R$ 100,00 solicitados reservam R$ 100,00 na carteira, geram R$ 6,00 de taxa e enviam R$ 94,00 ao 2PP. Eventuais tarifas próprias do provedor seguem o contrato da conta 2PP e não são validadas pelos testes locais.
 - O webhook valida `PAY_OUT`, `pix` e o valor efetivamente enviado (`payoutAmountCents`). Apenas a confirmação debita o valor bruto uma vez. Falhas definitivas liberam a reserva; respostas ambíguas mantêm o saque reservado para conciliação.
 - Saques anteriores preservam as condições gravadas e o valor originalmente enviado, sem aplicação retroativa da nova taxa. Mínimo de R$ 55,00 e carência de 30 dias de cota ativa continuam valendo.
@@ -116,16 +116,18 @@ As novas rotas são implementadas em `server/index.ts`, usado pelo servidor Node
 
 ## Carteira de Saldo e Carteira de Rendimentos
 
-- Depósitos confirmados entram na **Carteira de Saldo** e servem exclusivamente para comprar produtos, Plano de Associado e cotas. Não podem ser sacados.
+- Depósitos confirmados e créditos administrativos entram na **Carteira de Saldo** e podem ser usados para comprar produtos, Plano de Associado e cotas ou solicitar saque PIX. Saques dessa carteira exigem conta ativa e CPF válido, sem pacote ativo, carência ou limite semanal.
+- Para adicionar saldo real: **Central MASTER → Participantes → Saldo e pagamentos → Adicionar saldo real**. Informe valor e motivo. A referência única é gerada automaticamente; o crédito entra imediatamente no extrato e registra autor, motivo e valor na auditoria. Repetir a mesma solicitação não duplica o saldo.
+- O crédito administrativo registra o saldo devido ao usuário; o pagamento real usa o 2PP já integrado e exige credenciais válidas e recursos disponíveis na conta do provedor. Somente o webhook autenticado de confirmação registra o débito do saque enviado ao gateway.
 - Bônus aprovados, indicações e Unilevel entram na **Carteira Rede**; os rendimentos do Diário entram na **Carteira Cota**. Estornos de ganhos e saques pagos são debitados na carteira de origem.
-- Saques exigem conta ativa e Plano de Associado ativo ou cotas com pagamento confirmado e status Ativo (sem expiração vencida, quando informada). Apenas a classificação Cotista não basta.
-- O mínimo de saque é de R$ 55,00 por carteira. Solicitações Pendente/Em análise reservam os rendimentos da carteira de origem; Recusado libera a reserva; Pago debita uma única vez. A elegibilidade é revalidada ao solicitar, editar e pagar, inclusive pelo MASTER.
+- Saques de **Cota e Rede** exigem conta ativa e Plano de Associado ativo ou cotas com pagamento confirmado e status Ativo (sem expiração vencida, quando informada). Apenas a classificação Cotista não basta.
+- O mínimo de saque é de R$ 55,00 por carteira, com taxa de 6%. Solicitações Pendente/Em análise reservam o valor bruto da carteira de origem; Recusado libera a reserva; Pago debita uma única vez. Reservas da Carteira de Saldo também ficam indisponíveis para compras e ajustes negativos. A elegibilidade é validada ao solicitar e nas alterações administrativas; a confirmação do gateway liquida a solicitação já validada.
 - O financeiro oferece depósito PIX e cripto pelo 2PP. Apenas confirmação autenticada do gateway ou conciliação MASTER credita o depósito, com deduplicação por fatura.
 - Compras pela carteira usam `/api/wallet/purchases`, chave idempotente e preços conferidos no servidor. Não usam rendimentos nem valores reservados para saques.
 - Ajustes MASTER exigem carteira explícita na interface; integrações antigas que omitem `wallet` usam `BALANCE`. Nunca registrar um depósito como `EARNINGS`.
 
 ### Compatibilidade com o histórico
 
-As movimentações recebem `wallet: BALANCE | EARNINGS` na normalização do banco atual (JSON local ou payload PostgreSQL). Bônus, diários e saques são identificados por seus vínculos; as descrições antigas conhecidas “Rendimento operacional”, “Bônus de rede” e “Saque” também são reconhecidas. Créditos sem origem identificável ficam na Carteira de Saldo, sem liberação automática para saque. Caso um ganho antigo não possua vínculo ou descrição reconhecida, o MASTER deve conferir sua origem e registrar os ajustes auditados nas duas carteiras. Os valores e registros originais são preservados.
+As movimentações recebem `wallet: BALANCE | COTA | REDE` na normalização do banco atual (JSON local ou payload PostgreSQL). Bônus, diários e saques são identificados por seus vínculos; as descrições antigas conhecidas “Rendimento operacional”, “Bônus de rede” e “Saque” também são reconhecidas. Créditos sem origem identificável ficam na Carteira de Saldo e seguem as regras de saldo real. Saques antigos sem carteira explícita continuam vinculados à Rede. Os valores e registros originais são preservados.
 
 Validação: `npm test` inclui depósito PIX com provedor simulado, webhook duplicado, compras, reservas, pagamento de saque e bloqueio por pacote inativo. Os testes não realizam pagamentos reais.

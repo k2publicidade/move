@@ -445,6 +445,35 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
   }
   if (method === 'GET' && route === '/admin/associates') return paged(db.users.filter(item => item.role === 'ASSOCIATE').map(item => ({ ...publicUser(item), phone: db.profiles[item.id]?.phone ?? '', cpf: db.profiles[item.id]?.cpf ?? '' }))) as T
 
+  const accountRoute = route.match(/^\/admin\/associates\/([^/]+)\/(account|balance-adjustments)$/)
+  if (accountRoute) {
+    const owner = db.users.find(item => item.id === accountRoute[1] && item.role === 'ASSOCIATE')
+    if (!owner) throw new Error('Conta não encontrada')
+    const wallets = walletSummary(db, owner)
+    if (method === 'GET' && accountRoute[2] === 'account') {
+      const owned = (key: 'transactions' | 'invoices' | 'investments' | 'withdrawals') => db[key].filter(item => item.userId === owner.id)
+      return { user: publicUser(owner), wallets, transactions: owned('transactions'), invoices: owned('invoices'), investments: owned('investments'), withdrawals: owned('withdrawals'), balanceCents: wallets.balanceCents + wallets.earningsCents, auditLogs: db.auditLogs.filter(log => log.targetId === owner.id || log.details?.userId === owner.id) } as T
+    }
+    if (method === 'POST' && accountRoute[2] === 'balance-adjustments') {
+      const amountCents = body?.amountCents, wallet = body?.wallet ?? 'BALANCE', reason = String(body?.reason ?? '').trim(), reference = String(body?.reference ?? '').trim()
+      if (!Number.isSafeInteger(amountCents) || amountCents === 0 || Math.abs(amountCents) > 100000000 || !reason || !reference || reason.length > 1000 || reference.length > 200) throw new Error('Informe valor até R$ 1.000.000, motivo e referência única do atendimento ou gateway')
+      if (!['BALANCE', 'COTA', 'REDE'].includes(wallet)) throw new Error('Carteira inválida')
+      const previous = db.transactions.find(item => item.userId === owner.id && item.adjustmentReference === reference)
+      if (previous) {
+        if (Math.round(previous.amount * 100) !== amountCents || previous.reason !== reason || transactionWallet(previous) !== wallet) throw Object.assign(new Error('Referência já utilizada em outro ajuste'), { status: 409 })
+        return { transaction: previous, idempotent: true } as T
+      }
+      const balanceCents = wallet === 'BALANCE' ? wallets.balanceCents : wallet === 'COTA' ? wallets.cotaCents : wallets.redeCents
+      const reservedCents = wallet === 'BALANCE' ? wallets.reservedBalanceCents : wallet === 'COTA' ? wallets.reservedCotaCents : wallets.reservedRedeCents
+      if (amountCents < 0 && balanceCents + amountCents < reservedCents) throw new Error('O ajuste não pode consumir valores reservados nem deixar saldo negativo')
+      const transaction = { id: id('MOV'), userId: owner.id, actorId: user.id, wallet, amount: amountCents / 100, adjustmentReference: reference, reason, description: `Ajuste MASTER: ${reason}`, status: amountCents > 0 ? 'Crédito' : 'Débito', date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }
+      db.transactions.unshift(transaction)
+      audit(db, user.id, 'BALANCE_ADJUSTMENT', 'USER', owner.id, { transactionId: transaction.id, wallet, amountCents, beforeCents: balanceCents, afterCents: balanceCents + amountCents, reference, reason })
+      save(db)
+      return { transaction, idempotent: false } as T
+    }
+  }
+
   if (method === 'POST' && route === '/admin/associates') {
     const username = String(body?.username ?? '').trim().toLowerCase()
     const email = String(body?.email ?? '').trim().toLowerCase()
@@ -754,10 +783,16 @@ export async function demoRequest<T>(path: string, method = 'GET', body?: any, t
       body = { ...body, pack: 'Cotas GoMove', amount, amountCents, profit: 0, status: 'Aguardando pagamento', paymentStatus: 'PENDING', paymentProvider: '2PP', paymentMethod: isPix ? 'PIX' : `Cripto ${paymentAsset}`, paymentAsset, paymentReference: id('2PP'), ...demoTwoPpCheckout(isPix, paymentAsset), ...demoTwoPpCustomer(body, user) }
     }
     if (userCollection === 'withdrawals') {
-      const wallet = body?.wallet === 'COTA' ? 'COTA' as const : 'REDE' as const
+      if (body?.wallet !== undefined && !['BALANCE', 'COTA', 'REDE'].includes(body.wallet)) throw new Error('Selecione uma carteira válida para saque (Saldo, Cota ou Rede)')
+      const wallet = body?.wallet === 'BALANCE' ? 'BALANCE' as const : body?.wallet === 'COTA' ? 'COTA' as const : 'REDE' as const
+      const existing = body?.idempotencyKey && db.withdrawals.find(item => item.userId === user.id && item.idempotencyKey === body.idempotencyKey)
+      if (existing) {
+        if (Number(body.amount) !== existing.amount || wallet !== existing.wallet || (body.account !== undefined && String(body.account).replace(/[.\s-]/g, '') !== existing.account)) throw Object.assign(new Error('Identificador já utilizado para outro saque'), { status: 409 })
+        return existing as T
+      }
       const result = validateWithdrawal(db, user, body?.amount, wallet)
       const account = validatePixKey(body?.account, db.profiles[user.id]?.cpf)
-      body = { amount: result.amountCents / 100, amountCents: result.amountCents, account, method: 'PIX', status: 'Pendente', paidAt: '—', wallet, feeBps: result.feeBps, feeCents: result.feeCents, netCents: result.netCents }
+      body = { amount: result.amountCents / 100, amountCents: result.amountCents, account, method: 'PIX', status: 'Pendente', paidAt: '—', wallet, feeBps: result.feeBps, feeCents: result.feeCents, netCents: result.netCents, idempotencyKey: body?.idempotencyKey }
     }
     const prefix = { investments: 'ATV', orders: 'PED', withdrawals: 'SAQ', tickets: 'TK' }[userCollection]
     const item = { ...body, id: id(prefix), userId: user.id, date: new Date().toLocaleDateString('pt-BR'), createdAt: today() }

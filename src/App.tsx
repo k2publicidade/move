@@ -1,4 +1,4 @@
-import { storeProducts, transactionWallet, walletLabels, normalizeCpf, isValidCpfDigits, withdrawalAmounts, WITHDRAWAL_FEE_BPS } from './wallets'
+import { storeProducts, transactionWallet, walletLabels, normalizeCpf, isValidCpfDigits, moneyCents, withdrawalAmounts, WITHDRAWAL_FEE_BPS } from './wallets'
 import { FormEvent, ReactNode, RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
@@ -567,7 +567,7 @@ function Store({ session }: { session: Session }) {
 function UserFinance({ session }: { session: Session }) {
   const { api, data, error, load } = usePortalState(session)
   const [amount, setAmount] = useState('')
-  const [withdrawWallet, setWithdrawWallet] = useState<'COTA' | 'REDE'>('REDE')
+  const [withdrawWallet, setWithdrawWallet] = useState<'BALANCE' | 'COTA' | 'REDE'>('BALANCE')
   const [withdrawalKey, setWithdrawalKey] = useState(() => crypto.randomUUID())
   const [depositAmount, setDepositAmount] = useState('100')
   const [document, setDocument] = useState('')
@@ -613,25 +613,26 @@ function UserFinance({ session }: { session: Session }) {
   }
   if (!data && !error) return <Loader />
   const state = data || emptyState
-  const wallets = state.business.wallets || { balanceCents: 0, cotaCents: 0, redeCents: 0, cotaWithdrawableCents: 0, redeWithdrawableCents: 0, reservedCents: 0, hasActivePackage: false }
-  const selectedWithdrawable = withdrawWallet === 'COTA' ? (wallets.cotaAvailableForWithdrawalCents ?? 0) : wallets.redeWithdrawableCents
+  const wallets = state.business.wallets || { balanceCents: 0, balanceWithdrawableCents: 0, cotaCents: 0, redeCents: 0, cotaWithdrawableCents: 0, redeWithdrawableCents: 0, reservedCents: 0, hasActivePackage: false }
+  const selectedWithdrawable = withdrawWallet === 'BALANCE' ? (wallets.balanceWithdrawableCents ?? 0) : withdrawWallet === 'COTA' ? (wallets.cotaAvailableForWithdrawalCents ?? 0) : wallets.redeWithdrawableCents
+  const withdrawalAllowed = withdrawWallet === 'BALANCE' ? session.user.status === 'ACTIVE' : wallets.hasActivePackage
   const withdrawalWindowLabel = wallets.cotaWithdrawalReleasedAt ? new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }).format(new Date(wallets.cotaWithdrawalReleasedAt)) : 'domingo, 18h'
   const registeredCpf = String(state.profile.cpf ?? '').replace(/[.\s-]/g, '')
   const hasValidCpf = isValidCpfDigits(registeredCpf)
   let withdrawalPreview: ReturnType<typeof withdrawalAmounts> | undefined
   try { withdrawalPreview = withdrawalAmounts(amount) } catch { /* Empty or incomplete amount. */ }
   const pendingDeposits = state.invoices.filter(i => i.productType === 'DEPOSIT' && ['PENDING', 'PAID', 'INVOICE_CREATING', 'PROVIDER_UNKNOWN'].includes(i.paymentStatus))
-  return <Page title="Carteiras e financeiro" subtitle="Carteira de Saldo para compras; Cota e Rede para saques, com regras próprias.">
+  return <Page title="Carteiras e financeiro" subtitle="Saldo real disponível para compras e saques PIX; Cota e Rede seguem suas regras próprias.">
     <ErrorBox error={error || actionError} />{notice && <div className="success-box" role="status"><Check aria-hidden="true" />{notice}</div>}
     <section className="metric-grid wallet-metrics">
-      <Metric label="CARTEIRA DE SALDO" value={cents(wallets.balanceCents)} icon={Wallet} note="Depósitos para comprar produtos e pacotes. Não permite saque." />
+      <Metric label="CARTEIRA DE SALDO" value={cents(wallets.balanceCents)} icon={Wallet} note={`Saldo real para compras e saques. ${cents(wallets.balanceWithdrawableCents ?? 0)} disponíveis para sacar.`} />
       <Metric label="CARTEIRA COTA" value={cents(wallets.cotaCents)} icon={CircleDollarSign} note="Rendimento variável da própria cota, até 250% total (150% além do investido)." />
       <Metric label="CARTEIRA REDE" value={cents(wallets.redeCents)} icon={UsersRound} note="Saldo de indicações e Unilevel, após saques e estornos." />
-      <Metric label="DISPONÍVEL PARA SAQUE" value={cents((wallets.cotaAvailableForWithdrawalCents ?? 0) + wallets.redeWithdrawableCents)} icon={WalletCards} note={`${cents(wallets.reservedCents)} reservados em solicitações pendentes.`} />
+      <Metric label="DISPONÍVEL PARA SAQUE" value={cents((wallets.balanceWithdrawableCents ?? 0) + (wallets.cotaAvailableForWithdrawalCents ?? 0) + wallets.redeWithdrawableCents)} icon={WalletCards} note={`${cents(wallets.reservedCents)} reservados em solicitações pendentes.`} />
     </section>
     <section className="dashboard-split wallet-forms">
       <form className="form-panel" onSubmit={createDeposit} aria-busy={busy}>
-        <h2>Depositar na Carteira de Saldo</h2><p>O depósito confirmado poderá ser usado para comprar produtos e pacotes. Esse valor não poderá ser sacado.</p>
+        <h2>Depositar na Carteira de Saldo</h2><p>O depósito confirmado poderá ser usado para comprar produtos e pacotes ou solicitar saque via PIX.</p>
         <label>Valor do depósito (R$)<input required type="number" min="0.01" step="0.01" value={depositAmount} onChange={e => { setDepositAmount(e.target.value); setDepositKey(crypto.randomUUID()) }} /></label>
         <label>CPF ou CNPJ do pagador<input required inputMode="numeric" value={document} onChange={e => setDocument(e.target.value)} /></label>
         <button className="primary-btn" disabled={busy}>{busy ? 'Processando…' : 'Gerar PIX para depósito'}</button>
@@ -639,20 +640,21 @@ function UserFinance({ session }: { session: Session }) {
         {deposit && <div><p>Depósito: {brl(deposit.amount)} · {({ CONFIRMED: 'Confirmado', ERROR: 'Falha na criação', FAILED: 'Recusado pelo gateway', CANCELLED: 'Cancelado', TIMED_OUT: 'Expirado', PROVIDER_UNKNOWN: 'Em conciliação' } as Record<string, string>)[deposit.paymentStatus] || 'Aguardando confirmação'}</p>{deposit.paymentStatus === 'CONFIRMED' ? <p>Valor creditado na Carteira de Saldo.</p> : ['ERROR', 'FAILED', 'CANCELLED', 'TIMED_OUT'].includes(deposit.paymentStatus) ? <p>Esta cobrança foi encerrada. Gere um novo PIX para tentar novamente.</p> : deposit.demo ? <button type="button" className="outline-btn" disabled={busy} onClick={() => void confirmDemoDeposit()}>Confirmar depósito de demonstração</button> : deposit.pixQrCode ? <PixPaymentDetails payment={deposit} /> : <p>{deposit.paymentStatus === 'CONFIRMED' ? 'Valor creditado na Carteira de Saldo.' : 'Aguarde os dados da cobrança ou a conciliação do pagamento.'}</p>}</div>}
       </form>
       <form className="form-panel" onSubmit={withdraw} aria-busy={busy}>
-        <h2>Solicitar saque</h2><p>Escolha a carteira de origem. É obrigatório ter um pacote ativo; o recebimento é via PIX com chave CPF do titular.</p>
-        {!wallets.hasActivePackage && <p role="status">Saque bloqueado: adquira ou ative um pacote para sacar seus rendimentos.</p>}
+        <h2>Solicitar saque</h2><p>O saldo real pode ser sacado todos os dias, sem pacote ativo ou carência. O recebimento é via PIX com chave CPF do titular.</p>
+        {withdrawWallet !== 'BALANCE' && !wallets.hasActivePackage && <p role="status">Saque de rendimentos bloqueado: adquira ou ative um pacote para sacar da Carteira Cota ou Rede.</p>}
         <div className="form-grid">
-          <label>Carteira de origem<select value={withdrawWallet} onChange={event => { setWithdrawWallet(event.target.value as 'COTA' | 'REDE'); setAmount(''); setWithdrawalKey(crypto.randomUUID()) }} disabled={!wallets.hasActivePackage}>
+          <label>Carteira de origem<select value={withdrawWallet} onChange={event => { setWithdrawWallet(event.target.value as typeof withdrawWallet); setAmount(''); setWithdrawalKey(crypto.randomUUID()) }}>
+            <option value="BALANCE">Carteira de Saldo — {cents(wallets.balanceWithdrawableCents ?? 0)} disponíveis</option>
             <option value="COTA">Carteira Cota — {cents(wallets.cotaAvailableForWithdrawalCents ?? 0)} disponíveis</option>
             <option value="REDE">Carteira Rede — {cents(wallets.redeWithdrawableCents)} disponíveis</option>
           </select></label>
           <label>Chave PIX — CPF cadastrado<input readOnly value={hasValidCpf ? registeredCpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4') : ''} placeholder="CPF não cadastrado" aria-describedby="withdrawal-cpf-hint" /></label>
         </div>
         <p id="withdrawal-cpf-hint">{hasValidCpf ? 'O saque será enviado automaticamente para o CPF do seu cadastro. Cadastre esse CPF como chave PIX no seu banco.' : <>Para sacar, informe um CPF válido em <a href="/profile">Meu perfil</a>.</>}</p>
-        <label>Valor do saque (R$)<input required min="55" max={selectedWithdrawable / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => { setAmount(event.target.value); setWithdrawalKey(crypto.randomUUID()) }} placeholder="R$ 0,00" disabled={!wallets.hasActivePackage} /></label>
-        <p>Disponível: {cents(selectedWithdrawable)}. Mínimo: R$ 55,00. Taxa de {WITHDRAWAL_FEE_BPS / 100}% descontada do valor solicitado. {withdrawWallet === 'COTA' ? `Carteira Cota: 1 saque por semana, liberado todo domingo às 18h (horário de São Paulo), após 30 dias de cota ativa.${!wallets.cotaWithdrawalEligible && wallets.cotaWithdrawalReleasedAt ? ` Próxima liberação em ${withdrawalWindowLabel}.` : ''}` : 'Carteira Rede: saques todos os dias, sem limite de quantidade, respeitando o saldo disponível.'}</p>
+        <label>Valor do saque (R$)<input required min="55" max={selectedWithdrawable / 100} step="0.01" type="number" inputMode="decimal" value={amount} onChange={event => { setAmount(event.target.value); setWithdrawalKey(crypto.randomUUID()) }} placeholder="R$ 0,00" disabled={!withdrawalAllowed} /></label>
+        <p>Disponível: {cents(selectedWithdrawable)}. Mínimo: R$ 55,00. Taxa de {WITHDRAWAL_FEE_BPS / 100}% descontada do valor solicitado. {withdrawWallet === 'COTA' ? `Carteira Cota: 1 saque por semana, liberado todo domingo às 18h (horário de São Paulo), após 30 dias de cota ativa.${!wallets.cotaWithdrawalEligible && wallets.cotaWithdrawalReleasedAt ? ` Próxima liberação em ${withdrawalWindowLabel}.` : ''}` : withdrawWallet === 'BALANCE' ? 'Carteira de Saldo: saques todos os dias, sem limite de quantidade, sem pacote ativo ou carência.' : 'Carteira Rede: saques todos os dias, sem limite de quantidade, respeitando o saldo disponível.'}</p>
         {withdrawalPreview && <dl className="withdrawal-summary" aria-live="polite"><div><dt>Valor debitado da carteira</dt><dd>{cents(withdrawalPreview.amountCents)}</dd></div><div><dt>Taxa de saque ({WITHDRAWAL_FEE_BPS / 100}%)</dt><dd>{cents(withdrawalPreview.feeCents)}</dd></div><div><dt>Líquido para envio via PIX</dt><dd>{cents(withdrawalPreview.netCents)}</dd></div></dl>}
-        <button className="primary-btn" disabled={busy || !hasValidCpf || !wallets.hasActivePackage || selectedWithdrawable < 5500 || (withdrawWallet === 'COTA' && !wallets.cotaWithdrawalEligible)}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button>
+        <button className="primary-btn" disabled={busy || !hasValidCpf || !withdrawalAllowed || selectedWithdrawable < 5500 || (withdrawWallet === 'COTA' && !wallets.cotaWithdrawalEligible)}>{busy ? 'Enviando…' : 'Enviar solicitação'}</button>
       </form>
     </section>
     <h2 className="section-title">Faturas</h2><DataTable rows={state.invoices} columns={[["id", "FATURA"], ["due", "VENCIMENTO"], ["description", "DESCRIÇÃO"], ["remaining", "SALDO", row => brl(row.remaining)], ["status", "STATUS", row => status(row.status)]]} />
@@ -736,6 +738,38 @@ function UserTable({ users, onSelect, onAccess, onAccount, showCpf }: { users: U
   ] as TableColumn[]
   return <DataTable rows={users} columns={columns} action={onSelect ? row => <div className="account-actions"><button className="outline-btn" onClick={() => onSelect(row as User)}>Editar cadastro / senha</button>{onAccount && <button className="outline-btn" onClick={() => onAccount(row as User)}>Saldo e pagamentos</button>}{onAccess && <button className="primary-btn" onClick={() => onAccess(row as User)}>Entrar na conta</button>}</div> : undefined} />
 }
+function RealBalanceCredit({ session, account, onCredit }: { session: Session; account: User; onCredit: () => Promise<void> }) {
+  const api = useApi(session)
+  const [amount, setAmount] = useState('')
+  const [reason, setReason] = useState('')
+  const [reference, setReference] = useState(() => crypto.randomUUID())
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (busy) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const amountCents = moneyCents(amount)
+      await api.post(`/admin/associates/${account.id}/balance-adjustments`, { amountCents, wallet: 'BALANCE', reason, reference })
+      await onCredit()
+      setAmount(''); setReason(''); setReference(crypto.randomUUID())
+      setNotice('Saldo real adicionado e disponível para compras ou saque via PIX.')
+    } catch (error: any) { setError(error.message) } finally { setBusy(false) }
+  }
+  return <form className="form-panel" onSubmit={submit} aria-busy={busy}>
+    <h3>Adicionar saldo real</h3>
+    <p>O crédito entra imediatamente na Carteira de Saldo de {account.name}. O usuário pode solicitar saque todos os dias, sem pacote ativo ou carência, com mínimo de R$ 55,00 e taxa de {WITHDRAWAL_FEE_BPS / 100}%.</p>
+    <ErrorBox error={error} />{notice && <div className="success-box" role="status">{notice}</div>}
+    <div className="form-grid">
+      <label>Valor a adicionar (R$)<input required type="number" inputMode="decimal" min="0.01" max="1000000" step="0.01" value={amount} onChange={event => setAmount(event.target.value)} disabled={busy} /></label>
+      <label>Motivo do crédito<input required maxLength={1000} value={reason} onChange={event => setReason(event.target.value)} disabled={busy} /></label>
+    </div>
+    <button className="primary-btn" disabled={busy}>{busy ? 'Adicionando…' : 'Adicionar saldo real'}</button>
+  </form>
+}
+
 function AccountManagement({session,account,close}:{session:Session;account:User;close:()=>void}) {
  const api=useApi(session),[data,setData]=useState<any>(),[error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false)
  const [amount,setAmount]=useState(''),[reason,setReason]=useState(''),[reference,setReference]=useState('')
@@ -744,7 +778,7 @@ function AccountManagement({session,account,close}:{session:Session;account:User
  const [adjustmentWallet,setAdjustmentWallet]=useState<'BALANCE'|'COTA'|'REDE'>('BALANCE')
  const adjust=async(event:FormEvent)=>{event.preventDefault();setBusy(true);setError('');setNotice('');try{await api.post(`/admin/associates/${account.id}/balance-adjustments`,{amountCents:Math.round(Number(amount)*100),wallet:adjustmentWallet,reason,reference});await load();setAmount('');setReason('');setReference('');setNotice('Ajuste registrado no saldo e na auditoria.')}catch(e:any){setError(e.message)}finally{setBusy(false)}}
  const reconcile=async(row:Row,kind:string)=>{setBusy(true);setError('');try{await api.post(`/admin/associates/${account.id}/reconcile`,{recordId:row.id,kind,reason,reference});await load();setNotice('Pagamento conciliado.')}catch(e:any){setError(e.message)}finally{setBusy(false)}}
- return <Modal title={`Saldo e pagamentos · ${account.name}`} close={close}><div className="modal-form"><ErrorBox error={error}/>{notice&&<div role="status" className="success-box">{notice}</div>}{data?<><h3>Carteira de Saldo: {cents(data.wallets?.balanceCents)}</h3><h3>Carteira Cota: {cents(data.wallets?.cotaCents)}</h3><h3>Carteira Rede: {cents(data.wallets?.redeCents)}</h3><form onSubmit={adjust}><div className="form-grid"><label>Carteira do ajuste<select value={adjustmentWallet} onChange={e=>setAdjustmentWallet(e.target.value as typeof adjustmentWallet)}><option value="BALANCE">Carteira de Saldo — depósitos / compras</option><option value="COTA">Carteira Cota — rendimento da cota</option><option value="REDE">Carteira Rede — bonificações</option></select></label><label>Valor do ajuste (R$; negativo para débito)<input required type="number" step="0.01" min="-1000000" max="1000000" value={amount} onChange={e=>setAmount(e.target.value)}/></label><label>Referência única do gateway / atendimento<input required maxLength={200} value={reference} onChange={e=>setReference(e.target.value)}/></label><label className="wide">Motivo / evidência da conferência<input required maxLength={1000} value={reason} onChange={e=>setReason(e.target.value)}/></label></div><p>O ajuste altera somente a carteira selecionada. Depósitos devem ser creditados na Carteira de Saldo. Para corrigir uma compra de plano ou cotas paga no gateway, use “Conciliar pagamento” abaixo; isso ativa o produto sem adicionar saldo à carteira.</p><button className="primary-btn" disabled={busy}>Aplicar ajuste de saldo</button></form><h3>Pagamentos — confira identificador e valor no gateway</h3>{(['invoices','investments'] as const).map(kind=><div key={kind}><h4>{kind==='invoices'?'Faturas':'Cotas'}</h4><DataTable rows={data[kind]} columns={[["id","ID"],["paymentProvider","GATEWAY"],["providerId","ID NO GATEWAY",r=>r.twoPpTransactionId||r.paymentReference||r.pixPayTransactionId||r.coinPaymentsInvoiceId||'—'],["paymentProviderStatus","STATUS NO GATEWAY"],["paymentError","RETORNO DO GATEWAY",r=>[r.paymentErrorCode,r.paymentProviderHttpStatus?`HTTP ${r.paymentProviderHttpStatus}`:null,r.paymentError].filter(Boolean).join(' · ')||'—'],["amount","VALOR",r=>brl(r.amount)],["paymentStatus","PAGAMENTO"],["status","STATUS"]]} action={row=><button className="outline-btn" disabled={busy||!reason.trim()||!reference.trim()||row.paymentStatus==='CONFIRMED'} onClick={()=>void reconcile(row,kind)}>Conciliar pagamento</button>}/></div>)}<h3>Extrato</h3><DataTable rows={data.transactions} columns={[["date","DATA"],["description","DESCRIÇÃO"],["amount","VALOR",r=>brl(r.amount)],["adjustmentReference","REFERÊNCIA"]]}/><h3>Saques</h3><DataTable rows={data.withdrawals} columns={[["id","ID"],["amount","VALOR",r=>brl(r.amount)],["status","STATUS"],["paymentStatus","PAGAMENTO"],["twoPpTransactionId","ID NO GATEWAY"],["paymentError","RETORNO DO GATEWAY",r=>[r.paymentErrorCode,r.paymentProviderHttpStatus?`HTTP ${r.paymentProviderHttpStatus}`:null,r.paymentError].filter(Boolean).join(' · ')||'—']]}/><h3>Histórico administrativo</h3><DataTable rows={data.auditLogs} columns={[["createdAt","DATA",r=>dateTime(r.createdAt)],["action","AÇÃO"],["actorId","ADMINISTRADOR"],["details","DETALHES",r=>JSON.stringify(r.details)]]}/></>:<Loader/>}</div></Modal>
+ return <Modal title={`Saldo e pagamentos · ${account.name}`} close={close}><div className="modal-form"><ErrorBox error={error}/>{notice&&<div role="status" className="success-box">{notice}</div>}{data?<><h3>Carteira de Saldo: {cents(data.wallets?.balanceCents)}</h3><h3>Carteira Cota: {cents(data.wallets?.cotaCents)}</h3><h3>Carteira Rede: {cents(data.wallets?.redeCents)}</h3><RealBalanceCredit session={session} account={account} onCredit={load} /><h3>Ajustes e conciliação</h3><form onSubmit={adjust}><div className="form-grid"><label>Carteira do ajuste<select value={adjustmentWallet} onChange={e=>setAdjustmentWallet(e.target.value as typeof adjustmentWallet)}><option value="BALANCE">Carteira de Saldo — saldo real / compras / saques</option><option value="COTA">Carteira Cota — rendimento da cota</option><option value="REDE">Carteira Rede — bonificações</option></select></label><label>Valor do ajuste (R$; negativo para débito)<input required type="number" step="0.01" min="-1000000" max="1000000" value={amount} onChange={e=>setAmount(e.target.value)}/></label><label>Referência única do gateway / atendimento<input required maxLength={200} value={reference} onChange={e=>setReference(e.target.value)}/></label><label className="wide">Motivo / evidência da conferência<input required maxLength={1000} value={reason} onChange={e=>setReason(e.target.value)}/></label></div><p>O ajuste altera somente a carteira selecionada. Depósitos devem ser creditados na Carteira de Saldo. Para corrigir uma compra de plano ou cotas paga no gateway, use “Conciliar pagamento” abaixo; isso ativa o produto sem adicionar saldo à carteira.</p><button className="primary-btn" disabled={busy}>Aplicar ajuste de saldo</button></form><h3>Pagamentos — confira identificador e valor no gateway</h3>{(['invoices','investments'] as const).map(kind=><div key={kind}><h4>{kind==='invoices'?'Faturas':'Cotas'}</h4><DataTable rows={data[kind]} columns={[["id","ID"],["paymentProvider","GATEWAY"],["providerId","ID NO GATEWAY",r=>r.twoPpTransactionId||r.paymentReference||r.pixPayTransactionId||r.coinPaymentsInvoiceId||'—'],["paymentProviderStatus","STATUS NO GATEWAY"],["paymentError","RETORNO DO GATEWAY",r=>[r.paymentErrorCode,r.paymentProviderHttpStatus?`HTTP ${r.paymentProviderHttpStatus}`:null,r.paymentError].filter(Boolean).join(' · ')||'—'],["amount","VALOR",r=>brl(r.amount)],["paymentStatus","PAGAMENTO"],["status","STATUS"]]} action={row=><button className="outline-btn" disabled={busy||!reason.trim()||!reference.trim()||row.paymentStatus==='CONFIRMED'} onClick={()=>void reconcile(row,kind)}>Conciliar pagamento</button>}/></div>)}<h3>Extrato</h3><DataTable rows={data.transactions} columns={[["date","DATA"],["description","DESCRIÇÃO"],["amount","VALOR",r=>brl(r.amount)],["adjustmentReference","REFERÊNCIA"]]}/><h3>Saques</h3><DataTable rows={data.withdrawals} columns={[["id","ID"],["amount","VALOR",r=>brl(r.amount)],["status","STATUS"],["paymentStatus","PAGAMENTO"],["twoPpTransactionId","ID NO GATEWAY"],["paymentError","RETORNO DO GATEWAY",r=>[r.paymentErrorCode,r.paymentProviderHttpStatus?`HTTP ${r.paymentProviderHttpStatus}`:null,r.paymentError].filter(Boolean).join(' · ')||'—']]}/><h3>Histórico administrativo</h3><DataTable rows={data.auditLogs} columns={[["createdAt","DATA",r=>dateTime(r.createdAt)],["action","AÇÃO"],["actorId","ADMINISTRADOR"],["details","DETALHES",r=>JSON.stringify(r.details)]]}/></>:<Loader/>}</div></Modal>
 }
 
 function BonusTable({ rows, detailed = false }: { rows: Bonus[]; detailed?: boolean }) {
