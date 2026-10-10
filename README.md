@@ -41,6 +41,8 @@ PIX e cripto usam a mesma API do 2PP. O contrato permanece aguardando pagamento 
 6. Antes do deploy, configure também `TWOPP_API_KEY`, `TWOPP_API_SECRET`, `TWOPP_WEBHOOK_TOKEN` (segredo aleatório com pelo menos 32 caracteres), `APP_PUBLIC_URL` e `DATABASE_URL` no ambiente de produção. Nunca coloque esses valores no frontend ou no repositório.
 7. `POST /api/v1/transactions/pix` cria a cobrança PIX (QR Code e copia e cola) e `POST /api/v1/transactions/crypto` cria a cobrança em USDT. As moedas habilitadas na conta vêm de `GET /api/v1/currencies/crypto` (hoje `usdt-trc20` e `usdt-bep20`).
 
+A configuração de produção e o procedimento para trocar as credenciais estão em [Configuração do gateway 2PP](docs/CONFIGURACAO-GATEWAY-2PP.md). Depois de alterar as variáveis na Vercel, publique um novo deploy para ativar os novos valores.
+
 A cobrança cripto devolve endereço e valor exato em USDT, exibidos no portal para o pagador. O webhook único `/api/webhooks/2pp` aceita `paymentMethod` `pix` e `crypto` e nunca rebaixa uma fatura já confirmada.
 
 ### CPF e taxa de saque PIX
