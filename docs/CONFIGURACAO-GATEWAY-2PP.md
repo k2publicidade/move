@@ -40,3 +40,14 @@ A API Key e o segredo fornecidos pelo responsável foram atualizados em Producti
 - Site público: HTTP 200.
 
 Essa validação confirmou a autenticação de leitura e a disponibilidade do site. Nenhuma cobrança, saque ou transferência foi criada; o fluxo financeiro completo com webhook não foi exercitado nessa rotação.
+
+## Rotação de credenciais em 28/10/2026
+
+- As novas `TWOPP_API_KEY` e `TWOPP_API_SECRET` foram gravadas como Secret em Production, sem incluir seus valores no Git.
+- A consulta autenticada `GET /api/v1/currencies/crypto` ao host do 2PP respondeu HTTP 200.
+- A versão já publicada foi republicada e promovida ao domínio `www.gomoveinfra.com.br`.
+- Deploy: `dpl_9BcWpfofjBVirsmXgxNAwN2ZNjjK`, status Ready.
+- Fonte informada pela Vercel: commit `7de6b74defba4f674348b8a3e17f1f30d9a0b583`, branch `codex/migrate-supabase`. Essa fonte difere da `main` clonada; preservar essa diferença antes de qualquer publicação futura de código.
+- Validação da cópia local da main: 198 testes passaram e `npm run build` concluiu. Esses testes usam provedor simulado e não validam a versão diferente que está em produção.
+
+A autenticação de leitura foi validada. A liquidação real de um depósito e de um saque, incluindo recebimento dos respectivos webhooks e movimentação única da carteira, ainda precisa de validação operacional. Nenhum pagamento ou saque real foi executado nesta rotação.
